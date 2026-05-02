@@ -1,0 +1,92 @@
+{
+  "name": "@sentiolabs/pi-arc",
+  "version": "0.7.0",
+  "description": "Arc issue tracker integration for Pi.",
+  "keywords": [
+    "pi-package",
+    "arc",
+    "issue-tracker",
+    "agent-memory",
+    "ai-workflow"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Sentio Labs",
+    "url": "https://github.com/sentiolabs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "directory": "packages/pi-arc"
+  },
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-arc#readme",
+  "bugs": {
+    "url": "https://github.com/SentioLabs/pi-nexus/issues"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:dry-run"
+  },
+  "files": [
+    "agents/",
+    "extensions/",
+    "prompts/",
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@juicesharp/rpiv-ask-user-question": "^1.0.14",
+    "@juicesharp/rpiv-todo": "^0.12.5",
+    "pi-subagents": "^0.23.0"
+  },
+  "bundledDependencies": [
+    "@juicesharp/rpiv-todo",
+    "@juicesharp/rpiv-ask-user-question",
+    "pi-subagents"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": {
+      "optional": true
+    },
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@mariozechner/pi-tui": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "skills": [
+      "./skills",
+      "./node_modules/pi-subagents/skills"
+    ],
+    "prompts": [
+      "./prompts/*.md",
+      "./node_modules/pi-subagents/prompts"
+    ],
+    "extensions": [
+      "./extensions/*.ts",
+      "./node_modules/@juicesharp/rpiv-todo/index.ts",
+      "./node_modules/@juicesharp/rpiv-ask-user-question/index.ts",
+      "./node_modules/pi-subagents/src/extension/index.ts"
+    ]
+  }
+}
