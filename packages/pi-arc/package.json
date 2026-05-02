@@ -16,7 +16,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "url": "git+ssh://git@github.com:SentioLabs/pi-nexus.git",
     "directory": "packages/pi-arc"
   },
   "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-arc#readme",
