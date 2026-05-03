@@ -12,7 +12,8 @@ function readJson(path) {
 
 test('package metadata bundles rpiv ask_user_question extension', () => {
   const pkg = readJson('package.json');
-  const lock = readJson('package-lock.json');
+  const lock = readJson('../../package-lock.json');
+  const packageLockEntry = lock.packages['packages/pi-arc'];
   const packageName = '@juicesharp/rpiv-ask-user-question';
   const extensionPath = './node_modules/@juicesharp/rpiv-ask-user-question/index.ts';
 
@@ -20,8 +21,8 @@ test('package metadata bundles rpiv ask_user_question extension', () => {
   assert.ok(pkg.bundledDependencies.includes(packageName));
   assert.ok(pkg.pi.extensions.includes(extensionPath));
 
-  assert.equal(lock.packages[''].dependencies[packageName], '^1.0.14');
-  assert.ok(lock.packages[''].bundleDependencies.includes(packageName));
+  assert.equal(packageLockEntry.dependencies[packageName], '^1.0.14');
+  assert.ok(packageLockEntry.bundleDependencies.includes(packageName));
   assert.ok(lock.packages['node_modules/@juicesharp/rpiv-ask-user-question']);
 });
 

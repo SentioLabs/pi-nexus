@@ -19,7 +19,8 @@ function readJson(path) {
 
 test('package metadata bundles and loads pi-subagents', () => {
   const pkg = readJson('package.json');
-  const lock = readJson('package-lock.json');
+  const lock = readJson('../../package-lock.json');
+  const packageLockEntry = lock.packages['packages/pi-arc'];
 
   assert.equal(pkg.dependencies[PI_SUBAGENTS_PACKAGE], PI_SUBAGENTS_VERSION_RANGE);
   assert.ok(pkg.bundledDependencies.includes(PI_SUBAGENTS_PACKAGE));
@@ -27,7 +28,7 @@ test('package metadata bundles and loads pi-subagents', () => {
   assert.ok(pkg.pi.skills.includes(PI_SUBAGENTS_SKILLS_PATH));
   assert.ok(pkg.pi.prompts.includes(PI_SUBAGENTS_PROMPTS_PATH));
 
-  assert.equal(lock.packages[''].dependencies[PI_SUBAGENTS_PACKAGE], PI_SUBAGENTS_VERSION_RANGE);
-  assert.ok(lock.packages[''].bundleDependencies.includes(PI_SUBAGENTS_PACKAGE));
+  assert.equal(packageLockEntry.dependencies[PI_SUBAGENTS_PACKAGE], PI_SUBAGENTS_VERSION_RANGE);
+  assert.ok(packageLockEntry.bundleDependencies.includes(PI_SUBAGENTS_PACKAGE));
   assert.ok(lock.packages[`node_modules/${PI_SUBAGENTS_PACKAGE}`]);
 });
