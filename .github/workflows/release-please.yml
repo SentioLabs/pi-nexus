@@ -1,0 +1,46 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    name: Release and publish
+    runs-on: ubuntu-latest
+    env:
+      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
+
+    steps:
+      - name: Release Please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Checkout
+        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' }}
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' }}
+        run: npm ci
+
+      - name: Publish pi-arc to npm
+        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' }}
+        run: npm publish --workspace @sentiolabs/pi-arc --access public --provenance
