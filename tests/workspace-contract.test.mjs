@@ -37,3 +37,27 @@ test("pi-arc package metadata points at the workspace package", () => {
   assert.ok(pkg.bundledDependencies.includes("@juicesharp/rpiv-ask-user-question"));
   assert.ok(pkg.bundledDependencies.includes("pi-subagents"));
 });
+
+test("release-please tracks frontend-design as an independent package", () => {
+  const config = readJson("release-please-config.json");
+  const manifest = readJson(".release-please-manifest.json");
+  const frontendDesign = config.packages["packages/frontend-design"];
+
+  assert.ok(frontendDesign);
+  assert.equal(frontendDesign.component, "pi-frontend-design");
+  assert.equal(frontendDesign["package-name"], "@sentiolabs/pi-frontend-design");
+  assert.equal(manifest["packages/frontend-design"], "0.1.0");
+});
+
+test("frontend-design package metadata points at the workspace package", () => {
+  const pkg = readJson("packages/frontend-design/package.json");
+
+  assert.equal(pkg.name, "@sentiolabs/pi-frontend-design");
+  assert.equal(pkg.version, "0.1.0");
+  assert.equal(pkg.repository.directory, "packages/frontend-design");
+  assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
+  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/frontend-design#readme");
+  assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
+  assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.deepEqual(pkg.pi.skills, ["./skills"]);
+});

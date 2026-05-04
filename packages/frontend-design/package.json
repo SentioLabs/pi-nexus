@@ -1,0 +1,64 @@
+{
+  "name": "@sentiolabs/pi-frontend-design",
+  "version": "0.1.0",
+  "description": "Frontend design skill for distinctive, production-grade Pi UI work.",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "frontend-design",
+    "ui",
+    "ux",
+    "frontend",
+    "design"
+  ],
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Sentio Labs",
+    "url": "https://github.com/sentiolabs"
+  },
+  "contributors": [
+    {
+      "name": "Anthropic",
+      "email": "support@anthropic.com"
+    },
+    {
+      "name": "Prithvi Rajasekaran",
+      "email": "prithvi@anthropic.com"
+    },
+    {
+      "name": "Alexander Bricken",
+      "email": "alexander@anthropic.com"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "directory": "packages/frontend-design"
+  },
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/frontend-design#readme",
+  "bugs": {
+    "url": "https://github.com/SentioLabs/pi-nexus/issues"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:dry-run"
+  },
+  "files": [
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
