@@ -37,6 +37,12 @@ Run only `@sentiolabs/pi-arc` tests:
 npm test --workspace @sentiolabs/pi-arc
 ```
 
+Run only `@sentiolabs/pi-frontend-design` tests:
+
+```bash
+npm test --workspace @sentiolabs/pi-frontend-design
+```
+
 ## Package dry-run
 
 Verify publish contents for all packages:
@@ -51,16 +57,24 @@ Verify publish contents for `@sentiolabs/pi-arc` only:
 npm run pack:dry-run --workspace @sentiolabs/pi-arc
 ```
 
+Verify publish contents for `@sentiolabs/pi-frontend-design` only:
+
+```bash
+npm run pack:dry-run --workspace @sentiolabs/pi-frontend-design
+```
+
 ## Local Pi loading
 
 Test the workspace package without installing permanently:
 
 ```bash
 pi -e ./packages/pi-arc
+pi -e ./packages/frontend-design
 ```
 
 Install the package into the current project's local Pi settings:
 
 ```bash
 pi install -l ./packages/pi-arc
+pi install -l ./packages/frontend-design
 ```

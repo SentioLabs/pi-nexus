@@ -9,8 +9,9 @@ This repo uses npm workspaces with one package per directory under `packages/*`.
 | Package | Path | Description |
 |---|---|---|
 | [`@sentiolabs/pi-arc`](packages/pi-arc) | `packages/pi-arc` | Arc issue tracker integration for Pi: skills, prompts, extension commands, session context, bundled checklist support, and bundled Arc specialist support. |
+| [`@sentiolabs/pi-frontend-design`](packages/frontend-design) | `packages/frontend-design` | Frontend design skill for distinctive, production-grade Pi UI work. |
 
-Future packages such as `pi-slop` and `pi-frontend-design` should be added under `packages/*` when their sources are ready.
+Future packages such as `pi-slop` should be added under `packages/*` when their sources are ready.
 
 ## Development
 
@@ -25,6 +26,7 @@ Test the package locally with Pi from the monorepo root:
 
 ```bash
 pi -e ./packages/pi-arc
+pi -e ./packages/frontend-design
 ```
 
 ## Releasing
@@ -36,6 +38,7 @@ Releases are independent per package through Release Please. See [`docs/releasin
 - [`docs/development.md`](docs/development.md)
 - [`docs/releasing.md`](docs/releasing.md)
 - [`docs/packages/pi-arc.md`](docs/packages/pi-arc.md)
+- [`docs/packages/frontend-design.md`](docs/packages/frontend-design.md)
 - [`packages/pi-arc/README.md`](packages/pi-arc/README.md)
 
 ## License
