@@ -50,6 +50,7 @@
   },
   "files": [
     "skills/",
+    "prompts/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -60,6 +61,9 @@
   "pi": {
     "skills": [
       "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
     ]
   }
 }

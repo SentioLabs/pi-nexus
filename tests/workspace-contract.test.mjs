@@ -76,7 +76,8 @@ test("pi-frontend-design package metadata points at the workspace package", () =
     "pack:dry-run": "npm pack --dry-run",
     prepublishOnly: "npm test && npm run pack:dry-run",
   });
-  assert.deepEqual(pkg.files, ["skills/", "README.md", "CHANGELOG.md", "LICENSE"]);
+  assert.deepEqual(pkg.files, ["skills/", "prompts/", "README.md", "CHANGELOG.md", "LICENSE"]);
   assert.equal(pkg.publishConfig.access, "public");
   assert.deepEqual(pkg.pi.skills, ["./skills"]);
+  assert.deepEqual(pkg.pi.prompts, ["./prompts/*.md"]);
 });

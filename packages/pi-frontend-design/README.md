@@ -8,11 +8,12 @@ This package is a Pi-native adaptation of Anthropic's `frontend-design` Claude p
 
 ## What is included
 
-- **`pi-frontend-design` skill** for frontend UI/UX implementation:
+- **`frontend-design` skill** for frontend UI/UX implementation:
   - Bold aesthetic direction before coding.
   - Distinctive typography and color choices.
   - High-impact animation and visual detail guidance.
   - Context-aware implementation that avoids generic AI-generated layouts.
+- **`/frontend-design` prompt alias** so the package name can stay Pi-prefixed while the user-facing workflow remains concise.
 
 ## Install from npmjs.org
 
@@ -50,15 +51,16 @@ pi install -l ./packages/pi-frontend-design
 
 ## Usage
 
-Ask Pi for frontend implementation work, or invoke the skill directly:
+Ask Pi for frontend implementation work, invoke the prompt alias, or invoke the skill directly:
 
 ```text
-/skill:pi-frontend-design Create a dashboard for a music streaming app
-/skill:pi-frontend-design Build a landing page for an AI security startup
-/skill:pi-frontend-design Design a settings panel with dark mode
+/frontend-design Create a dashboard for a music streaming app
+/frontend-design Build a landing page for an AI security startup
+/frontend-design Design a settings panel with dark mode
+/skill:frontend-design Create a distinctive product page
 ```
 
-The skill guides the agent to choose a clear aesthetic direction and implement production code with careful attention to visual detail.
+The prompt alias routes the request to the `frontend-design` skill, which guides the agent to choose a clear aesthetic direction and implement production code with careful attention to visual detail.
 
 ## Local development
 
