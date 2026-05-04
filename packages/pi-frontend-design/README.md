@@ -1,6 +1,6 @@
 # Pi Frontend Design Package
 
-> Monorepo location: this package lives at `packages/frontend-design` in the `pi-nexus` workspace. From the monorepo root, test it with `npm test --workspace @sentiolabs/pi-frontend-design` and load it locally with `pi -e ./packages/frontend-design`.
+> Monorepo location: this package lives at `packages/pi-frontend-design` in the `pi-nexus` workspace. From the monorepo root, test it with `npm test --workspace @sentiolabs/pi-frontend-design` and load it locally with `pi -e ./packages/pi-frontend-design`.
 
 Frontend design skill for [Pi](https://pi.dev) that helps coding agents create distinctive, production-grade interfaces without generic AI aesthetics.
 
@@ -8,7 +8,7 @@ This package is a Pi-native adaptation of Anthropic's `frontend-design` Claude p
 
 ## What is included
 
-- **`frontend-design` skill** for frontend UI/UX implementation:
+- **`pi-frontend-design` skill** for frontend UI/UX implementation:
   - Bold aesthetic direction before coding.
   - Distinctive typography and color choices.
   - High-impact animation and visual detail guidance.
@@ -39,13 +39,13 @@ pi -e npm:@sentiolabs/pi-frontend-design
 From the `pi-nexus` monorepo root:
 
 ```bash
-pi -e ./packages/frontend-design
+pi -e ./packages/pi-frontend-design
 ```
 
 Install the local package into the current project's Pi settings:
 
 ```bash
-pi install -l ./packages/frontend-design
+pi install -l ./packages/pi-frontend-design
 ```
 
 ## Usage
@@ -53,9 +53,9 @@ pi install -l ./packages/frontend-design
 Ask Pi for frontend implementation work, or invoke the skill directly:
 
 ```text
-/skill:frontend-design Create a dashboard for a music streaming app
-/skill:frontend-design Build a landing page for an AI security startup
-/skill:frontend-design Design a settings panel with dark mode
+/skill:pi-frontend-design Create a dashboard for a music streaming app
+/skill:pi-frontend-design Build a landing page for an AI security startup
+/skill:pi-frontend-design Design a settings panel with dark mode
 ```
 
 The skill guides the agent to choose a clear aesthetic direction and implement production code with careful attention to visual detail.
@@ -65,7 +65,7 @@ The skill guides the agent to choose a clear aesthetic direction and implement p
 ```bash
 npm test --workspace @sentiolabs/pi-frontend-design
 npm run pack:dry-run --workspace @sentiolabs/pi-frontend-design
-pi -e ./packages/frontend-design --help
+pi -e ./packages/pi-frontend-design --help
 ```
 
 ## Learn more

@@ -5,6 +5,7 @@
   "keywords": [
     "pi-package",
     "pi-skill",
+    "pi-frontend-design",
     "frontend-design",
     "ui",
     "ux",
@@ -33,9 +34,9 @@
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
-    "directory": "packages/frontend-design"
+    "directory": "packages/pi-frontend-design"
   },
-  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/frontend-design#readme",
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-frontend-design#readme",
   "bugs": {
     "url": "https://github.com/SentioLabs/pi-nexus/issues"
   },

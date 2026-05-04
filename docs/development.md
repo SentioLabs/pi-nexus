@@ -69,12 +69,12 @@ Test the workspace package without installing permanently:
 
 ```bash
 pi -e ./packages/pi-arc
-pi -e ./packages/frontend-design
+pi -e ./packages/pi-frontend-design
 ```
 
 Install the package into the current project's local Pi settings:
 
 ```bash
 pi install -l ./packages/pi-arc
-pi install -l ./packages/frontend-design
+pi install -l ./packages/pi-frontend-design
 ```

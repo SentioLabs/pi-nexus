@@ -11,7 +11,7 @@
       "initial-version": "0.1.0",
       "changelog-path": "CHANGELOG.md"
     },
-    "packages/frontend-design": {
+    "packages/pi-frontend-design": {
       "component": "pi-frontend-design",
       "package-name": "@sentiolabs/pi-frontend-design",
       "release-type": "node",

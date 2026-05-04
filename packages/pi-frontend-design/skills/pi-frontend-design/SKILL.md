@@ -1,5 +1,5 @@
 ---
-name: frontend-design
+name: pi-frontend-design
 description: Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, applications, or interfaces. Guides creative, polished implementation that avoids generic AI aesthetics.
 license: Apache-2.0
 ---

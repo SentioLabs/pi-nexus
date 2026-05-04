@@ -16,7 +16,7 @@ Current package entries include:
     "release-type": "node",
     "changelog-path": "CHANGELOG.md"
   },
-  "packages/frontend-design": {
+  "packages/pi-frontend-design": {
     "component": "pi-frontend-design",
     "package-name": "@sentiolabs/pi-frontend-design",
     "release-type": "node",
@@ -33,7 +33,7 @@ Publishing uses GitHub Actions and npm provenance:
 npm publish --workspace @sentiolabs/pi-arc --access public --provenance
 ```
 
-The release workflow also publishes the frontend design package when Release Please creates a `packages/frontend-design` release:
+The release workflow also publishes the frontend design package when Release Please creates a `packages/pi-frontend-design` release:
 
 ```bash
 npm publish --workspace @sentiolabs/pi-frontend-design --access public --provenance

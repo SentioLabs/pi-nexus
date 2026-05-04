@@ -38,10 +38,10 @@ test("pi-arc package metadata points at the workspace package", () => {
   assert.ok(pkg.bundledDependencies.includes("pi-subagents"));
 });
 
-test("release-please tracks frontend-design as an independent package", () => {
+test("release-please tracks pi-frontend-design as an independent package", () => {
   const config = readJson("release-please-config.json");
   const manifest = readJson(".release-please-manifest.json");
-  const frontendDesign = config.packages["packages/frontend-design"];
+  const frontendDesign = config.packages["packages/pi-frontend-design"];
 
   assert.ok(frontendDesign);
   assert.equal(frontendDesign.component, "pi-frontend-design");
@@ -49,16 +49,16 @@ test("release-please tracks frontend-design as an independent package", () => {
   assert.equal(frontendDesign["release-type"], "node");
   assert.equal(frontendDesign["initial-version"], "0.1.0");
   assert.equal(frontendDesign["changelog-path"], "CHANGELOG.md");
-  assert.equal(manifest["packages/frontend-design"], "0.1.0");
+  assert.equal(manifest["packages/pi-frontend-design"], "0.1.0");
 });
 
-test("frontend-design package metadata points at the workspace package", () => {
-  const pkg = readJson("packages/frontend-design/package.json");
+test("pi-frontend-design package metadata points at the workspace package", () => {
+  const pkg = readJson("packages/pi-frontend-design/package.json");
 
   assert.equal(pkg.name, "@sentiolabs/pi-frontend-design");
   assert.equal(pkg.version, "0.1.0");
   assert.equal(pkg.description, "Frontend design skill for distinctive, production-grade Pi UI work.");
-  assert.deepEqual(pkg.keywords, ["pi-package", "pi-skill", "frontend-design", "ui", "ux", "frontend", "design"]);
+  assert.deepEqual(pkg.keywords, ["pi-package", "pi-skill", "pi-frontend-design", "frontend-design", "ui", "ux", "frontend", "design"]);
   assert.equal(pkg.license, "Apache-2.0");
   assert.deepEqual(pkg.author, { name: "Sentio Labs", url: "https://github.com/sentiolabs" });
   assert.deepEqual(pkg.contributors, [
@@ -66,9 +66,9 @@ test("frontend-design package metadata points at the workspace package", () => {
     { name: "Prithvi Rajasekaran", email: "prithvi@anthropic.com" },
     { name: "Alexander Bricken", email: "alexander@anthropic.com" },
   ]);
-  assert.equal(pkg.repository.directory, "packages/frontend-design");
+  assert.equal(pkg.repository.directory, "packages/pi-frontend-design");
   assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
-  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/frontend-design#readme");
+  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-frontend-design#readme");
   assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
   assert.equal(pkg.engines.node, ">=24.0.0");
   assert.deepEqual(pkg.scripts, {
