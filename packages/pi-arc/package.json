@@ -1,6 +1,6 @@
 {
   "name": "@sentiolabs/pi-arc",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Arc issue tracker integration for Pi.",
   "keywords": [
     "pi-package",
