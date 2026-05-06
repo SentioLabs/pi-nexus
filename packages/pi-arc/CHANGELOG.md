@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.7.0...pi-arc-v0.7.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* **pi-arc:** normalize repository URL metadata ([ae42be3](https://github.com/SentioLabs/pi-nexus/commit/ae42be34537766054c8c9746cb29e3780635c762))
+* **pi-arc:** use npm git+ssh repository URL with remote casing ([62e2287](https://github.com/SentioLabs/pi-nexus/commit/62e2287f09d56e8ad5b22072451f667396982256))
+
 ## [0.7.0](https://github.com/SentioLabs/pi-arc/compare/v0.6.0...v0.7.0) (2026-05-02)
 
 
