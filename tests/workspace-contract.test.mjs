@@ -83,6 +83,7 @@ test("release workflow uses idempotent npm publishing helper", () => {
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-arc/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
   assert.doesNotMatch(workflow, /npm publish --workspace/);
+  assert.doesNotMatch(workflow, /release_created/);
 });
 
 test("pi-frontend-design package metadata points at the workspace package", () => {

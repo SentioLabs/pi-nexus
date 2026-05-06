@@ -26,11 +26,9 @@ jobs:
           manifest-file: .release-please-manifest.json
 
       - name: Checkout
-        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' || steps.release.outputs['packages/pi-frontend-design--release_created'] == 'true' }}
         uses: actions/checkout@v4
 
       - name: Setup Node
-        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' || steps.release.outputs['packages/pi-frontend-design--release_created'] == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -38,13 +36,10 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' || steps.release.outputs['packages/pi-frontend-design--release_created'] == 'true' }}
         run: npm ci
 
       - name: Publish pi-arc to npm
-        if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' }}
         run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
 
       - name: Publish pi-frontend-design to npm
-        if: ${{ steps.release.outputs['packages/pi-frontend-design--release_created'] == 'true' }}
         run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design

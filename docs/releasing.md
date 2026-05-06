@@ -41,7 +41,7 @@ Current package entries include:
 
 ## npm provenance
 
-Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-workspace-if-needed.mjs`. The helper checks whether the exact workspace package version already exists on npm and skips duplicate publishes, which keeps reruns/idempotent release attempts from failing after a GitHub release has already been cut.
+Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-workspace-if-needed.mjs`. The release workflow runs the helper for each workspace package on every `main` push. The helper checks whether the exact workspace package version already exists on npm and skips duplicate publishes, which keeps reruns/idempotent release attempts from failing after a GitHub release has already been cut and also repairs cases where a GitHub release exists but npm publish failed.
 
 ```bash
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
