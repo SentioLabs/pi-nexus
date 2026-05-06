@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const readJson = (path) => JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), "utf8"));
+const readText = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+const readJson = (path) => JSON.parse(readText(path));
+
+const packageVersion = (packagePath) => readJson(`${packagePath}/package.json`).version;
+const lockPackageVersion = (packagePath) => readJson("package-lock.json").packages[packagePath].version;
+
+function assertReleaseManifestTracksPackage(packagePath) {
+  const manifest = readJson(".release-please-manifest.json");
+  const version = packageVersion(packagePath);
+
+  assert.match(version, /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/);
+  assert.equal(manifest[packagePath], version);
+  assert.equal(lockPackageVersion(packagePath), version);
+}
 
 test("root package declares private npm workspaces", () => {
   const pkg = readJson("package.json");
@@ -14,20 +27,26 @@ test("root package declares private npm workspaces", () => {
 
 test("release-please tracks pi-arc as an independent package", () => {
   const config = readJson("release-please-config.json");
-  const manifest = readJson(".release-please-manifest.json");
   const piArc = config.packages["packages/pi-arc"];
 
   assert.ok(piArc);
   assert.equal(piArc.component, "pi-arc");
   assert.equal(piArc["package-name"], "@sentiolabs/pi-arc");
-  assert.equal(manifest["packages/pi-arc"], "0.7.0");
+  assert.deepEqual(piArc["extra-files"], [
+    {
+      type: "json",
+      path: "/package-lock.json",
+      jsonpath: "$.packages['packages/pi-arc'].version",
+    },
+  ]);
+  assertReleaseManifestTracksPackage("packages/pi-arc");
 });
 
 test("pi-arc package metadata points at the workspace package", () => {
   const pkg = readJson("packages/pi-arc/package.json");
 
   assert.equal(pkg.name, "@sentiolabs/pi-arc");
-  assert.equal(pkg.version, "0.7.0");
+  assertReleaseManifestTracksPackage("packages/pi-arc");
   assert.equal(pkg.repository.directory, "packages/pi-arc");
   assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
   assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-arc#readme");
@@ -40,7 +59,6 @@ test("pi-arc package metadata points at the workspace package", () => {
 
 test("release-please tracks pi-frontend-design as an independent package", () => {
   const config = readJson("release-please-config.json");
-  const manifest = readJson(".release-please-manifest.json");
   const frontendDesign = config.packages["packages/pi-frontend-design"];
 
   assert.ok(frontendDesign);
@@ -49,14 +67,29 @@ test("release-please tracks pi-frontend-design as an independent package", () =>
   assert.equal(frontendDesign["release-type"], "node");
   assert.equal(frontendDesign["initial-version"], "0.1.0");
   assert.equal(frontendDesign["changelog-path"], "CHANGELOG.md");
-  assert.equal(manifest["packages/pi-frontend-design"], "0.1.0");
+  assert.deepEqual(frontendDesign["extra-files"], [
+    {
+      type: "json",
+      path: "/package-lock.json",
+      jsonpath: "$.packages['packages/pi-frontend-design'].version",
+    },
+  ]);
+  assertReleaseManifestTracksPackage("packages/pi-frontend-design");
+});
+
+test("release workflow uses idempotent npm publishing helper", () => {
+  const workflow = readText(".github/workflows/release-please.yml");
+
+  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-arc/);
+  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
+  assert.doesNotMatch(workflow, /npm publish --workspace/);
 });
 
 test("pi-frontend-design package metadata points at the workspace package", () => {
   const pkg = readJson("packages/pi-frontend-design/package.json");
 
   assert.equal(pkg.name, "@sentiolabs/pi-frontend-design");
-  assert.equal(pkg.version, "0.1.0");
+  assertReleaseManifestTracksPackage("packages/pi-frontend-design");
   assert.equal(pkg.description, "Frontend design skill for distinctive, production-grade Pi UI work.");
   assert.deepEqual(pkg.keywords, ["pi-package", "pi-skill", "pi-frontend-design", "frontend-design", "ui", "ux", "frontend", "design"]);
   assert.equal(pkg.license, "Apache-2.0");

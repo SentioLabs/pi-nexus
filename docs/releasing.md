@@ -14,29 +14,38 @@ Current package entries include:
     "component": "pi-arc",
     "package-name": "@sentiolabs/pi-arc",
     "release-type": "node",
-    "changelog-path": "CHANGELOG.md"
+    "changelog-path": "CHANGELOG.md",
+    "extra-files": [
+      {
+        "type": "json",
+        "path": "/package-lock.json",
+        "jsonpath": "$.packages['packages/pi-arc'].version"
+      }
+    ]
   },
   "packages/pi-frontend-design": {
     "component": "pi-frontend-design",
     "package-name": "@sentiolabs/pi-frontend-design",
     "release-type": "node",
-    "changelog-path": "CHANGELOG.md"
+    "changelog-path": "CHANGELOG.md",
+    "extra-files": [
+      {
+        "type": "json",
+        "path": "/package-lock.json",
+        "jsonpath": "$.packages['packages/pi-frontend-design'].version"
+      }
+    ]
   }
 }
 ```
 
 ## npm provenance
 
-Publishing uses GitHub Actions and npm provenance:
+Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-workspace-if-needed.mjs`. The helper checks whether the exact workspace package version already exists on npm and skips duplicate publishes, which keeps reruns/idempotent release attempts from failing after a GitHub release has already been cut.
 
 ```bash
-npm publish --workspace @sentiolabs/pi-arc --access public --provenance
-```
-
-The release workflow also publishes the frontend design package when Release Please creates a `packages/pi-frontend-design` release:
-
-```bash
-npm publish --workspace @sentiolabs/pi-frontend-design --access public --provenance
+node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
+node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
 ```
 
 npm provenance requires the package `repository.url` to match the GitHub repository URL and case exactly. Before enabling a real publish, verify:
@@ -44,7 +53,7 @@ npm provenance requires the package `repository.url` to match the GitHub reposit
 ```bash
 git remote get-url origin
 node --test tests/workspace-contract.test.mjs
-npm publish --workspace @sentiolabs/pi-arc --access public --dry-run
+node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc --dry-run
 ```
 
 If the GitHub organization or repository casing changes, update `packages/pi-arc/package.json` before publishing.
@@ -57,4 +66,5 @@ To add another independently released package:
 2. Add a Release Please entry for `packages/<name>`.
 3. Add a manifest entry in `.release-please-manifest.json`.
 4. Add package docs and root README table entry.
-5. Extend the release workflow publish step for the new package or replace the per-package publish steps with a released-workspace publish helper if package count grows.
+5. Add the package-lock workspace version path to the package's Release Please `extra-files` entry.
+6. Extend the release workflow with `node scripts/npm-publish-workspace-if-needed.mjs <package-name>` for the new package.

@@ -9,14 +9,28 @@
       "package-name": "@sentiolabs/pi-arc",
       "release-type": "node",
       "initial-version": "0.1.0",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/package-lock.json",
+          "jsonpath": "$.packages['packages/pi-arc'].version"
+        }
+      ]
     },
     "packages/pi-frontend-design": {
       "component": "pi-frontend-design",
       "package-name": "@sentiolabs/pi-frontend-design",
       "release-type": "node",
       "initial-version": "0.1.0",
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/package-lock.json",
+          "jsonpath": "$.packages['packages/pi-frontend-design'].version"
+        }
+      ]
     }
   }
 }

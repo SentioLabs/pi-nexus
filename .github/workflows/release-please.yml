@@ -43,8 +43,8 @@ jobs:
 
       - name: Publish pi-arc to npm
         if: ${{ steps.release.outputs['packages/pi-arc--release_created'] == 'true' }}
-        run: npm publish --workspace @sentiolabs/pi-arc --access public --provenance
+        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
 
       - name: Publish pi-frontend-design to npm
         if: ${{ steps.release.outputs['packages/pi-frontend-design--release_created'] == 'true' }}
-        run: npm publish --workspace @sentiolabs/pi-frontend-design --access public --provenance
+        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
