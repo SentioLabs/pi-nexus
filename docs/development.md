@@ -90,4 +90,5 @@ Install the package into the current project's local Pi settings:
 ```bash
 pi install -l ./packages/pi-arc
 pi install -l ./packages/pi-frontend-design
+pi install -l ./packages/pi-scriptable-statusline
 ```

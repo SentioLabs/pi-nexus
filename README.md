@@ -28,6 +28,7 @@ Test the package locally with Pi from the monorepo root:
 ```bash
 pi -e ./packages/pi-arc
 pi -e ./packages/pi-frontend-design
+pi -e ./packages/pi-scriptable-statusline
 ```
 
 ## Releasing
