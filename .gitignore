@@ -4,3 +4,4 @@ packages/*/node_modules/
 .npm/
 .DS_Store
 .pi/
+docs/plans/
