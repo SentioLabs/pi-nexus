@@ -1,9 +1,32 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { register } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import statuslineExtension, { runStatuslineCommand } from "../extensions/statusline.ts";
+
+const piTuiModuleUrl = `data:text/javascript,${encodeURIComponent(`
+export function visibleWidth(text) {
+  return Array.from(String(text)).length;
+}
+
+export function truncateToWidth(text, width) {
+  return Array.from(String(text)).slice(0, width).join("");
+}
+`)}`;
+
+register(
+  `data:text/javascript,${encodeURIComponent(`
+export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "@mariozechner/pi-tui") {
+    return { url: ${JSON.stringify(piTuiModuleUrl)}, shortCircuit: true };
+  }
+  return nextResolve(specifier, context);
+}
+`)}`,
+);
+
+const { default: statuslineExtension, runStatuslineCommand } = await import("../extensions/statusline.ts");
 
 test("init refuses to overwrite an existing renderer", () => {
   const dir = mkdtempSync(join(tmpdir(), "statusline-command-"));

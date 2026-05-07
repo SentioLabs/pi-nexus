@@ -1,4 +1,5 @@
 import { basename } from "node:path";
+import { visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
 import type { StatuslineRenderInput, StatuslineSurface } from "../index.d.ts";
 
 export interface SnapshotOptions {
@@ -11,8 +12,6 @@ export interface SnapshotOptions {
 }
 
 type UnknownRecord = Record<string, unknown>;
-
-const ANSI_PATTERN = /\u001b\[[0-9;]*m/g;
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,29 +55,6 @@ function recordString(record: unknown, keys: string[]): string | undefined {
     if (value !== undefined) return value;
   }
   return undefined;
-}
-
-function visibleWidth(text: string): number {
-  return Array.from(text.replace(ANSI_PATTERN, "")).length;
-}
-
-function truncateToWidth(text: string, width: number, ellipsis = "…"): string {
-  if (width <= 0) return "";
-  if (visibleWidth(text) <= width) return text;
-
-  const ellipsisWidth = visibleWidth(ellipsis);
-  if (ellipsisWidth >= width) return Array.from(ellipsis).slice(0, width).join("");
-
-  const available = width - ellipsisWidth;
-  let output = "";
-  let used = 0;
-  for (const char of Array.from(text.replace(ANSI_PATTERN, ""))) {
-    const charWidth = visibleWidth(char);
-    if (used + charWidth > available) break;
-    output += char;
-    used += charWidth;
-  }
-  return `${output}${ellipsis}`;
 }
 
 export function formatCount(value: number): string {
