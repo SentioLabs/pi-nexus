@@ -28,6 +28,10 @@ export async function resolve(specifier, context, nextResolve) {
 
 const { default: statuslineExtension, runStatuslineCommand } = await import("../extensions/statusline.ts");
 
+async function flushRefresh() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 test("init refuses to overwrite an existing renderer", () => {
   const dir = mkdtempSync(join(tmpdir(), "statusline-command-"));
   const rendererPath = join(dir, "render.ts");
@@ -63,60 +67,72 @@ test("reload invalidates renderer loader and render cache", () => {
   assert.equal(cacheInvalidated, true);
 });
 
-test("session start registers footer and editor widgets", () => {
-  const events = new Map();
-  const commands = new Map();
-  statuslineExtension({
-    on(name, handler) {
-      events.set(name, handler);
-    },
-    registerCommand(name, command) {
-      commands.set(name, command);
-    },
-  });
+test("disable command clears registered footer and widget UI keys", async () => {
+  const originalHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "statusline-home-"));
 
-  const calls = [];
-  const ctx = {
-    cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
-    ui: {
-      setFooter(renderer) {
-        calls.push(["footer", typeof renderer]);
+  try {
+    const events = new Map();
+    const commands = new Map();
+    statuslineExtension({
+      on(name, handler) {
+        events.set(name, handler);
       },
-      setWidget(key, renderer, options) {
-        calls.push(["widget", key, typeof renderer, options]);
+      registerCommand(name, command) {
+        commands.set(name, command);
       },
-    },
-  };
+    });
 
-  events.get("session_start")({}, ctx);
-
-  assert.equal(commands.has("statusline"), true);
-  assert.deepEqual(calls, [
-    ["footer", "function"],
-    ["widget", "scriptable-statusline-above", "function", undefined],
-    ["widget", "scriptable-statusline-below", "function", { placement: "belowEditor" }],
-  ]);
-});
-
-test("disable clears footer and widget UI keys", () => {
-  const calls = [];
-  const ctx = {
-    ui: {
-      setFooter(renderer) {
-        calls.push(["footer", renderer]);
+    const calls = [];
+    const renderers = new Map();
+    const ctx = {
+      cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
+      ui: {
+        setFooter(renderer) {
+          calls.push(["footer", renderer === undefined ? "cleared" : "registered"]);
+          if (typeof renderer === "function") renderers.set("footer", renderer);
+        },
+        setWidget(key, renderer, options) {
+          calls.push(["widget", key, renderer === undefined ? "cleared" : "registered", options]);
+          if (typeof renderer === "function") renderers.set(key, renderer);
+        },
+        notify(message, level) {
+          calls.push(["notify", message, level]);
+        },
+        requestRender() {
+          calls.push(["requestRender"]);
+        },
+        render() {
+          calls.push(["render"]);
+        },
       },
-      setWidget(key, renderer, options) {
-        calls.push(["widget", key, renderer, options]);
-      },
-    },
-  };
+    };
 
-  const message = runStatuslineCommand("disable", ctx, {});
+    events.get("session_start")({}, ctx);
 
-  assert.match(message, /disabled/);
-  assert.deepEqual(calls, [
-    ["footer", undefined],
-    ["widget", "scriptable-statusline-above", undefined, undefined],
-    ["widget", "scriptable-statusline-below", undefined, undefined],
-  ]);
+    assert.equal(commands.has("statusline"), true);
+    assert.deepEqual(calls, [
+      ["footer", "registered"],
+      ["widget", "scriptable-statusline-above", "registered", undefined],
+      ["widget", "scriptable-statusline-below", "registered", { placement: "belowEditor" }],
+    ]);
+    assert.deepEqual(renderers.get("footer")(80), ["statusline loading..."]);
+    assert.deepEqual(renderers.get("scriptable-statusline-above")(80), []);
+    assert.deepEqual(renderers.get("scriptable-statusline-below")(80), []);
+
+    await flushRefresh();
+    calls.length = 0;
+
+    await commands.get("statusline").handler("disable", ctx);
+
+    assert.deepEqual(calls, [
+      ["footer", "cleared"],
+      ["widget", "scriptable-statusline-above", "cleared", undefined],
+      ["widget", "scriptable-statusline-below", "cleared", undefined],
+      ["notify", "Statusline disabled.", "info"],
+    ]);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
 });

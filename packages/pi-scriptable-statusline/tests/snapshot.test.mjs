@@ -68,16 +68,6 @@ test("snapshot extracts model, context, git, statuses, tokens, and cost", () => 
   assert.deepEqual(snapshot.extensionStatuses, [{ key: "mode", text: "plan" }]);
   assert.equal(snapshot.tokens.total, 15);
   assert.equal(snapshot.cost.totalLabel, "$0.003");
-});
-
-test("snapshot exposes Pi TUI helpers through renderer utils", () => {
-  const snapshot = buildStatuslineSnapshot({
-    surface: "footer",
-    width: 80,
-    ctx: {},
-    turn: 0,
-  });
-
   assert.equal(snapshot.utils.visibleWidth("abc"), 1003);
   assert.equal(snapshot.utils.truncate("abcdef", 3, "~"), "pi-tui:abcdef:3:~");
 });

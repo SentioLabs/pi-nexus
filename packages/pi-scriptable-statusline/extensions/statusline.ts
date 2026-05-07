@@ -211,6 +211,7 @@ export default function statuslineExtension(pi: ExtensionAPI) {
       });
     },
     requestRender: () => requestUiRender(currentCtx),
+    fallbackLines: (surface) => (surface === "footer" ? ["statusline loading..."] : []),
   });
 
   const controller = createStatuslineController({
