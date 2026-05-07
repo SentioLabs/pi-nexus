@@ -102,6 +102,15 @@ function commandAction(args: string): string {
   return args.trim().split(/\s+/, 1)[0]?.toLowerCase() || "doctor";
 }
 
+function isOperationalStatuslineCommand(args: string): boolean {
+  const action = commandAction(args);
+  return action === "init" || action === "reload" || action === "doctor" || action === "disable" || action === "enable";
+}
+
+function delegationMessage(request: string): string {
+  return `Use the statusline-setup skill to configure @sentiolabs/pi-scriptable-statusline for this request: ${request}`;
+}
+
 function clearStatuslineUi(ctx: any) {
   ctx?.ui?.setFooter?.(undefined);
   ctx?.ui?.setWidget?.(ABOVE_WIDGET_KEY, undefined);
@@ -348,9 +357,18 @@ export default function statuslineExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("statusline", {
     description: "Manage the scriptable statusline renderer",
-    handler: async (args: string, ctx: StatuslineContext) => {
+    handler: async (args: string, ctx: StatuslineContext & { isIdle?: () => boolean }) => {
       currentCtx = ctx;
       repoRoot = findGitRoot(ctx?.cwd);
+
+      const trimmedArgs = args.trim();
+      if (trimmedArgs.length > 0 && !isOperationalStatuslineCommand(trimmedArgs)) {
+        const deliverAs = typeof ctx?.isIdle === "function" && ctx.isIdle() === false ? "followUp" : undefined;
+        await (pi as any).sendUserMessage?.(delegationMessage(trimmedArgs), deliverAs ? { deliverAs } : undefined);
+        notify(ctx, "Delegating to statusline-setup for your requested layout.", "info");
+        return;
+      }
+
       const message = runStatuslineCommand(args, ctx, {
         rendererPath: loader.rendererPath,
         loader,

@@ -339,3 +339,97 @@ test("reload requests repaint via active TUI handle", async () => {
     else process.env.HOME = originalHome;
   }
 });
+
+test("empty args default to doctor", () => {
+  const message = runStatuslineCommand("", {}, {
+    rendererPath: "/tmp/render.ts",
+    isEnabled: () => true,
+    cache: {
+      invalidate() {},
+      getLastError() {
+        return undefined;
+      },
+      getLastRenderTime() {
+        return undefined;
+      },
+    },
+  });
+
+  assert.match(message, /^Statusline doctor/);
+});
+
+test("natural-language /statusline args delegate through sendUserMessage", async () => {
+  const events = new Map();
+  const commands = new Map();
+  const sent = [];
+
+  statuslineExtension({
+    on(name, handler) {
+      events.set(name, handler);
+    },
+    registerCommand(name, command) {
+      commands.set(name, command);
+    },
+    sendUserMessage(message, options) {
+      sent.push({ message, options });
+      return Promise.resolve();
+    },
+  });
+
+  const ctx = {
+    cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
+    ui: {
+      setFooter() {},
+      setWidget() {},
+      notify() {},
+    },
+    isIdle() {
+      return true;
+    },
+  };
+
+  events.get("session_start")({}, ctx);
+  await commands.get("statusline").handler("show context and limits in the footer", ctx);
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].message, /statusline-setup/);
+  assert.match(sent[0].message, /show context and limits in the footer/);
+  assert.equal(sent[0].options, undefined);
+});
+
+test("natural-language /statusline args queue follow-up when agent is busy", async () => {
+  const events = new Map();
+  const commands = new Map();
+  const sent = [];
+
+  statuslineExtension({
+    on(name, handler) {
+      events.set(name, handler);
+    },
+    registerCommand(name, command) {
+      commands.set(name, command);
+    },
+    sendUserMessage(message, options) {
+      sent.push({ message, options });
+      return Promise.resolve();
+    },
+  });
+
+  const ctx = {
+    cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
+    ui: {
+      setFooter() {},
+      setWidget() {},
+      notify() {},
+    },
+    isIdle() {
+      return false;
+    },
+  };
+
+  events.get("session_start")({}, ctx);
+  await commands.get("statusline").handler("use two footer lines", ctx);
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].options?.deliverAs, "followUp");
+});

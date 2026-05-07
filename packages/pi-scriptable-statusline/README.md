@@ -65,12 +65,12 @@ export default render;
 
 ## Natural-language setup
 
-Use the `statusline-setup` skill or `/statusline` prompt alias to ask Pi to edit your renderer.
+Use `/statusline <request>` to delegate your layout request to the `statusline-setup` workflow.
 
 Example request:
 
 ```text
-Use statusline-setup to show context on the first footer line, daily and weekly limits on the second line, and model/repo/branch below the editor.
+/statusline show context on the first footer line, daily and weekly limits on the second line, and model/repo/branch below the editor.
 ```
 
 ## Development
