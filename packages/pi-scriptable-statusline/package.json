@@ -1,0 +1,76 @@
+{
+  "name": "@sentiolabs/pi-scriptable-statusline",
+  "version": "0.1.0",
+  "description": "Scriptable footer and statusline UI package for Pi.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "statusline",
+    "footer",
+    "widgets"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Sentio Labs",
+    "url": "https://github.com/sentiolabs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "directory": "packages/pi-scriptable-statusline"
+  },
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-scriptable-statusline#readme",
+  "bugs": {
+    "url": "https://github.com/SentioLabs/pi-nexus/issues"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs && npm run typecheck",
+    "typecheck": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --strict --allowImportingTsExtensions tests/type-contract.test.ts",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:dry-run"
+  },
+  "files": [
+    "extensions/",
+    "skills/",
+    "prompts/",
+    "templates/",
+    "index.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@mariozechner/pi-tui": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/*.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
+    ]
+  }
+}
