@@ -89,7 +89,37 @@ function contextSnapshot(ctx: any) {
   return { tokens, window, percent };
 }
 
+function aggregateUsageFromSession(ctx: any): { input: number; output: number; cost: number } | null {
+  const entries = callOptional<unknown>(ctx?.sessionManager?.getBranch?.bind?.(ctx?.sessionManager));
+  if (!Array.isArray(entries)) return null;
+
+  let input = 0;
+  let output = 0;
+  let cost = 0;
+  let found = false;
+
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message) || entry.message.role !== "assistant") {
+      continue;
+    }
+
+    const usage = isRecord(entry.message.usage) ? entry.message.usage : {};
+    input += recordNumber(usage, ["input", "inputTokens", "prompt", "promptTokens"]) ?? 0;
+    output += recordNumber(usage, ["output", "outputTokens", "completion", "completionTokens"]) ?? 0;
+    cost += recordNumber(usage.cost, ["total", "totalUsd", "usd"]) ?? 0;
+    found = true;
+  }
+
+  return found ? { input, output, cost } : null;
+}
+
 function tokenSnapshot(ctx: any) {
+  const fromSession = aggregateUsageFromSession(ctx);
+  if (fromSession) {
+    const total = fromSession.input + fromSession.output;
+    return { input: fromSession.input, output: fromSession.output, total, totalLabel: formatCount(total) };
+  }
+
   const source = ctx?.tokens ?? ctx?.tokenUsage ?? ctx?.usage;
   const input = recordNumber(source, ["input", "inputTokens", "prompt", "promptTokens"]) ?? 0;
   const output = recordNumber(source, ["output", "outputTokens", "completion", "completionTokens"]) ?? 0;
@@ -99,6 +129,11 @@ function tokenSnapshot(ctx: any) {
 }
 
 function costSnapshot(ctx: any) {
+  const fromSession = aggregateUsageFromSession(ctx);
+  if (fromSession) {
+    return { total: fromSession.cost, totalLabel: formatCost(fromSession.cost) };
+  }
+
   const source = ctx?.cost ?? ctx?.costs;
   const total = recordNumber(source, ["total", "totalUsd", "usd"]) ?? 0;
   const totalLabel = recordString(source, ["totalLabel", "label"]) ?? formatCost(total);
@@ -128,7 +163,6 @@ export function buildStatuslineSnapshot(options: SnapshotOptions): StatuslineRen
   const repoRoot = options.repoRoot ?? null;
   const repoName = basename(repoRoot ?? cwd) || basename(cwd) || cwd;
   const footerBranch = callOptional<string | null>(options.footerData?.getGitBranch?.bind?.(options.footerData));
-  const sessionBranch = callOptional<string | null>(ctx?.sessionManager?.getBranch?.bind?.(ctx?.sessionManager));
   const themeSource = ctx.theme ?? ctx.ui?.theme;
 
   return {
@@ -137,7 +171,7 @@ export function buildStatuslineSnapshot(options: SnapshotOptions): StatuslineRen
     cwd,
     model: modelSnapshot(ctx),
     repo: { name: repoName, root: repoRoot },
-    git: { branch: footerBranch ?? sessionBranch ?? null },
+    git: { branch: footerBranch ?? null },
     context: contextSnapshot(ctx),
     tokens: tokenSnapshot(ctx),
     cost: costSnapshot(ctx),

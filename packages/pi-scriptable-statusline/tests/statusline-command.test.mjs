@@ -124,7 +124,7 @@ test("footer and widget registrations return Pi component factories", async () =
   }
 });
 
-test("footer component passes footerData into renderer snapshots", async () => {
+test("footer and widgets use captured footerData statuses in snapshots", async () => {
   const originalHome = process.env.HOME;
   const home = mkdtempSync(join(tmpdir(), "statusline-home-"));
   process.env.HOME = home;
@@ -134,7 +134,7 @@ test("footer component passes footerData into renderer snapshots", async () => {
     mkdirSync(dirname(rendererPath), { recursive: true });
     writeFileSync(
       rendererPath,
-      "export default (input) => input.extensionStatuses.map((status) => `${status.key}:${status.text}`);\n",
+      "export default (input) => input.extensionStatuses.map((status) => `${input.surface}:${status.key}:${status.text}`);\n",
     );
 
     const events = new Map();
@@ -152,25 +152,34 @@ test("footer component passes footerData into renderer snapshots", async () => {
         setFooter(renderer) {
           if (typeof renderer === "function") renderers.set("footer", renderer);
         },
-        setWidget() {},
-        requestRender() {},
+        setWidget(key, renderer) {
+          if (typeof renderer === "function") renderers.set(key, renderer);
+        },
       },
     };
 
     events.get("session_start")({}, ctx);
 
-    const footerComponent = renderers.get("footer")({ requestRender() {} }, {}, {
+    const footerData = {
       getGitBranch() {
         return "main";
       },
       getExtensionStatuses() {
         return new Map([["mode", "plan"]]);
       },
-    });
+      onBranchChange() {
+        return () => {};
+      },
+    };
+
+    const footerComponent = renderers.get("footer")({ requestRender() {} }, {}, footerData);
+    const belowComponent = renderers.get("scriptable-statusline-below")({ requestRender() {} }, {});
 
     assert.deepEqual(footerComponent.render(80), ["statusline loading..."]);
+    assert.deepEqual(belowComponent.render(80), []);
     await flushRefresh();
-    assert.deepEqual(footerComponent.render(80), ["mode:plan"]);
+    assert.deepEqual(footerComponent.render(80), ["footer:mode:plan"]);
+    assert.deepEqual(belowComponent.render(80), ["belowEditor:mode:plan"]);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
@@ -209,12 +218,6 @@ test("disable command clears registered footer and widget UI keys", async () => 
         notify(message, level) {
           calls.push(["notify", message, level]);
         },
-        requestRender() {
-          calls.push(["requestRender"]);
-        },
-        render() {
-          calls.push(["render"]);
-        },
       },
     };
 
@@ -238,6 +241,99 @@ test("disable command clears registered footer and widget UI keys", async () => 
       ["widget", "scriptable-statusline-below", "cleared", undefined],
       ["notify", "Statusline disabled.", "info"],
     ]);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+});
+
+test("enable command re-registers footer/widgets and doctor reports status", async () => {
+  const calls = [];
+  const message = runStatuslineCommand("enable", {
+    ui: {
+      setFooter(renderer) {
+        calls.push(["footer", typeof renderer]);
+      },
+      setWidget(key, renderer, options) {
+        calls.push(["widget", key, typeof renderer, options]);
+      },
+    },
+  }, {
+    enable(ctx) {
+      ctx.ui.setFooter(() => ({}));
+      ctx.ui.setWidget("scriptable-statusline-above", () => ({}));
+      ctx.ui.setWidget("scriptable-statusline-below", () => ({}), { placement: "belowEditor" });
+    },
+    requestRender() {},
+  });
+
+  assert.match(message, /enabled/);
+  assert.deepEqual(calls, [
+    ["footer", "function"],
+    ["widget", "scriptable-statusline-above", "function", undefined],
+    ["widget", "scriptable-statusline-below", "function", { placement: "belowEditor" }],
+  ]);
+
+  const doctor = runStatuslineCommand("doctor", {}, {
+    rendererPath: "/tmp/render.ts",
+    isEnabled: () => false,
+    cache: {
+      invalidate() {},
+      getLastError() {
+        return new Error("boom");
+      },
+      getLastRenderTime() {
+        return 1000;
+      },
+    },
+  });
+
+  assert.match(doctor, /enabled: false/);
+  assert.match(doctor, /renderer: \/tmp\/render\.ts/);
+  assert.match(doctor, /lastError: boom/);
+});
+
+test("reload requests repaint via active TUI handle", async () => {
+  const originalHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "statusline-home-"));
+
+  try {
+    const events = new Map();
+    const commands = new Map();
+    statuslineExtension({
+      on(name, handler) {
+        events.set(name, handler);
+      },
+      registerCommand(name, command) {
+        commands.set(name, command);
+      },
+    });
+
+    const renderers = new Map();
+    const tuiCalls = [];
+    const ctx = {
+      cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
+      ui: {
+        setFooter(renderer) {
+          if (typeof renderer === "function") renderers.set("footer", renderer);
+        },
+        setWidget(key, renderer) {
+          if (typeof renderer === "function") renderers.set(key, renderer);
+        },
+        notify() {},
+      },
+    };
+
+    events.get("session_start")({}, ctx);
+    renderers.get("footer")({ requestRender() { tuiCalls.push("request"); } }, {}, {
+      getGitBranch() { return "main"; },
+      getExtensionStatuses() { return new Map(); },
+      onBranchChange() { return () => {}; },
+    });
+
+    await commands.get("statusline").handler("reload", ctx);
+
+    assert.deepEqual(tuiCalls, ["request"]);
   } finally {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;

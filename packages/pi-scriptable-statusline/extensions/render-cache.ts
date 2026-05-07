@@ -11,6 +11,7 @@ export interface RenderCacheOptions {
 interface RenderCacheEntry {
   lines: string[];
   stale: boolean;
+  generation: number;
   pending?: Promise<void>;
   lastError?: Error;
   lastRenderTime?: number;
@@ -32,6 +33,7 @@ function linesForSurface(result: NormalizedStatuslineRenderResult, surface: Stat
 
 export function createRenderCache(options: RenderCacheOptions) {
   const entries = new Map<string, RenderCacheEntry>();
+  let generation = 0;
   let lastError: Error | undefined;
   let lastRenderTime: number | undefined;
 
@@ -42,6 +44,7 @@ export function createRenderCache(options: RenderCacheOptions) {
   function refresh(key: string, entry: RenderCacheEntry, surface: StatuslineSurface, width: number, context?: unknown) {
     if (entry.pending) return;
 
+    const refreshGeneration = generation;
     entry.pending = Promise.resolve()
       .then(async () => {
         const renderer = await options.loadRenderer();
@@ -50,8 +53,14 @@ export function createRenderCache(options: RenderCacheOptions) {
         const normalized = normalizeRenderResult(result, surface);
         const renderedLines = linesForSurface(normalized, surface);
 
+        if (refreshGeneration !== generation) {
+          entry.stale = true;
+          return;
+        }
+
         entry.lines = [...renderedLines];
         entry.stale = false;
+        entry.generation = refreshGeneration;
         entry.lastError = undefined;
         entry.lastRenderTime = Date.now();
         lastError = undefined;
@@ -61,7 +70,7 @@ export function createRenderCache(options: RenderCacheOptions) {
       .catch((error) => {
         const normalizedError = errorValue(error);
         entry.lastError = normalizedError;
-        entry.stale = false;
+        entry.stale = refreshGeneration !== generation;
         lastError = normalizedError;
       })
       .finally(() => {
@@ -76,7 +85,7 @@ export function createRenderCache(options: RenderCacheOptions) {
       let entry = entries.get(key);
 
       if (!entry) {
-        entry = { lines: fallback(surface), stale: true };
+        entry = { lines: fallback(surface), stale: true, generation };
         entries.set(key, entry);
       }
 
@@ -87,6 +96,7 @@ export function createRenderCache(options: RenderCacheOptions) {
       return [...entry.lines];
     },
     invalidate() {
+      generation += 1;
       for (const entry of entries.values()) {
         entry.stale = true;
       }

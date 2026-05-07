@@ -73,3 +73,35 @@ test("invalidate marks all surfaces stale", async () => {
   await flushRefresh();
   assert.deepEqual(cache.render("belowEditor", 40), ["second"]);
 });
+
+test("invalidate during in-flight refresh keeps entry stale for follow-up refresh", async () => {
+  let release;
+  let value = "old";
+  let firstCall = true;
+  const cache = createRenderCache({
+    loadRenderer: async () => async () => {
+      if (firstCall) {
+        firstCall = false;
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+      }
+      return [value];
+    },
+    buildInput: (surface, width) => ({ surface, width }),
+    requestRender: () => undefined,
+    fallbackLines: () => ["loading"],
+  });
+
+  assert.deepEqual(cache.render("footer", 80), ["loading"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  cache.invalidate();
+  value = "new";
+  release();
+  await flushRefresh();
+
+  assert.deepEqual(cache.render("footer", 80), ["loading"]);
+  assert.deepEqual(cache.render("footer", 80), ["loading"]);
+  await flushRefresh();
+  assert.deepEqual(cache.render("footer", 80), ["new"]);
+});

@@ -14,8 +14,6 @@ type StatuslineUi = {
   setFooter?: (renderer: unknown) => void;
   setWidget?: (key: string, renderer: unknown, options?: unknown) => void;
   notify?: (message: string, level?: string) => void;
-  requestRender?: () => void;
-  render?: () => void;
 };
 
 type StatuslineContext = {
@@ -23,6 +21,14 @@ type StatuslineContext = {
   hasUI?: boolean;
   ui?: StatuslineUi;
 };
+
+type FooterDataLike = {
+  getGitBranch?: () => string | null;
+  getExtensionStatuses?: () => ReadonlyMap<string, string>;
+  onBranchChange?: (callback: () => void) => (() => void) | void;
+};
+
+type TuiLike = { requestRender?: () => void };
 
 interface StatuslineCommandRuntime {
   rendererPath?: string;
@@ -33,6 +39,7 @@ interface StatuslineCommandRuntime {
   disable?: (ctx: any) => void;
   requestRender?: () => void;
   isEnabled?: () => boolean;
+  onInit?: () => void;
 }
 
 interface StatuslineControllerOptions {
@@ -41,6 +48,10 @@ interface StatuslineControllerOptions {
     invalidate?: () => void;
   };
   onEnable?: (ctx: any) => void;
+  setFooterDataContext: (context: { footerData?: FooterDataLike } | undefined) => void;
+  getFooterDataContext: () => { footerData?: FooterDataLike } | undefined;
+  requestRender: () => void;
+  registerTui: (tui: TuiLike | undefined) => void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,11 +73,11 @@ function numericWidth(value: unknown, fallback = 80): number {
   return fallback;
 }
 
-function isFooterData(value: unknown): boolean {
+function isFooterData(value: unknown): value is FooterDataLike {
   return isRecord(value) && (typeof value.getGitBranch === "function" || typeof value.getExtensionStatuses === "function");
 }
 
-function footerContext(first: unknown, second: unknown): { footerData?: unknown } | undefined {
+function footerContext(first: unknown, second: unknown): { footerData?: FooterDataLike } | undefined {
   if (isFooterData(second)) return { footerData: second };
   if (isFooterData(first)) return { footerData: first };
   if (isRecord(first) && isFooterData(first.footerData)) return { footerData: first.footerData };
@@ -85,11 +96,6 @@ function renderWidth(first: unknown, second?: unknown): number {
 function notify(ctx: any, message: string, level = "info") {
   if (ctx?.hasUI === false) return;
   ctx?.ui?.notify?.(message, level);
-}
-
-function requestUiRender(ctx: any) {
-  ctx?.ui?.requestRender?.();
-  ctx?.ui?.render?.();
 }
 
 function commandAction(args: string): string {
@@ -115,7 +121,12 @@ export function runStatuslineCommand(args: string, ctx: any, runtime: Statusline
   const rendererPath = runtime.rendererPath ?? runtime.loader?.rendererPath ?? defaultRendererPath();
 
   if (action === "init") {
-    return initializeRenderer(rendererPath, runtime.templatePath);
+    const message = initializeRenderer(rendererPath, runtime.templatePath);
+    runtime.loader?.invalidate();
+    runtime.cache?.invalidate();
+    runtime.requestRender?.();
+    runtime.onInit?.();
+    return message;
   }
 
   if (action === "reload") {
@@ -153,46 +164,92 @@ export function runStatuslineCommand(args: string, ctx: any, runtime: Statusline
   return "Usage: /statusline init|reload|doctor|disable|enable";
 }
 
+function statusSignature(footerData?: FooterDataLike): string {
+  if (!footerData) return "none";
+  const branch = typeof footerData.getGitBranch === "function" ? footerData.getGitBranch() ?? "" : "";
+  const statuses = typeof footerData.getExtensionStatuses === "function" ? footerData.getExtensionStatuses() : undefined;
+  const statusParts = statuses ? Array.from(statuses.entries()).map(([key, text]) => `${key}:${text}`) : [];
+  return `${branch}|${statusParts.join("|")}`;
+}
+
 function createStatuslineController(options: StatuslineControllerOptions) {
+  let footerUnsubscribe: (() => void) | undefined;
+  let footerSignature = "none";
+
+  function resetFooterSubscription() {
+    footerUnsubscribe?.();
+    footerUnsubscribe = undefined;
+  }
+
   return {
     enable(ctx: any) {
       options.onEnable?.(ctx);
       const ui = ctx?.ui;
       if (!ui) return;
 
-      ui.setFooter?.((_tui?: unknown, _theme?: unknown, footerData?: unknown) => {
+      ui.setFooter?.((tui?: TuiLike, _theme?: unknown, footerData?: unknown) => {
+        options.registerTui(tui);
         const context = footerContext(footerData, undefined);
+        options.setFooterDataContext(context);
+        const currentFooterData = context?.footerData;
+        footerSignature = statusSignature(currentFooterData);
+
+        resetFooterSubscription();
+        if (currentFooterData && typeof currentFooterData.onBranchChange === "function") {
+          const unsub = currentFooterData.onBranchChange(() => {
+            options.cache.invalidate?.();
+            options.requestRender();
+          });
+          if (typeof unsub === "function") footerUnsubscribe = unsub;
+        }
+
+        return {
+          dispose() {
+            resetFooterSubscription();
+          },
+          invalidate() {
+            options.cache.invalidate?.();
+          },
+          render(width: number) {
+            const nextSignature = statusSignature(currentFooterData);
+            if (nextSignature !== footerSignature) {
+              footerSignature = nextSignature;
+              options.cache.invalidate?.();
+            }
+            return options.cache.render("footer", renderWidth(width), context);
+          },
+        };
+      });
+      ui.setWidget?.(ABOVE_WIDGET_KEY, (tui?: TuiLike) => {
+        options.registerTui(tui);
         return {
           invalidate() {
             options.cache.invalidate?.();
           },
           render(width: number) {
-            return options.cache.render("footer", renderWidth(width), context);
+            return options.cache.render("aboveEditor", renderWidth(width), options.getFooterDataContext());
           },
         };
       });
-      ui.setWidget?.(ABOVE_WIDGET_KEY, () => ({
-        invalidate() {
-          options.cache.invalidate?.();
-        },
-        render(width: number) {
-          return options.cache.render("aboveEditor", renderWidth(width));
-        },
-      }));
       ui.setWidget?.(
         BELOW_WIDGET_KEY,
-        () => ({
-          invalidate() {
-            options.cache.invalidate?.();
-          },
-          render(width: number) {
-            return options.cache.render("belowEditor", renderWidth(width));
-          },
-        }),
+        (tui?: TuiLike) => {
+          options.registerTui(tui);
+          return {
+            invalidate() {
+              options.cache.invalidate?.();
+            },
+            render(width: number) {
+              return options.cache.render("belowEditor", renderWidth(width), options.getFooterDataContext());
+            },
+          };
+        },
         { placement: "belowEditor" },
       );
     },
     disable(ctx: any) {
+      resetFooterSubscription();
+      options.setFooterDataContext(undefined);
       clearStatuslineUi(ctx);
     },
   };
@@ -216,6 +273,14 @@ export default function statuslineExtension(pi: ExtensionAPI) {
   let currentCtx: StatuslineContext | undefined;
   let repoRoot: string | null = null;
   let watcher: ReturnType<typeof watch> | undefined;
+  let lastFooterContext: { footerData?: FooterDataLike } | undefined;
+  const tuiHandles = new Set<TuiLike>();
+
+  const requestRender = () => {
+    for (const tui of tuiHandles) {
+      tui.requestRender?.();
+    }
+  };
 
   const loader = createRendererLoader();
   const cache = createRenderCache({
@@ -226,12 +291,12 @@ export default function statuslineExtension(pi: ExtensionAPI) {
         surface,
         width,
         ctx: currentCtx ?? {},
-        footerData: isFooterData(data) ? (data as any) : undefined,
+        footerData: isFooterData(data) ? data : undefined,
         turn,
         repoRoot,
       });
     },
-    requestRender: () => requestUiRender(currentCtx),
+    requestRender,
     fallbackLines: (surface) => (surface === "footer" ? ["statusline loading..."] : []),
   });
 
@@ -240,6 +305,16 @@ export default function statuslineExtension(pi: ExtensionAPI) {
     onEnable(ctx) {
       currentCtx = ctx;
       repoRoot = findGitRoot(ctx?.cwd);
+    },
+    setFooterDataContext(context) {
+      lastFooterContext = context;
+    },
+    getFooterDataContext() {
+      return lastFooterContext;
+    },
+    requestRender,
+    registerTui(tui) {
+      if (tui) tuiHandles.add(tui);
     },
   });
 
@@ -252,7 +327,7 @@ export default function statuslineExtension(pi: ExtensionAPI) {
       watcher = watch(loader.rendererPath, { persistent: false }, () => {
         loader.invalidate();
         cache.invalidate();
-        requestUiRender(currentCtx);
+        requestRender();
       });
     } catch {
       watcher = undefined;
@@ -276,7 +351,6 @@ export default function statuslineExtension(pi: ExtensionAPI) {
     handler: async (args: string, ctx: StatuslineContext) => {
       currentCtx = ctx;
       repoRoot = findGitRoot(ctx?.cwd);
-      const action = commandAction(args);
       const message = runStatuslineCommand(args, ctx, {
         rendererPath: loader.rendererPath,
         loader,
@@ -289,17 +363,20 @@ export default function statuslineExtension(pi: ExtensionAPI) {
           enabled = false;
           controller.disable(commandCtx);
         },
-        requestRender: () => requestUiRender(ctx),
+        requestRender,
         isEnabled: () => enabled,
+        onInit: restartWatcher,
       });
 
-      if (action === "init") restartWatcher();
       notify(ctx, message, "info");
     },
   });
 
-  pi.on("shutdown", () => {
+  pi.on("session_shutdown", () => {
     watcher?.close();
+    watcher = undefined;
+    lastFooterContext = undefined;
+    tuiHandles.clear();
     if (currentCtx) controller.disable(currentCtx);
   });
 }

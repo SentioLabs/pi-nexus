@@ -29,14 +29,14 @@ test("snapshot extracts model, context, git, statuses, tokens, and cost", () => 
   const ctx = {
     cwd: "/workspace/example",
     model: { provider: "anthropic", id: "claude-sonnet", label: "claude-sonnet" },
-    tokens: { input: 10, output: 5 },
-    cost: { total: 0.003 },
     getContextUsage() {
       return { tokens: 12000, window: 100000, percent: 12 };
     },
     sessionManager: {
       getBranch() {
-        return "fallback-branch";
+        return [
+          { type: "message", message: { role: "assistant", usage: { input: 10, output: 5, cost: { total: 0.003 } } } },
+        ];
       },
       getSessionFile() {
         return "/sessions/session-123.json";
@@ -70,4 +70,36 @@ test("snapshot extracts model, context, git, statuses, tokens, and cost", () => 
   assert.equal(snapshot.cost.totalLabel, "$0.003");
   assert.equal(snapshot.utils.visibleWidth("abc"), 1003);
   assert.equal(snapshot.utils.truncate("abcdef", 3, "~"), "pi-tui:abcdef:3:~");
+});
+
+test("snapshot does not treat session branch entries as git branch", () => {
+  const snapshot = buildStatuslineSnapshot({
+    surface: "footer",
+    width: 80,
+    ctx: {
+      sessionManager: {
+        getBranch() {
+          return [{ type: "message", message: { role: "assistant", usage: { input: 1, output: 1, cost: { total: 0.001 } } } }];
+        },
+      },
+    },
+    turn: 1,
+  });
+
+  assert.equal(snapshot.git.branch, null);
+});
+
+test("snapshot falls back to direct token/cost fields", () => {
+  const snapshot = buildStatuslineSnapshot({
+    surface: "footer",
+    width: 80,
+    ctx: {
+      tokens: { input: 7, output: 8 },
+      cost: { total: 0.005 },
+    },
+    turn: 1,
+  });
+
+  assert.equal(snapshot.tokens.total, 15);
+  assert.equal(snapshot.cost.totalLabel, "$0.005");
 });
