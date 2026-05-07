@@ -364,7 +364,7 @@ export default function statuslineExtension(pi: ExtensionAPI) {
       const trimmedArgs = args.trim();
       if (trimmedArgs.length > 0 && !isOperationalStatuslineCommand(trimmedArgs)) {
         const deliverAs = typeof ctx?.isIdle === "function" && ctx.isIdle() === false ? "followUp" : undefined;
-        await (pi as any).sendUserMessage?.(delegationMessage(trimmedArgs), deliverAs ? { deliverAs } : undefined);
+        await pi.sendUserMessage(delegationMessage(trimmedArgs), deliverAs ? { deliverAs } : undefined);
         notify(ctx, "Delegating to statusline-setup for your requested layout.", "info");
         return;
       }
