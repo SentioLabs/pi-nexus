@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { register } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 const piTuiModuleUrl = `data:text/javascript,${encodeURIComponent(`
@@ -29,6 +29,7 @@ export async function resolve(specifier, context, nextResolve) {
 const { default: statuslineExtension, runStatuslineCommand } = await import("../extensions/statusline.ts");
 
 async function flushRefresh() {
+  await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 }
 
@@ -65,6 +66,115 @@ test("reload invalidates renderer loader and render cache", () => {
   assert.match(message, /reloaded/);
   assert.equal(loaderInvalidated, true);
   assert.equal(cacheInvalidated, true);
+});
+
+test("footer and widget registrations return Pi component factories", async () => {
+  const originalHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "statusline-home-"));
+
+  try {
+    const events = new Map();
+    statuslineExtension({
+      on(name, handler) {
+        events.set(name, handler);
+      },
+      registerCommand() {},
+    });
+
+    const renderers = new Map();
+    const ctx = {
+      cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
+      ui: {
+        setFooter(renderer) {
+          if (typeof renderer === "function") renderers.set("footer", renderer);
+        },
+        setWidget(key, renderer) {
+          if (typeof renderer === "function") renderers.set(key, renderer);
+        },
+      },
+    };
+
+    events.get("session_start")({}, ctx);
+
+    const footerComponent = renderers.get("footer")({ requestRender() {} }, {}, {
+      getGitBranch() {
+        return "main";
+      },
+      getExtensionStatuses() {
+        return new Map([["mode", "plan"]]);
+      },
+    });
+    const aboveComponent = renderers.get("scriptable-statusline-above")({ requestRender() {} }, {});
+    const belowComponent = renderers.get("scriptable-statusline-below")({ requestRender() {} }, {});
+
+    assert.equal(typeof footerComponent.render, "function");
+    assert.equal(typeof footerComponent.invalidate, "function");
+    assert.deepEqual(footerComponent.render(80), ["statusline loading..."]);
+    assert.equal(typeof aboveComponent.render, "function");
+    assert.equal(typeof aboveComponent.invalidate, "function");
+    assert.deepEqual(aboveComponent.render(80), []);
+    assert.equal(typeof belowComponent.render, "function");
+    assert.equal(typeof belowComponent.invalidate, "function");
+    assert.deepEqual(belowComponent.render(80), []);
+
+    await flushRefresh();
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+});
+
+test("footer component passes footerData into renderer snapshots", async () => {
+  const originalHome = process.env.HOME;
+  const home = mkdtempSync(join(tmpdir(), "statusline-home-"));
+  process.env.HOME = home;
+
+  try {
+    const rendererPath = join(home, ".pi", "agent", "scriptable-statusline", "render.ts");
+    mkdirSync(dirname(rendererPath), { recursive: true });
+    writeFileSync(
+      rendererPath,
+      "export default (input) => input.extensionStatuses.map((status) => `${status.key}:${status.text}`);\n",
+    );
+
+    const events = new Map();
+    statuslineExtension({
+      on(name, handler) {
+        events.set(name, handler);
+      },
+      registerCommand() {},
+    });
+
+    const renderers = new Map();
+    const ctx = {
+      cwd: mkdtempSync(join(tmpdir(), "statusline-session-")),
+      ui: {
+        setFooter(renderer) {
+          if (typeof renderer === "function") renderers.set("footer", renderer);
+        },
+        setWidget() {},
+        requestRender() {},
+      },
+    };
+
+    events.get("session_start")({}, ctx);
+
+    const footerComponent = renderers.get("footer")({ requestRender() {} }, {}, {
+      getGitBranch() {
+        return "main";
+      },
+      getExtensionStatuses() {
+        return new Map([["mode", "plan"]]);
+      },
+    });
+
+    assert.deepEqual(footerComponent.render(80), ["statusline loading..."]);
+    await flushRefresh();
+    assert.deepEqual(footerComponent.render(80), ["mode:plan"]);
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
 });
 
 test("disable command clears registered footer and widget UI keys", async () => {
@@ -116,9 +226,6 @@ test("disable command clears registered footer and widget UI keys", async () => 
       ["widget", "scriptable-statusline-above", "registered", undefined],
       ["widget", "scriptable-statusline-below", "registered", { placement: "belowEditor" }],
     ]);
-    assert.deepEqual(renderers.get("footer")(80), ["statusline loading..."]);
-    assert.deepEqual(renderers.get("scriptable-statusline-above")(80), []);
-    assert.deepEqual(renderers.get("scriptable-statusline-below")(80), []);
 
     await flushRefresh();
     calls.length = 0;

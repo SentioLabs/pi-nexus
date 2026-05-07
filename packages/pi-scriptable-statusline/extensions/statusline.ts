@@ -36,7 +36,10 @@ interface StatuslineCommandRuntime {
 }
 
 interface StatuslineControllerOptions {
-  cache: { render: (surface: "footer" | "aboveEditor" | "belowEditor", width: number, context?: unknown) => string[] };
+  cache: {
+    render: (surface: "footer" | "aboveEditor" | "belowEditor", width: number, context?: unknown) => string[];
+    invalidate?: () => void;
+  };
   onEnable?: (ctx: any) => void;
 }
 
@@ -157,17 +160,35 @@ function createStatuslineController(options: StatuslineControllerOptions) {
       const ui = ctx?.ui;
       if (!ui) return;
 
-      ui.setFooter?.((first?: unknown, second?: unknown) => {
-        return options.cache.render("footer", renderWidth(first, second), footerContext(first, second));
+      ui.setFooter?.((_tui?: unknown, _theme?: unknown, footerData?: unknown) => {
+        const context = footerContext(footerData, undefined);
+        return {
+          invalidate() {
+            options.cache.invalidate?.();
+          },
+          render(width: number) {
+            return options.cache.render("footer", renderWidth(width), context);
+          },
+        };
       });
-      ui.setWidget?.(ABOVE_WIDGET_KEY, (first?: unknown, second?: unknown) => {
-        return options.cache.render("aboveEditor", renderWidth(first, second));
-      });
+      ui.setWidget?.(ABOVE_WIDGET_KEY, () => ({
+        invalidate() {
+          options.cache.invalidate?.();
+        },
+        render(width: number) {
+          return options.cache.render("aboveEditor", renderWidth(width));
+        },
+      }));
       ui.setWidget?.(
         BELOW_WIDGET_KEY,
-        (first?: unknown, second?: unknown) => {
-          return options.cache.render("belowEditor", renderWidth(first, second));
-        },
+        () => ({
+          invalidate() {
+            options.cache.invalidate?.();
+          },
+          render(width: number) {
+            return options.cache.render("belowEditor", renderWidth(width));
+          },
+        }),
         { placement: "belowEditor" },
       );
     },
