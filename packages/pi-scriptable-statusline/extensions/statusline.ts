@@ -23,8 +23,8 @@ interface StatuslineCommandRuntime {
   templatePath?: string | URL;
   loader?: { rendererPath?: string; invalidate: () => void };
   cache?: { invalidate: () => void; getLastError?: () => Error | undefined; getLastRenderTime?: () => number | undefined };
-  enable?: (ctx: any) => void;
-  disable?: (ctx: any) => void;
+  enable?: (ctx: ExtensionContext) => void;
+  disable?: (ctx: ExtensionContext) => void;
   requestRender?: () => void;
   isEnabled?: () => boolean;
   onInit?: () => void;
@@ -35,7 +35,7 @@ interface StatuslineControllerOptions {
     render: (surface: "footer" | "aboveEditor" | "belowEditor", width: number, context?: unknown) => string[];
     invalidate?: () => void;
   };
-  onEnable?: (ctx: any) => void;
+  onEnable?: (ctx: ExtensionContext) => void;
   setFooterDataContext: (context: { footerData?: FooterDataLike } | undefined) => void;
   getFooterDataContext: () => { footerData?: FooterDataLike } | undefined;
   requestRender: () => void;
@@ -81,9 +81,9 @@ function renderWidth(first: unknown, second?: unknown): number {
   return 80;
 }
 
-function notify(ctx: any, message: string, level = "info") {
-  if (ctx?.hasUI === false) return;
-  ctx?.ui?.notify?.(message, level);
+function notify(ctx: ExtensionContext | undefined, message: string, level: "info" | "warning" | "error" = "info") {
+  if (!ctx || ctx.hasUI === false) return;
+  ctx.ui.notify(message, level);
 }
 
 function commandAction(args: string): string {
@@ -99,10 +99,11 @@ function delegationMessage(request: string): string {
   return `Use the statusline-setup skill to configure @sentiolabs/pi-scriptable-statusline for this request: ${request}`;
 }
 
-function clearStatuslineUi(ctx: any) {
-  ctx?.ui?.setFooter?.(undefined);
-  ctx?.ui?.setWidget?.(ABOVE_WIDGET_KEY, undefined);
-  ctx?.ui?.setWidget?.(BELOW_WIDGET_KEY, undefined);
+function clearStatuslineUi(ctx: ExtensionContext | undefined) {
+  if (!ctx) return;
+  ctx.ui.setFooter(undefined);
+  ctx.ui.setWidget(ABOVE_WIDGET_KEY, undefined);
+  ctx.ui.setWidget(BELOW_WIDGET_KEY, undefined);
 }
 
 function initializeRenderer(rendererPath: string, templatePath: string | URL = DEFAULT_TEMPLATE): string {
@@ -113,7 +114,7 @@ function initializeRenderer(rendererPath: string, templatePath: string | URL = D
   return `Created statusline renderer: ${rendererPath}`;
 }
 
-export function runStatuslineCommand(args: string, ctx: any, runtime: StatuslineCommandRuntime = {}): string {
+export function runStatuslineCommand(args: string, ctx: ExtensionContext, runtime: StatuslineCommandRuntime = {}): string {
   const action = commandAction(args);
   const rendererPath = runtime.rendererPath ?? runtime.loader?.rendererPath ?? defaultRendererPath();
 
@@ -179,12 +180,11 @@ function createStatuslineController(options: StatuslineControllerOptions) {
   }
 
   return {
-    enable(ctx: any) {
+    enable(ctx: ExtensionContext) {
       options.onEnable?.(ctx);
-      const ui = ctx?.ui;
-      if (!ui) return;
+      const ui = ctx.ui;
 
-      ui.setFooter?.((tui?: TuiLike, _theme?: unknown, footerData?: unknown) => {
+      ui.setFooter((tui?: TuiLike, _theme?: unknown, footerData?: unknown) => {
         options.registerTui(tui);
         const context = footerContext(footerData, undefined);
         options.setFooterDataContext(context);
@@ -217,7 +217,7 @@ function createStatuslineController(options: StatuslineControllerOptions) {
           },
         };
       });
-      ui.setWidget?.(ABOVE_WIDGET_KEY, (tui?: TuiLike) => {
+      ui.setWidget(ABOVE_WIDGET_KEY, (tui?: TuiLike) => {
         options.registerTui(tui);
         return {
           invalidate() {
@@ -228,7 +228,7 @@ function createStatuslineController(options: StatuslineControllerOptions) {
           },
         };
       });
-      ui.setWidget?.(
+      ui.setWidget(
         BELOW_WIDGET_KEY,
         (tui?: TuiLike) => {
           options.registerTui(tui);
@@ -244,7 +244,7 @@ function createStatuslineController(options: StatuslineControllerOptions) {
         { placement: "belowEditor" },
       );
     },
-    disable(ctx: any) {
+    disable(ctx: ExtensionContext) {
       resetFooterSubscription();
       options.setFooterDataContext(undefined);
       clearStatuslineUi(ctx);
