@@ -77,11 +77,32 @@ test("release-please tracks pi-frontend-design as an independent package", () =>
   assertReleaseManifestTracksPackage("packages/pi-frontend-design");
 });
 
+test("release-please tracks pi-scriptable-statusline as an independent package", () => {
+  const config = readJson("release-please-config.json");
+  const statusline = config.packages["packages/pi-scriptable-statusline"];
+
+  assert.ok(statusline);
+  assert.equal(statusline.component, "pi-scriptable-statusline");
+  assert.equal(statusline["package-name"], "@sentiolabs/pi-scriptable-statusline");
+  assert.equal(statusline["release-type"], "node");
+  assert.equal(statusline["initial-version"], "0.1.0");
+  assert.equal(statusline["changelog-path"], "CHANGELOG.md");
+  assert.deepEqual(statusline["extra-files"], [
+    {
+      type: "json",
+      path: "/package-lock.json",
+      jsonpath: "$.packages['packages/pi-scriptable-statusline'].version",
+    },
+  ]);
+  assertReleaseManifestTracksPackage("packages/pi-scriptable-statusline");
+});
+
 test("release workflow uses idempotent npm publishing helper", () => {
   const workflow = readText(".github/workflows/release-please.yml");
 
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-arc/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
+  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
   assert.doesNotMatch(workflow, /npm publish --workspace/);
   assert.doesNotMatch(workflow, /release_created/);
 });
@@ -112,6 +133,22 @@ test("pi-frontend-design package metadata points at the workspace package", () =
   });
   assert.deepEqual(pkg.files, ["skills/", "prompts/", "README.md", "CHANGELOG.md", "LICENSE"]);
   assert.equal(pkg.publishConfig.access, "public");
+  assert.deepEqual(pkg.pi.skills, ["./skills"]);
+  assert.deepEqual(pkg.pi.prompts, ["./prompts/*.md"]);
+});
+
+test("pi-scriptable-statusline package metadata points at the workspace package", () => {
+  const pkg = readJson("packages/pi-scriptable-statusline/package.json");
+
+  assert.equal(pkg.name, "@sentiolabs/pi-scriptable-statusline");
+  assertReleaseManifestTracksPackage("packages/pi-scriptable-statusline");
+  assert.equal(pkg.description, "Scriptable footer and statusline UI package for Pi.");
+  assert.equal(pkg.repository.directory, "packages/pi-scriptable-statusline");
+  assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
+  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-scriptable-statusline#readme");
+  assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
+  assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.deepEqual(pkg.pi.extensions, ["./extensions/statusline.ts"]);
   assert.deepEqual(pkg.pi.skills, ["./skills"]);
   assert.deepEqual(pkg.pi.prompts, ["./prompts/*.md"]);
 });

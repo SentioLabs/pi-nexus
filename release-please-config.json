@@ -31,6 +31,20 @@
           "jsonpath": "$.packages['packages/pi-frontend-design'].version"
         }
       ]
+    },
+    "packages/pi-scriptable-statusline": {
+      "component": "pi-scriptable-statusline",
+      "package-name": "@sentiolabs/pi-scriptable-statusline",
+      "release-type": "node",
+      "initial-version": "0.1.0",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/package-lock.json",
+          "jsonpath": "$.packages['packages/pi-scriptable-statusline'].version"
+        }
+      ]
     }
   }
 }

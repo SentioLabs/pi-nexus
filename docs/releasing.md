@@ -35,6 +35,20 @@ Current package entries include:
         "jsonpath": "$.packages['packages/pi-frontend-design'].version"
       }
     ]
+  },
+  "packages/pi-scriptable-statusline": {
+    "component": "pi-scriptable-statusline",
+    "package-name": "@sentiolabs/pi-scriptable-statusline",
+    "release-type": "node",
+    "initial-version": "0.1.0",
+    "changelog-path": "CHANGELOG.md",
+    "extra-files": [
+      {
+        "type": "json",
+        "path": "/package-lock.json",
+        "jsonpath": "$.packages['packages/pi-scriptable-statusline'].version"
+      }
+    ]
   }
 }
 ```
@@ -46,6 +60,7 @@ Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-w
 ```bash
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
+node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-scriptable-statusline
 ```
 
 npm provenance requires the package `repository.url` to match the GitHub repository URL and case exactly. Before enabling a real publish, verify:

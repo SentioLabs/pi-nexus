@@ -43,3 +43,6 @@ jobs:
 
       - name: Publish pi-frontend-design to npm
         run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
+
+      - name: Publish pi-scriptable-statusline to npm
+        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-scriptable-statusline
