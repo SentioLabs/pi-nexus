@@ -6,11 +6,11 @@
     "target": "ES2022",
     "strict": true,
     "allowImportingTsExtensions": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["node"]
   },
   "include": [
     "tests/type-contract.test.ts",
-    "extensions/**/*.ts",
-    "tests/source-typecheck-shims.d.ts"
+    "extensions/**/*.ts"
   ]
 }

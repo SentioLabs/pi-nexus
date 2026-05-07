@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, watch } from "node:fs";
 import { dirname } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { createRenderCache } from "./render-cache.ts";
 import { createRendererLoader, defaultRendererPath } from "./renderer-loader.ts";
 import { buildStatuslineSnapshot } from "./snapshot.ts";
@@ -9,18 +9,6 @@ const ABOVE_WIDGET_KEY = "scriptable-statusline-above";
 const BELOW_WIDGET_KEY = "scriptable-statusline-below";
 
 const DEFAULT_TEMPLATE = new URL("../templates/default-render.ts", import.meta.url);
-
-type StatuslineUi = {
-  setFooter?: (renderer: unknown) => void;
-  setWidget?: (key: string, renderer: unknown, options?: unknown) => void;
-  notify?: (message: string, level?: string) => void;
-};
-
-type StatuslineContext = {
-  cwd?: string;
-  hasUI?: boolean;
-  ui?: StatuslineUi;
-};
 
 type FooterDataLike = {
   getGitBranch?: () => string | null;
@@ -279,7 +267,7 @@ function findGitRoot(cwd: string | undefined): string | null {
 export default function statuslineExtension(pi: ExtensionAPI) {
   let enabled = true;
   let turn = 0;
-  let currentCtx: StatuslineContext | undefined;
+  let currentCtx: ExtensionContext | undefined;
   let repoRoot: string | null = null;
   let watcher: ReturnType<typeof watch> | undefined;
   let lastFooterContext: { footerData?: FooterDataLike } | undefined;
@@ -348,7 +336,7 @@ export default function statuslineExtension(pi: ExtensionAPI) {
     cache.invalidate();
   });
 
-  pi.on("session_start", (_event: unknown, ctx: StatuslineContext) => {
+  pi.on("session_start", (_event, ctx) => {
     currentCtx = ctx;
     repoRoot = findGitRoot(ctx?.cwd);
     if (enabled) controller.enable(ctx);
@@ -357,14 +345,14 @@ export default function statuslineExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("statusline", {
     description: "Manage the scriptable statusline renderer",
-    handler: async (args: string, ctx: StatuslineContext & { isIdle?: () => boolean }) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       currentCtx = ctx;
       repoRoot = findGitRoot(ctx?.cwd);
 
       const trimmedArgs = args.trim();
       if (trimmedArgs.length > 0 && !isOperationalStatuslineCommand(trimmedArgs)) {
-        const deliverAs = typeof ctx?.isIdle === "function" && ctx.isIdle() === false ? "followUp" : undefined;
-        await pi.sendUserMessage(delegationMessage(trimmedArgs), deliverAs ? { deliverAs } : undefined);
+        const deliverAs = ctx.isIdle() === false ? "followUp" : undefined;
+        pi.sendUserMessage(delegationMessage(trimmedArgs), deliverAs ? { deliverAs } : undefined);
         notify(ctx, "Delegating to statusline-setup for your requested layout.", "info");
         return;
       }
