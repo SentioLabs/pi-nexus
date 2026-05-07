@@ -30,7 +30,7 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs && npm run typecheck",
-    "typecheck": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --strict --allowImportingTsExtensions tests/type-contract.test.ts",
+    "typecheck": "tsc -p tsconfig.json",
     "pack:dry-run": "npm pack --dry-run",
     "prepublishOnly": "npm test && npm run pack:dry-run"
   },
@@ -64,7 +64,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/*.ts"
+      "./extensions/statusline.ts"
     ],
     "skills": [
       "./skills"
