@@ -51,10 +51,10 @@ test("pi-arc package metadata points at the workspace package", () => {
   assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
   assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-arc#readme");
   assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
-  assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.equal(pkg.engines.node, ">=20.6.0");
   assert.ok(pkg.bundledDependencies.includes("@juicesharp/rpiv-todo"));
   assert.ok(pkg.bundledDependencies.includes("@juicesharp/rpiv-ask-user-question"));
-  assert.ok(pkg.bundledDependencies.includes("pi-subagents"));
+  assert.ok(!pkg.bundledDependencies.includes("pi-subagents"));
 });
 
 test("release-please tracks pi-frontend-design as an independent package", () => {
