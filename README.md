@@ -8,7 +8,7 @@ This repo uses npm workspaces with one package per directory under `packages/*`.
 
 | Package | Path | Description |
 |---|---|---|
-| [`@sentiolabs/pi-arc`](packages/pi-arc) | `packages/pi-arc` | Arc issue tracker integration for Pi: skills, prompts, extension commands, session context, bundled checklist support, and bundled Arc specialist support. |
+| [`@sentiolabs/pi-arc`](packages/pi-arc) | `packages/pi-arc` | Arc issue tracker integration for Pi: skills, prompts, extension commands, session context, bundled checklist/question support, and optional Arc specialist integration through external `pi-subagents`. |
 | [`@sentiolabs/pi-frontend-design`](packages/pi-frontend-design) | `packages/pi-frontend-design` | Frontend design skill for distinctive, production-grade Pi UI work. |
 | [`@sentiolabs/pi-scriptable-statusline`](packages/pi-scriptable-statusline) | `packages/pi-scriptable-statusline` | Scriptable footer and statusline UI package for Pi: owns the footer, supports scriptable above/below-editor widgets, and includes a natural-language setup skill. |
 

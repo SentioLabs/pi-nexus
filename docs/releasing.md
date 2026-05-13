@@ -6,6 +6,10 @@ This monorepo uses Release Please for independent package releases.
 
 Each package under `packages/*` has its own Release Please entry. A change to one package should only release that package.
 
+### Imported package baselines
+
+When a package is imported from a standalone repository, keep the workspace package version and `.release-please-manifest.json` entry aligned to the latest already-published npm version before making new changes in this monorepo. For `@sentiolabs/pi-arc`, the imported baseline is `0.10.0`; the existing publish helper skips that already-published version and future Release Please releases publish the next semver version from `pi-nexus`.
+
 Current package entries include:
 
 ```json

@@ -18,4 +18,12 @@ pi -e ./packages/pi-arc
 
 ## Notes
 
-The package bundles `@juicesharp/rpiv-todo`, `@juicesharp/rpiv-ask-user-question`, and `pi-subagents` through npm `bundledDependencies` so Arc workflows can load their Pi resources from `node_modules`.
+The package bundles `@juicesharp/rpiv-todo` and `@juicesharp/rpiv-ask-user-question` through npm `bundledDependencies` so Arc workflows can load checklist and structured-question resources from `node_modules`.
+
+`@sentiolabs/pi-arc` does **not** bundle or load `pi-subagents` itself as of the imported `0.10.0` baseline. Instead, Arc auto-materializes generated `arc-*` specialist definitions for an installed external `pi-subagents` provider. Install `pi-subagents` separately when async/background runs, chains, or worktree-isolated parallel batches are needed:
+
+```bash
+pi install npm:pi-subagents
+```
+
+If `pi-subagents` is unavailable, Arc workflows fall back to the bundled sequential `arc_agent` tool.
