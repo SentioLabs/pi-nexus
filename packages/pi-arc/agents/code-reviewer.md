@@ -81,6 +81,14 @@ The dispatching agent decides whether to fix or accept each deviation.
 - **Check against conventions.** Read the project's CLAUDE.md if it exists. Scan 2-3 existing files in the same directory as the changed code to identify naming, structure, and error-handling patterns. Deviations from established patterns are Important findings.
 - **Check against the design.** If a design spec is provided, the implementation must match its type definitions, naming choices, and architectural decisions. Deviations that are arguably improvements still get flagged — the orchestrator decides whether to accept them.
 
+## Supervisor Escalation
+
+If runtime bridge instructions identify `contact_supervisor`, use it only for decisions that block safe completion: product scope, API shape, user approval, or contradictory requirements. Send `reason: "need_decision"` and wait for the reply before continuing.
+
+Use `reason: "progress_update"` only for meaningful unexpected discoveries that change the review plan or for explicit progress checkpoints. Preserve read-only behavior and do not send routine completion handoffs through intercom; return your final review result normally.
+
+Never invent an intercom target. If bridge instructions are absent, report `BLOCKED` or `NEEDS_CONTEXT` in your normal final output instead of guessing.
+
 ## Rules
 
 - Never make code changes — you are read-only

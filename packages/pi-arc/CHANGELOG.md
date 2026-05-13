@@ -1,12 +1,46 @@
 # Changelog
 
-## [0.7.1](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.7.0...pi-arc-v0.7.1) (2026-05-06)
+## [0.10.0](https://github.com/SentioLabs/pi-arc/compare/v0.9.1...v0.10.0) (2026-05-11)
+
+
+### Features
+
+* **arc:** auto-materialize Arc pi-subagents ([#17](https://github.com/SentioLabs/pi-arc/issues/17)) ([19dde3b](https://github.com/SentioLabs/pi-arc/commit/19dde3b79ff6df78acc3b9730fb909e7be470493))
+
+## [0.9.1](https://github.com/SentioLabs/pi-arc/compare/v0.9.0...v0.9.1) (2026-05-03)
 
 
 ### Bug Fixes
 
-* **pi-arc:** normalize repository URL metadata ([ae42be3](https://github.com/SentioLabs/pi-nexus/commit/ae42be34537766054c8c9746cb29e3780635c762))
-* **pi-arc:** use npm git+ssh repository URL with remote casing ([62e2287](https://github.com/SentioLabs/pi-nexus/commit/62e2287f09d56e8ad5b22072451f667396982256))
+* **arc:** make model profiles scrollable ([6535fde](https://github.com/SentioLabs/pi-arc/commit/6535fde437e391a4df79c87d6e2042bade0da437))
+
+## [0.9.0](https://github.com/SentioLabs/pi-arc/compare/v0.8.0...v0.9.0) (2026-05-03)
+
+
+### Features
+
+* **arc:** improve model profile recommendations ([7fa6593](https://github.com/SentioLabs/pi-arc/commit/7fa659354bad16c85006fe84948bdd528cdf3032))
+
+## [0.8.0](https://github.com/SentioLabs/pi-arc/compare/v0.7.1...v0.8.0) (2026-05-03)
+
+
+### Features
+
+* **arc:** add model profile contracts ([75cf2c3](https://github.com/SentioLabs/pi-arc/commit/75cf2c377f2e3ff8e51b3226d31567a25bd82830))
+* **arc:** add model profile editor UI ([bf3c6eb](https://github.com/SentioLabs/pi-arc/commit/bf3c6ebc8784af7db74c45ee3d548ee6cdb7505e))
+* **arc:** wire model profiles into extension ([ac9db2f](https://github.com/SentioLabs/pi-arc/commit/ac9db2ff10d95fd93ddb7b9ebe60a66f8d6ad509))
+
+
+### Bug Fixes
+
+* **arc:** tighten model profile UI contract ([628eaad](https://github.com/SentioLabs/pi-arc/commit/628eaad310548edb7f85c65e17b358f0a8b70c6c))
+
+## [0.7.1](https://github.com/SentioLabs/pi-arc/compare/v0.7.0...v0.7.1) (2026-05-02)
+
+
+### Performance Improvements
+
+* **arc:** speed up issue manager dispatch ([bb4d072](https://github.com/SentioLabs/pi-arc/commit/bb4d072fa8e4d83e18dc84346e9d61c357f30538))
 
 ## [0.7.0](https://github.com/SentioLabs/pi-arc/compare/v0.6.0...v0.7.0) (2026-05-02)
 

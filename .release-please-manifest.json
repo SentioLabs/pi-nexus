@@ -1,5 +1,5 @@
 {
-  "packages/pi-arc": "0.7.1",
+  "packages/pi-arc": "0.10.0",
   "packages/pi-frontend-design": "0.1.1",
   "packages/pi-scriptable-statusline": "0.1.0"
 }

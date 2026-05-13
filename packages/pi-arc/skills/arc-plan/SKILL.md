@@ -11,7 +11,7 @@ Break an approved design into bite-sized, self-contained tasks with exact file p
 
 Design docs live in `docs/plans/<file>.md`. The brainstorm skill registers each doc on one of three review surfaces and writes a routing marker as line 1 of the doc itself:
 
-```html
+```text
 <!-- arc-review: kind=<legacy|share-local|share-remote> id=<id> -->
 ```
 
@@ -113,7 +113,7 @@ Do NOT create or modify any files outside the Files section above.
 
 ## Steps
 1. Create `internal/types/memory.go` with this exact content:
-   ```go
+   ```text
    package types
 
    import "time"
@@ -125,7 +125,7 @@ Do NOT create or modify any files outside the Files section above.
    }
    ```
 2. Create contract assertions in `internal/memory/memory_test.go`:
-   ```go
+   ```text
    package memory
 
    import (
@@ -174,7 +174,7 @@ When identifying tasks, assign **file ownership** — each file should be owned 
 
 ### 4. Create Epic and Tasks via issue-manager
 
-**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.
+**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. Model profile: issue creation uses the issueManager profile when configured via `/arc-models`; otherwise it falls back to the legacy tier/frontmatter behavior. This work is mostly CLI formatting, so the recommended profile uses gpt-5.4-mini with thinking off. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.
 
 **Never run `arc create` directly** — always delegate to the `issue-manager` agent. This keeps bulk CLI output in a disposable subagent context.
 
@@ -212,8 +212,8 @@ Dispatch preference (use **async** so long-running issue creation appears in `/s
 - After launching async, **wait for terminal status** by polling `subagent({ action: "status", id: "<run-id>" })` until status is `completed` or `failed`
 - Users can monitor progress via `/subagents-status` during the async run
 - If `subagent({ action: "list" })` shows `arc-issue-manager`, do **not** use the slower `arc_agent(agent="issue-manager")` fallback for bulk issue creation
-- If `subagent` unavailable or `arc-issue-manager` missing: run `/arc-subagents-sync`, then `subagent({ action: "list" })` to verify, then retry primary
-- Fallback only if `pi-subagents` is not installed or cannot load after sync: `arc_agent(agent="issue-manager", task="<manifest below>")`
+- Arc issue-manager should be auto-materialized; if it is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`
+- Fallback only if `pi-subagents` is not installed or cannot load after deprecated repair: `arc_agent(agent="issue-manager", task="<manifest below>")`
 
 Use this task payload for whichever dispatcher you choose:
 
@@ -403,13 +403,13 @@ the foundation task or a prior task is responsible for shared definitions.
 ## Design Contracts
 
 ### Shared (use verbatim — defined in T0: Foundation)
-```go
+   ```text
 type Memory struct {
     ID        int64     `json:"id" db:"id"`
     Content   string    `json:"content" db:"content"`
     CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
-```
+   ```
 
 ### Task-internal
 - `FeedbackRequest { memory_id: i64, rating: i8, comment: String? }`
@@ -419,7 +419,7 @@ type Memory struct {
 1. Write failing test for <specific behavior> in `path/to/file_test.go`
 2. Run `go test ./path/to/...` — confirm it fails with <expected error>
 3. Implement <specific function> in `path/to/new_file.go`:
-   ```go
+   ```text
    func specificFunction(arg Type) (Result, error) {
        // exact implementation code — not prose descriptions
    }

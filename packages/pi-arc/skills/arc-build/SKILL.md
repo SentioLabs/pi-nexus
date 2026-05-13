@@ -13,24 +13,33 @@ Orchestrate task implementation by dispatching fresh `builder` subagents per tas
 
 ## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
-
-`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults are:
+Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.4-nano` | Bulk CLI issue creation and other low-reasoning issue-manager work |
+| `nano` | `openai-codex/gpt-5.4-mini` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.4-mini` | Mechanical edits and docs |
 | `standard` | `openai-codex/gpt-5.3-codex` | Normal contained implementation/review |
 | `large` | `openai-codex/gpt-5.5` | Cross-cutting, architectural, security-sensitive, or adversarial review |
 
-Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
+```markdown
+Arc model selection resolves in this order:
+
+1. explicit dispatch `model:` override;
+2. configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`;
+3. legacy `arc.modelTiers` from Pi settings;
+4. package defaults.
+
+Users should run `/arc-models` to configure role-specific models. Keep `arc.modelTiers` documented only as a compatibility fallback for older setups.
+```
+
+Legacy fallback settings can still override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
 
 ```json
 {
   "arc": {
     "modelTiers": {
-      "nano": "openai-codex/gpt-5.4-nano",
+      "nano": "openai-codex/gpt-5.4-mini",
       "small": "openai-codex/gpt-5.4-mini",
       "standard": "openai-codex/gpt-5.3-codex",
       "large": "openai-codex/gpt-5.5"
@@ -41,7 +50,7 @@ Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/s
 
 Legacy aliases still resolve for compatibility: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. Prefer the Pi-native tier names in new prompts, including `nano` for low-reasoning issue-manager work.
 
-Prefer the `subagent` tool from `pi-subagents` when it is available **and** Arc agent definitions such as `arc-builder` are installed. If Arc specialist definitions are missing, run `/arc-subagents-sync` (project default) or `/arc-subagents-sync user`, then re-check with `subagent({ action: "list" })`. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; `pi-subagents` adds chains, async runs, and worktree-isolated parallel patch generation.
+Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-builder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
 
 **Status visibility:** For long Arc workers after `/arc-plan`, prefer `pi-subagents` launches with `async: true, clarify: false`. The returned run appears in `/subagents-status`; you can also poll it with `subagent({ action: "status", id: "<run-id>" })`. Do not continue to validation, review, patch application, or arc closure until the async run is terminal and you have read its final output. The raw `arc_agent` fallback never appears in `/subagents-status`.
 
@@ -90,9 +99,9 @@ Tasks are dispatched one at a time through the orchestration loop below. Use thi
 
 ### Parallel
 
-Parallel worktree dispatch is available **only** through the optional `pi-subagents` companion package, not through `arc_agent`. Use it only when ALL of these are true:
-- `pi-subagents` is installed and the `subagent` tool is available
-- Arc agent definitions such as `arc-builder` / `arc-doc-writer` are installed for `pi-subagents`
+Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:
+- `pi-subagents` loaded and the `subagent` tool is available
+- Arc agent definitions such as `arc-builder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
 - 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree
 - No shared files between any builder/doc-writer tasks in the batch
 - No `blocks`/`blockedBy` dependencies between tasks in the batch
@@ -155,7 +164,7 @@ Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For 
 
 Dispatch preference:
 - If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="doc-writer", task="<filled prompt>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
@@ -166,7 +175,7 @@ Use the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE
 
 Dispatch preference:
 - If `subagent` is available and `arc-builder` is installed: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
@@ -217,12 +226,12 @@ Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`,
 
 Dispatch preference:
 - If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before handling compliance results.
 
-Do **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled `arc_agent` fallback.
+Do **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled sequential `arc_agent` fallback.
 
 Handle results:
 - `COMPLIANT` → proceed to Step 6
@@ -266,7 +275,7 @@ The evaluator is **not dispatched by default**. Dispatch only when:
 
 When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run. This gives it a disposable repository copy so it can write acceptance tests and add temporary dependencies without dirtying the main worktree:
 
-```ts
+```text
 subagent({
   tasks: [
     { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5" }
@@ -375,7 +384,7 @@ For each task in the manifest, `arc show <task-id>` and confirm the batch is sti
 
 Dispatch the selected batch in one `subagent` tool call so the tasks branch from the same `PARALLEL_BASE`:
 
-```typescript
+```text
 subagent({
   tasks: [
     { agent: "arc-builder", task: "<filled builder prompt>", model: "<configured standard model>" }

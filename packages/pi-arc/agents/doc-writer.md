@@ -25,6 +25,14 @@ You have a fresh context window — no prior conversation history. Everything yo
 5. **Commit** with a conventional commit message (e.g., `docs(module): update README`)
 6. **Report** back: what was written, files changed, verification results
 
+## Supervisor Escalation
+
+If runtime bridge instructions identify `contact_supervisor`, use it only for decisions that block safe completion: product scope, API shape, user approval, or contradictory requirements. Send `reason: "need_decision"` and wait for the reply before continuing.
+
+Use `reason: "progress_update"` only for meaningful unexpected discoveries that change the documentation plan or for explicit progress checkpoints. Do not send routine completion handoffs through intercom; return your final task result normally.
+
+Never invent an intercom target. If bridge instructions are absent, report `BLOCKED` or `NEEDS_CONTEXT` in your normal final output instead of guessing.
+
 ## Quality Checklist
 
 After writing, verify each of these before committing:

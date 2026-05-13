@@ -1,6 +1,6 @@
 {
   "name": "@sentiolabs/pi-arc",
-  "version": "0.7.1",
+  "version": "0.10.0",
   "description": "Arc issue tracker integration for Pi.",
   "keywords": [
     "pi-package",
@@ -24,7 +24,7 @@
     "url": "https://github.com/SentioLabs/pi-nexus/issues"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=20.6.0"
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
@@ -45,13 +45,11 @@
   },
   "dependencies": {
     "@juicesharp/rpiv-ask-user-question": "^1.0.14",
-    "@juicesharp/rpiv-todo": "^0.12.5",
-    "pi-subagents": "^0.23.0"
+    "@juicesharp/rpiv-todo": "^0.12.5"
   },
   "bundledDependencies": [
     "@juicesharp/rpiv-todo",
-    "@juicesharp/rpiv-ask-user-question",
-    "pi-subagents"
+    "@juicesharp/rpiv-ask-user-question"
   ],
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
@@ -75,18 +73,15 @@
   },
   "pi": {
     "skills": [
-      "./skills",
-      "./node_modules/pi-subagents/skills"
+      "./skills"
     ],
     "prompts": [
-      "./prompts/*.md",
-      "./node_modules/pi-subagents/prompts"
+      "./prompts/*.md"
     ],
     "extensions": [
       "./extensions/*.ts",
       "./node_modules/@juicesharp/rpiv-todo/index.ts",
-      "./node_modules/@juicesharp/rpiv-ask-user-question/index.ts",
-      "./node_modules/pi-subagents/src/extension/index.ts"
+      "./node_modules/@juicesharp/rpiv-ask-user-question/index.ts"
     ]
   }
 }

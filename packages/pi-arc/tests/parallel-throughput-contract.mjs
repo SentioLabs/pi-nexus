@@ -1,8 +1,6 @@
 export const PI_SUBAGENTS_PACKAGE = 'pi-subagents';
-export const PI_SUBAGENTS_VERSION_RANGE = '^0.23.0';
-export const PI_SUBAGENTS_EXTENSION_PATH = './node_modules/pi-subagents/src/extension/index.ts';
-export const PI_SUBAGENTS_SKILLS_PATH = './node_modules/pi-subagents/skills';
-export const PI_SUBAGENTS_PROMPTS_PATH = './node_modules/pi-subagents/prompts';
+export const PI_SUBAGENTS_TOOL_NAME = 'subagent';
+export const PI_SUBAGENTS_INSTALL_COMMAND = 'pi install npm:pi-subagents';
 
 export const PARALLEL_READINESS_HEADINGS = [
   '## Parallel Readiness',

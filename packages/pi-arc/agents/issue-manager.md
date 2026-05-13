@@ -164,6 +164,14 @@ arc close <id3> --reason "resolved"
 - For complex operations, break into steps and confirm each succeeds
 - If an issue is blocked, explain what's blocking it
 
+## Supervisor Escalation
+
+If runtime bridge instructions identify `contact_supervisor`, use it only for decisions that block safe completion: Arc issue structure, dependency ambiguity, labels, or parent/child hierarchy. Send `reason: "need_decision"` and wait for the reply before continuing.
+
+Use `reason: "progress_update"` only for meaningful unexpected discoveries that change the issue plan or for explicit progress checkpoints. Do not send routine completion handoffs through intercom; return your final task result normally.
+
+Never invent an intercom target. If bridge instructions are absent, report `BLOCKED` or `NEEDS_CONTEXT` in your normal final output instead of guessing.
+
 ## Output Format
 
 When reporting results:

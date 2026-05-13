@@ -12,6 +12,8 @@ Use this template when dispatching `code-reviewer` for code review.
 ````text
 Review these changes against the task spec and project conventions.
 
+Review only; return findings only. Do not edit files.
+
 ## Task Spec
 <paste output of: arc show {TASK_ID}>
 
@@ -29,8 +31,8 @@ If "none", omit this section.
 
 Report findings in three severities:
 
-- **Critical** (must fix): correctness bugs, security issues, scope violations, spec deviations
-- **Important** (should fix): quality issues, pattern mismatches, naming problems, test gaps
+- **Critical** (blocking): correctness bugs, security issues, scope violations, spec deviations
+- **Important** (address before proceeding): quality issues, pattern mismatches, naming problems, test gaps
 - **Minor** (note for later): style nits, observations, future cleanup candidates
 
 If a design spec was provided, also report Plan Adherence:

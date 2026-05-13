@@ -3,19 +3,15 @@ import assert from 'node:assert/strict';
 import {
   ISSUE_MANAGER_PHASE_TERMS,
   PARALLEL_READINESS_HEADINGS,
-  PI_SUBAGENTS_EXTENSION_PATH,
+  PI_SUBAGENTS_INSTALL_COMMAND,
   PI_SUBAGENTS_PACKAGE,
-  PI_SUBAGENTS_PROMPTS_PATH,
-  PI_SUBAGENTS_SKILLS_PATH,
-  PI_SUBAGENTS_VERSION_RANGE,
+  PI_SUBAGENTS_TOOL_NAME,
 } from './parallel-throughput-contract.mjs';
 
-test('pi-subagents package contract is explicit', () => {
+test('pi-subagents optional integration contract is explicit', () => {
   assert.equal(PI_SUBAGENTS_PACKAGE, 'pi-subagents');
-  assert.equal(PI_SUBAGENTS_VERSION_RANGE, '^0.23.0');
-  assert.equal(PI_SUBAGENTS_EXTENSION_PATH, './node_modules/pi-subagents/src/extension/index.ts');
-  assert.equal(PI_SUBAGENTS_SKILLS_PATH, './node_modules/pi-subagents/skills');
-  assert.equal(PI_SUBAGENTS_PROMPTS_PATH, './node_modules/pi-subagents/prompts');
+  assert.equal(PI_SUBAGENTS_TOOL_NAME, 'subagent');
+  assert.equal(PI_SUBAGENTS_INSTALL_COMMAND, 'pi install npm:pi-subagents');
 });
 
 test('parallel readiness headings are stable', () => {

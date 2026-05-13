@@ -417,7 +417,7 @@ Every Arc subagent dispatch can override the subagent's frontmatter model via th
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.4-nano` | Bulk CLI issue creation and other low-reasoning issue-manager work |
+| `nano` | `openai-codex/gpt-5.4-mini` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.4-mini` | Mechanical edits and docs |
 | `standard` | `openai-codex/gpt-5.3-codex` | Normal contained implementation/review |
 | `large` | `openai-codex/gpt-5.5` | Cross-cutting, architectural, security-sensitive, or adversarial review |
@@ -428,7 +428,7 @@ Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/s
 {
   "arc": {
     "modelTiers": {
-      "nano": "openai-codex/gpt-5.4-nano",
+      "nano": "openai-codex/gpt-5.4-mini",
       "small": "openai-codex/gpt-5.4-mini",
       "standard": "openai-codex/gpt-5.3-codex",
       "large": "openai-codex/gpt-5.5"

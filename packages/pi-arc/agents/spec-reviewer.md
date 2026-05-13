@@ -48,6 +48,14 @@ Read the implementation code and verify against the task spec:
 4. Check for extra functions/types/exports beyond what the spec describes
 5. Check test coverage alignment: compare the task's `## Expected Outcome` against the implementer's test assertions. Do the tests verify the behaviors the spec describes, or do they only test implementation details? Flag gaps where a spec behavior has no corresponding test assertion.
 
+## Supervisor Escalation
+
+If runtime bridge instructions identify `contact_supervisor`, use it only for decisions that block safe completion: product scope, API shape, user approval, or contradictory requirements. Send `reason: "need_decision"` and wait for the reply before continuing.
+
+Use `reason: "progress_update"` only for meaningful unexpected discoveries that change the review plan or for explicit progress checkpoints. Preserve read-only behavior and do not send routine completion handoffs through intercom; return your final review result normally.
+
+Never invent an intercom target. If bridge instructions are absent, report `BLOCKED` or `NEEDS_CONTEXT` in your normal final output instead of guessing.
+
 ## Report Format
 
 ```

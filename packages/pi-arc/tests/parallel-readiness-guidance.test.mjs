@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   ISSUE_MANAGER_PHASE_TERMS,
   PARALLEL_READINESS_HEADINGS,
+  PI_SUBAGENTS_INSTALL_COMMAND,
   PI_SUBAGENTS_PACKAGE,
 } from './parallel-throughput-contract.mjs';
 
@@ -46,11 +47,12 @@ test('arc-build consumes the parallel batch manifest safely', () => {
   assert.match(source, /one (returned )?patch|one patch/i);
 });
 
-test('README documents bundled subagents and execution lanes', () => {
+test('README documents optional subagents and execution lanes', () => {
   const source = read('README.md');
   assert.match(source, new RegExp(PI_SUBAGENTS_PACKAGE));
-  assert.match(source, /bundledDependencies/);
-  assert.match(source, /duplicate/i);
+  assert.match(source, new RegExp(PI_SUBAGENTS_INSTALL_COMMAND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(source, /does not bundle or load `pi-subagents`/);
+  assert.match(source, /should not conflict with a global `subagent` tool/);
   assert.match(source, /Parallel Arc batch/);
   assert.match(source, /Ant Colony/);
   assert.doesNotMatch(source, /pi-plan.*replace.*arc-plan/i);

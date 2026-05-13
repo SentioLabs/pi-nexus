@@ -6,13 +6,22 @@ function read(path) {
   return readFileSync(path, 'utf8');
 }
 
-test('arc extension registers arc-subagents-sync command', () => {
+test('arc-subagents-sync is deprecated repair while user-scope materialization is default', () => {
   const source = read('extensions/arc.ts');
-  assert.match(source, /registerCommand\("arc-subagents-sync"/);
+  const materializer = read('extensions/arc/subagents.ts');
+  const start = source.indexOf('registerCommand("arc-subagents-sync"');
+  assert.notEqual(start, -1, 'missing arc-subagents-sync command');
+  const end = source.indexOf('registerCommand("arc-models"', start);
+  assert.notEqual(end, -1, 'missing arc-models command after arc-subagents-sync');
+  const commandBlock = source.slice(start, end);
+  assert.match(commandBlock, /arc-subagents-sync/);
+  assert.match(commandBlock, /deprecated/i);
+  assert.match(commandBlock, /repair/i);
   assert.match(source, /ARC_SUBAGENT_GENERATED_MARKER/);
   assert.match(source, /source-sha256/);
-  assert.match(source, /\.pi", "agents"/);
-  assert.match(source, /\.pi", "agent", "agents"/);
+  assert.match(materializer, /"\.agents"/);
+  assert.match(materializer, /"\.pi", "agent", "agents"/);
+  assert.doesNotMatch(commandBlock, /Usage:\\n- `\/arc-subagents-sync` \(project scope\)/);
 });
 
 test('arc extension sync map includes all Arc specialists', () => {
@@ -33,7 +42,7 @@ test('arc extension sync map includes all Arc specialists', () => {
 test('arc extension model tiers include nano', () => {
   const source = read('extensions/arc.ts');
   assert.match(source, /type ArcModelTier = "nano" \| "small" \| "standard" \| "large"/);
-  assert.match(source, /nano: "openai-codex\/gpt-5\.4-nano"/);
+  assert.match(source, /nano: "openai-codex\/gpt-5\.4-mini"/);
   assert.match(source, /nano for bulk CLI issue creation/);
 });
 
@@ -79,16 +88,44 @@ test('arc-review prefers arc-code-reviewer via pi-subagents before arc_agent fal
   assert.match(source, /arc_agent\(agent="code-reviewer"/);
 });
 
-test('README documents arc-subagents-sync and status semantics', () => {
+test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents completion guard', () => {
+  const source = read('skills/arc-review/code-reviewer-prompt.md');
+  assert.match(source, /Review only/i);
+  assert.match(source, /return findings only/i);
+  assert.match(source, /Do not edit files/i);
+  assert.doesNotMatch(source, /\bmust\s+(?:edit|modify|change|fix|patch|apply)\b/i);
+  assert.doesNotMatch(source, /\bapply\s+(?:the\s+)?fix(?:es)?\s+directly\b/i);
+  assert.doesNotMatch(source, /\bmake\s+(?:the\s+)?code\s+changes\b/i);
+});
+
+test('README documents auto-materialized specialists and status semantics', () => {
   const source = read('README.md');
-  assert.match(source, /\/arc-subagents-sync/);
+  assert.match(source, /auto-materialized/i);
+  assert.match(source, /Users do not need to run `\/arc-subagents-sync`/);
+  assert.match(source, /\/arc-subagents-sync.*deprecated.*repair\/backcompat/i);
+  assert.match(source, /project .*shadow/i);
   assert.match(source, /generic `worker`/i);
-  assert.match(source, /After syncing, verify agent registration/);
   assert.match(source, /subagent\(\{ action: "list" \}\)/);
   assert.match(source, /\/agents/);
   assert.match(source, /Use `\/subagents-status` to monitor active\/recent async Arc specialist runs/);
   assert.match(source, /It does not list idle installed agents/);
   assert.doesNotMatch(source, /\/subagents-status.*confirm availability/);
+});
+
+test('arc docs mention arc-subagents-sync only as deprecated repair/backcompat', () => {
+  for (const path of [
+    'README.md',
+    'skills/arc-build/SKILL.md',
+    'skills/arc-plan/SKILL.md',
+    'skills/arc-review/SKILL.md',
+  ]) {
+    const source = read(path);
+    const lines = source.split(/\r?\n/).filter((line) => line.includes('/arc-subagents-sync'));
+    if (path === 'README.md') assert.ok(lines.length > 0, `${path} should mention /arc-subagents-sync`);
+    for (const line of lines) {
+      assert.match(line, /deprecated|repair|backcompat|Users do not need/i, `${path}: ${line}`);
+    }
+  }
 });
 
 test('migration script preserves arc-subagents-sync wording', () => {
