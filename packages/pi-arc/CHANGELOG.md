@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.1](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.10.0...pi-arc-v0.10.1) (2026-05-14)
+
+
+### Bug Fixes
+
+* **pi-arc:** declare module package type ([192b8f9](https://github.com/SentioLabs/pi-nexus/commit/192b8f9706a1e0a00d7fa43489411f5736bc6e4b))
+* **pi-arc:** honor preferred provider in recommended model resolution ([dd967c1](https://github.com/SentioLabs/pi-nexus/commit/dd967c196aba61aea695e61f4573fd7ec3846f0f))
+* **pi-arc:** restore release-process README bootstrap wording ([fe93115](https://github.com/SentioLabs/pi-nexus/commit/fe93115ece0671d2ab521136f66bc03e0ee9241a))
+
 ## [0.10.0](https://github.com/SentioLabs/pi-arc/compare/v0.9.1...v0.10.0) (2026-05-11)
 
 
