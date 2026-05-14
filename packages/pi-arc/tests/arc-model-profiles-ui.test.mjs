@@ -14,6 +14,14 @@ function extractConstBlock(source, constName, stopToken) {
   return source.slice(start, end);
 }
 
+function extractFunctionBlock(source, functionName, stopToken) {
+  const start = source.indexOf(`function ${functionName}`);
+  assert.notEqual(start, -1, `missing ${functionName}`);
+  const end = source.indexOf(stopToken, start);
+  assert.notEqual(end, -1, `missing stop token ${stopToken}`);
+  return source.slice(start, end);
+}
+
 const EXPECTED_RECOMMENDATIONS = [
   ['brainstorm', 'gpt-5.5', 'high', 'design exploration and architecture judgment'],
   ['plan', 'gpt-5.5', 'high', 'task breakdown and sequencing'],
@@ -95,6 +103,13 @@ test('arc model profiles UI applies recommended thinking and does not fall back 
   assert.match(source, /const levels = getSupportedArcThinkingLevels\(recommended\.model\)/);
   assert.match(source, /profile\.thinking = levels\.includes\(recommendation\.thinking\) \? recommendation\.thinking : "off"/);
   assert.doesNotMatch(source, /return candidates\[0\]/);
+});
+
+test('arc model profiles UI recommendation resolver prefers preferred provider before hardcoded fallback', () => {
+  const source = read('extensions/arc/model-profiles-ui.ts');
+  const block = extractFunctionBlock(source, 'findRecommendedModel', 'function recommendedModelForProfile');
+  assert.match(block, /return preferred \?\? defaultProvider \?\? candidates\[0\];/);
+  assert.doesNotMatch(block, /return defaultProvider \?\? preferred \?\? candidates\[0\];/);
 });
 
 test('arc model profiles UI uses Pi available models and thinking helpers', () => {

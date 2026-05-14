@@ -92,7 +92,7 @@ pi install -l npm:@sentiolabs/pi-arc
 Pin to a released version:
 
 ```bash
-pi install npm:@sentiolabs/pi-arc@0.1.0
+pi install npm:@sentiolabs/pi-arc@0.10.0
 ```
 
 Test without installing permanently:
@@ -108,7 +108,7 @@ Git installs are supported for source checkouts and unreleased refs:
 ```bash
 pi install git:git@github.com:sentiolabs/pi-arc
 pi install git:git@github.com:sentiolabs/pi-arc@main
-pi install git:git@github.com:sentiolabs/pi-arc@v0.1.0
+pi install git:git@github.com:sentiolabs/pi-arc@v0.10.0
 ```
 
 HTTPS works too if your Git credentials are configured:
@@ -347,7 +347,7 @@ rg 'TaskCreate|TodoWrite|AskUserQuestion|Claude Code' skills prompts
 
 ## Release process
 
-Release Please manages `package.json`, `package-lock.json`, Git tags, GitHub releases, and `CHANGELOG.md`. The first official release is bootstrapped to `v0.1.0`.
+Release Please manages `package.json`, `package-lock.json`, Git tags, GitHub releases, and `CHANGELOG.md`. The current baseline tag example is `v0.10.0`.
 
 Use Conventional Commits on `main` so Release Please can determine the next version:
 
@@ -367,4 +367,4 @@ Before the first automated npm release, configure npm Trusted Publishing for the
 - Workflow filename: `release-please.yml`
 - Environment: leave blank unless a GitHub Environment is intentionally required
 
-npm Trusted Publishing requires an existing package to configure from package settings. If `@sentiolabs/pi-arc` has not been published before, publish a one-time public `0.0.0` bootstrap version or configure the trusted publisher with `npm trust` after the package exists, then let Release Please publish the first official `v0.1.0` release.
+npm Trusted Publishing requires an existing package to configure from package settings. If `@sentiolabs/pi-arc` has not been published before, publish a one-time public `0.0.0` bootstrap version or configure the trusted publisher with `npm trust` after the package exists, then let Release Please publish the first official `v<version>` release.

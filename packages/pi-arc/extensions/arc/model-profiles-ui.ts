@@ -162,7 +162,7 @@ function findRecommendedModel(
   const defaultProvider = candidates.find((model) => model.provider === RECOMMENDED_MODEL_PROVIDER);
   const provider = preferredProvider?.trim();
   const preferred = provider ? candidates.find((model) => model.provider === provider) : undefined;
-  return defaultProvider ?? preferred ?? candidates[0];
+  return preferred ?? defaultProvider ?? candidates[0];
 }
 
 function recommendedModelForProfile(

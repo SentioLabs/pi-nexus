@@ -14,6 +14,14 @@ function extractConstBlock(source, constName, stopToken) {
   return source.slice(start, end);
 }
 
+function extractFunctionBlock(source, functionName, stopToken) {
+  const start = source.indexOf(`function ${functionName}`);
+  assert.notEqual(start, -1, `missing ${functionName}`);
+  const end = source.indexOf(stopToken, start);
+  assert.notEqual(end, -1, `missing stop token ${stopToken}`);
+  return source.slice(start, end);
+}
+
 const EXPECTED_RECOMMENDATIONS = [
   ['brainstorm', 'gpt-5.5', 'high', 'design exploration and architecture judgment'],
   ['plan', 'gpt-5.5', 'high', 'task breakdown and sequencing'],
@@ -98,6 +106,21 @@ test('arc brainstorm setup applies recommended thinking and avoids unrelated fal
   assert.match(source, /const levels = getSupportedArcThinkingLevels\(recommended\.model\)/);
   assert.match(source, /thinking: levels\.includes\(recommendation\.thinking\) \? recommendation\.thinking : "off"/);
   assert.doesNotMatch(source, /return candidates\[0\]/);
+});
+
+test('arc recommended resolver prefers preferred provider before the hardcoded provider fallback', () => {
+  const source = read('extensions/arc.ts');
+  const block = extractFunctionBlock(source, 'findRecommendedArcModel', 'function recommendedArcModelForProfile');
+  assert.match(block, /return preferred \?\? defaultProvider \?\? candidates\[0\];/);
+  assert.doesNotMatch(block, /return defaultProvider \?\? preferred \?\? candidates\[0\];/);
+});
+
+test('README install version-pin examples use 0.10.0 baseline tags', () => {
+  const source = read('README.md');
+  assert.match(source, /pi install npm:@sentiolabs\/pi-arc@0\.10\.0/);
+  assert.match(source, /pi install git:git@github\.com:sentiolabs\/pi-arc@v0\.10\.0/);
+  assert.doesNotMatch(source, /@0\.1\.0\b/);
+  assert.doesNotMatch(source, /@v0\.1\.0\b/);
 });
 
 test('README modelProfiles example stays within the recommended model set', () => {
