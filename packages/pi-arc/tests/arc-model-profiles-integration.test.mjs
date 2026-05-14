@@ -115,12 +115,14 @@ test('arc recommended resolver prefers preferred provider before the hardcoded p
   assert.doesNotMatch(block, /return defaultProvider \?\? preferred \?\? candidates\[0\];/);
 });
 
-test('README install version-pin examples use 0.10.0 baseline tags', () => {
+test('README install examples use 0.10.0 pins while release-process prose stays at v0.1.0 bootstrap wording', () => {
   const source = read('README.md');
   assert.match(source, /pi install npm:@sentiolabs\/pi-arc@0\.10\.0/);
   assert.match(source, /pi install git:git@github\.com:sentiolabs\/pi-arc@v0\.10\.0/);
   assert.doesNotMatch(source, /@0\.1\.0\b/);
   assert.doesNotMatch(source, /@v0\.1\.0\b/);
+  assert.match(source, /The first official release is bootstrapped to `v0\.1\.0`\./);
+  assert.match(source, /let Release Please publish the first official `v0\.1\.0` release\./);
 });
 
 test('README modelProfiles example stays within the recommended model set', () => {
