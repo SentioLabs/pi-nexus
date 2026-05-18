@@ -34,6 +34,21 @@ test('arc-source-sync skill exists and is maintainer-only', () => {
   assert.match(source, /Release Please-managed/);
 });
 
+test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
+  const source = read('skills/arc-source-sync/SKILL.md');
+  assert.match(source, /Quality bar/i);
+  assert.match(source, /tests as executable Pi contracts/);
+  assert.match(source, /Adapt Pi-Specific Patches/);
+  assert.match(source, /git show HEAD:<path>/);
+  assert.match(source, /diff -u \/tmp\/pi-arc-sync\.before\.diff \/tmp\/pi-arc-sync\.after\.diff/);
+  assert.match(source, /Only update tests when the intended Pi contract has genuinely changed/);
+  assert.match(source, /Review-only code-reviewer dispatch prompt/);
+  assert.match(source, /Parallel readiness contract/);
+  assert.match(source, /auto-materialized Arc `pi-subagents` specialists/);
+  assert.match(source, /git push/);
+  assert.match(source, /Do not tell the user "ready to push"/);
+});
+
 test('migration script preserves Pi-only skills and excludes upstream eval fixtures', () => {
   const source = read('scripts/migrate-arc-plugin.py');
   assert.match(source, /PI_LOCAL_SKILL_DIRS = \{"arc-source-sync"\}/);
