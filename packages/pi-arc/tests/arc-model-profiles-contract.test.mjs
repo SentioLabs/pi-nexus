@@ -8,7 +8,7 @@ function read(path) {
 
 test('arc model profile contract defines stable profile keys and config shape', () => {
   const source = read('extensions/arc/model-profiles.ts');
-  for (const key of ['brainstorm', 'plan', 'issueManager', 'coder', 'codeReviewer', 'docWriter', 'specReviewer', 'evaluator']) {
+  for (const key of ['brainstorm', 'plan', 'issueManager', 'coder', 'devops', 'codeReviewer', 'docWriter', 'specReviewer', 'evaluator']) {
     assert.match(source, new RegExp(`"${key}"`));
   }
   assert.match(source, /export interface ArcModelsConfig/);

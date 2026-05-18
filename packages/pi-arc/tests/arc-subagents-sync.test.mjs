@@ -28,6 +28,7 @@ test('arc extension sync map includes all Arc specialists', () => {
   const source = read('extensions/arc.ts');
   for (const name of [
     'arc-coder',
+    'arc-devops',
     'arc-doc-writer',
     'arc-spec-reviewer',
     'arc-code-reviewer',

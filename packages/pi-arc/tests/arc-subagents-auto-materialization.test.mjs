@@ -16,7 +16,7 @@ function renderTestAgent(mod, source, target, modelsConfigHash = 'models-hash') 
     sourceMarkdown: `# ${source}`,
     parsedSource: { prompt: `# ${source}` },
     resolvedModel: 'openai-codex/gpt-5.4-mini',
-    modelProfileKey: 'coder',
+    modelProfileKey: source === 'devops' ? 'devops' : 'coder',
     modelResolutionSource: 'test',
     modelsConfigHash,
     generatedAt: '2026-05-03T00:00:00.000Z',
@@ -54,6 +54,12 @@ test('Arc subagent user target prefers modern user agent directory', () => {
   assert.match(source, /"\.pi", "agent", "agents"/);
   assert.match(source, /legacyUserDir/);
   assert.equal(source.includes('// "\\.agents" "\\.pi", "agent", "agents"'), false);
+});
+
+test('Arc pi subagent map includes arc-devops with the devops profile', () => {
+  const source = read('extensions/arc/subagents.ts');
+
+  assert.match(source, /\{ source: "devops", target: "arc-devops", profileKey: "devops" \}/);
 });
 
 test('Arc subagent markdown render preserves frontmatter, metadata, and body order', () => {
@@ -167,6 +173,10 @@ test('Arc materializer falls back to legacy user directory when modern user dire
     assert.equal(result.targetDir, legacyDir);
     assert.equal(result.writes.filter((entry) => entry.status === 'written').length, mod.ARC_PI_SUBAGENTS.length);
     assert.match(await readFile(path.join(legacyDir, 'arc-coder.md'), 'utf8'), /name: arc-coder/);
+    const devops = await readFile(path.join(legacyDir, 'arc-devops.md'), 'utf8');
+    assert.match(devops, /name: arc-devops/);
+    assert.match(devops, /source: agents\/devops\.md/);
+    assert.match(devops, /model-profile-key: devops/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -209,6 +219,7 @@ test('Arc materializer reports modern per-file target failures instead of legacy
 test('Arc source agents document optional supervisor escalation without bundling pi-intercom', () => {
   for (const file of [
     'agents/coder.md',
+    'agents/devops.md',
     'agents/code-reviewer.md',
     'agents/doc-writer.md',
     'agents/evaluator.md',
@@ -224,6 +235,33 @@ test('Arc source agents document optional supervisor escalation without bundling
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.dependencies['pi-intercom'], undefined);
   assert.ok(!pkg.bundledDependencies.includes('pi-intercom'));
+});
+
+test('Arc devops source agent documents ops gates and safety rules', () => {
+  const source = read('agents/devops.md');
+
+  for (const phrase of [
+    'scope compliance',
+    'preflight complete',
+    'rollback plan verified',
+    'validation passed',
+    'secrets hygiene',
+    'idempotence/drift',
+    'executor:devops',
+    'live-ops-approved',
+    'explicit task-body authorization',
+    'Never infer cluster/account/context from defaults alone',
+    'Never print or commit secrets',
+  ]) {
+    assert.match(source, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+  }
+
+  assert.match(source, /infrastructure/i);
+  assert.match(source, /cluster/i);
+  assert.match(source, /CI\/CD/);
+  assert.match(source, /GitOps/);
+  assert.match(source, /cloud/i);
+  assert.match(source, /runbook/i);
 });
 
 test('Arc subagent markdown render runtime output matches expected structure', async () => {

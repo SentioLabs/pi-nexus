@@ -9,6 +9,7 @@ export const ARC_MODEL_PROFILE_KEYS = [
   "plan",
   "issueManager",
   "coder",
+  "devops",
   "codeReviewer",
   "docWriter",
   "specReviewer",
