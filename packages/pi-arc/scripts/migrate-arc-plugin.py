@@ -59,6 +59,30 @@ validate_source(SRC)
 
 ARC_ROOT.mkdir(parents=True, exist_ok=True)
 
+# Snapshot Pi-preserved overlays before regenerating resources.
+# These tracked files are canonical for preserving the coder/devops split.
+PRESERVED_OVERLAY_FILES = [
+    "agents/coder.md",
+    "agents/devops.md",
+    "agents/issue-manager.md",
+    "skills/arc-build/SKILL.md",
+    "skills/arc-build/coder-prompt.md",
+    "skills/arc-build/doc-writer-prompt.md",
+    "skills/arc-plan/SKILL.md",
+]
+
+PRESERVED_OVERLAY_SET = set(PRESERVED_OVERLAY_FILES)
+
+overlay_text_by_rel: dict[str, str] = {}
+for rel in PRESERVED_OVERLAY_FILES:
+    overlay_path = ARC_ROOT / rel
+    if not overlay_path.exists():
+        raise SystemExit(
+            f"Missing required Pi overlay: {rel}. "
+            "Restore tracked resources before running migration."
+        )
+    overlay_text_by_rel[rel] = overlay_path.read_text()
+
 # Clean generated Arc resource directories only. Keep package.json, README,
 # extension edits, and Pi-only maintainer skills that are not present upstream.
 for name in ["prompts", "agents"]:
@@ -146,6 +170,14 @@ def transform_text(text: str) -> str:
     text = text.replace("Agent tool", "arc_agent tool")
     text = text.replace("Use the Agent", "Use arc_agent")
 
+    # Pi executor rename: builder -> coder (legacy upstream input may still mention builder).
+    text = text.replace("arc-builder", "arc-coder")
+    text = text.replace("builder-prompt.md", "coder-prompt.md")
+    text = text.replace("`builder`", "`coder`")
+    text = text.replace("agent=\"builder\"", "agent=\"coder\"")
+    text = text.replace("agent: \"builder\"", "agent: \"coder\"")
+    text = text.replace("dispatching `builder`", "dispatching `coder`")
+
     # Relative paths after skill directory renames.
     text = text.replace("../build/", "../arc-build/")
     text = text.replace("../review/", "../arc-review/")
@@ -177,9 +209,14 @@ for src_dir in sorted((SRC / "skills").iterdir()):
         if md.name == "SKILL.md":
             continue
         md.write_text(transform_text(md.read_text()))
+        if md.name == "builder-prompt.md":
+            coder_prompt = md.with_name("coder-prompt.md")
+            md.replace(coder_prompt)
 
 # Patch generated skills for Pi-specific execution semantics.
 def patch_file(rel: str, replacements: list[tuple[str, str]]) -> None:
+    if rel in PRESERVED_OVERLAY_SET:
+        return
     path = ARC_ROOT / rel
     text = path.read_text()
     for old, new in replacements:
@@ -190,6 +227,8 @@ def patch_file(rel: str, replacements: list[tuple[str, str]]) -> None:
 
 
 def replace_section(rel: str, start_marker: str, end_marker: str, replacement: str) -> None:
+    if rel in PRESERVED_OVERLAY_SET:
+        return
     path = ARC_ROOT / rel
     text = path.read_text()
     start = text.index(start_marker)
@@ -228,7 +267,7 @@ patch_file("skills/arc-plan/SKILL.md", [
 patch_file("skills/arc-review/SKILL.md", [
     (
         "## Contexts\n\nThis skill works in both execution models:\n\n| Context | How review works |\n|---------|-----------------|\n| **Single-agent** | Main agent dispatches `code-reviewer` subagent |\n| **Team mode** | Team lead dispatches QA teammate or `code-reviewer` subagent |",
-        "## Contexts\n\nThis skill works in orchestrated Arc execution:\n\n| Context | How review works |\n|---------|-----------------|\n| **Sequential build** | Main agent dispatches `code-reviewer` subagent after the builder reports completion |\n| **Parallel patch batch** | Main agent applies each accepted patch to the main worktree, then dispatches `code-reviewer` against the applied diff |",
+        "## Contexts\n\nThis skill works in orchestrated Arc execution:\n\n| Context | How review works |\n|---------|-----------------|\n| **Sequential build** | Main agent dispatches `code-reviewer` subagent after the coder reports completion |\n| **Parallel patch batch** | Main agent applies each accepted patch to the main worktree, then dispatches `code-reviewer` against the applied diff |",
     ),
 ])
 
@@ -242,23 +281,23 @@ patch_file("skills/arc-finish/SKILL.md", [
 patch_file("skills/arc-build/SKILL.md", [
     (
         "Every arc_agent dispatch can override the subagent's frontmatter model via the `model:` parameter. Use this to match model tier to task complexity. The default floor per agent is set in frontmatter — use these overrides to downgrade for trivial tasks or escalate for complex ones.",
-        "Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. Use this to match model tier to task complexity. The default floor per agent is set in frontmatter — use these overrides to downgrade for trivial tasks or escalate for complex ones.\n\nPrefer the `subagent` tool from `pi-subagents` when it is available **and** Arc agent definitions such as `arc-builder` are installed. If Arc specialist definitions are missing, run `/arc-subagents-sync` (project default) or `/arc-subagents-sync user`, then re-check with `subagent({ action: \"list\" })`. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; `pi-subagents` adds chains, async runs, and worktree-isolated parallel patch generation.",
+        "Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. Use this to match model tier to task complexity. The default floor per agent is set in frontmatter — use these overrides to downgrade for trivial tasks or escalate for complex ones.\n\nPrefer the `subagent` tool from `pi-subagents` when it is available **and** Arc agent definitions such as `arc-coder` are installed. If Arc specialist definitions are missing, run `/arc-subagents-sync` (project default) or `/arc-subagents-sync user`, then re-check with `subagent({ action: \"list\" })`. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; `pi-subagents` adds chains, async runs, and worktree-isolated parallel patch generation.",
     ),
     (
-        "```text\narc_agent(agent=\"builder\", model=\"haiku\", task=\"...\")       # mechanical\narc_agent(agent=\"builder\", task=\"...\")                      # standard (sonnet)\narc_agent(agent=\"builder\", model=\"opus\", task=\"...\")        # complex\n```",
-        "```text\n# Self-contained fallback:\narc_agent(agent=\"builder\", model=\"haiku\", task=\"...\")       # mechanical\narc_agent(agent=\"builder\", task=\"...\")                      # standard (sonnet)\narc_agent(agent=\"builder\", model=\"opus\", task=\"...\")        # complex\n\n# Preferred when pi-subagents Arc agents are installed:\nsubagent({ agent: \"arc-builder\", task: \"...\", model: \"haiku\", context: \"fresh\" })\nsubagent({ agent: \"arc-builder\", task: \"...\", context: \"fresh\" })\nsubagent({ agent: \"arc-builder\", task: \"...\", model: \"opus\", context: \"fresh\" })\n```",
+        "```text\narc_agent(agent=\"coder\", model=\"haiku\", task=\"...\")       # mechanical\narc_agent(agent=\"coder\", task=\"...\")                      # standard (sonnet)\narc_agent(agent=\"coder\", model=\"opus\", task=\"...\")        # complex\n```",
+        "```text\n# Self-contained fallback:\narc_agent(agent=\"builder\", model=\"haiku\", task=\"...\")       # mechanical\narc_agent(agent=\"builder\", task=\"...\")                      # standard (sonnet)\narc_agent(agent=\"builder\", model=\"opus\", task=\"...\")        # complex\n\n# Preferred when pi-subagents Arc agents are installed:\nsubagent({ agent: \"arc-coder\", task: \"...\", model: \"haiku\", context: \"fresh\" })\nsubagent({ agent: \"arc-coder\", task: \"...\", context: \"fresh\" })\nsubagent({ agent: \"arc-coder\", task: \"...\", model: \"opus\", context: \"fresh\" })\n```",
     ),
     (
         "### Parallel\n\nMultiple tasks dispatched simultaneously using `isolation: \"worktree\"`. Use this **only** when ALL of these are true:\n- 3+ independent tasks remain\n- No shared files between any tasks in the batch\n- No `blocks`/`blockedBy` dependencies between tasks in the batch\n- Each task's scope is clearly defined with no ambiguity\n\n**When NOT to use parallel**: overlapping files, task dependencies, uncertainty about scope, fewer than 3 tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel merge is data loss.",
-        "### Parallel\n\nParallel worktree dispatch is available **only** through the optional `pi-subagents` companion package, not through `arc_agent`. Use it only when ALL of these are true:\n- `pi-subagents` is installed and the `subagent` tool is available\n- Arc agent definitions such as `arc-builder` / `arc-doc-writer` are installed for `pi-subagents`\n- 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree\n- No shared files between any builder/doc-writer tasks in the batch\n- No `blocks`/`blockedBy` dependencies between tasks in the batch\n- Each task's scope is clearly defined with no ambiguity\n\n`pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.\n\n**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.",
+        "### Parallel\n\nParallel worktree dispatch is available **only** through the optional `pi-subagents` companion package, not through `arc_agent`. Use it only when ALL of these are true:\n- `pi-subagents` is installed and the `subagent` tool is available\n- Arc agent definitions such as `arc-coder` / `arc-doc-writer` are installed for `pi-subagents`\n- 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree\n- No shared files between any coder/doc-writer tasks in the batch\n- No `blocks`/`blockedBy` dependencies between tasks in the batch\n- Each task's scope is clearly defined with no ambiguity\n\n`pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.\n\n**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.",
     ),
     (
         "By default, use sequential dispatch. For independent tasks, see [Parallel Dispatch Protocol](#parallel-dispatch-protocol) below.",
         "By default, use sequential dispatch. For independent batches with `pi-subagents` available, see [Parallel Patch Protocol](#parallel-patch-protocol) below.",
     ),
     (
-        "Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`haiku`) is correct — omit `model:` unless the docs task is unusually complex.\n\n**Otherwise** — spawn an `builder` subagent:\n\nUse the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.",
-        "Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`haiku`) is correct — omit `model:` unless the docs task is unusually complex.\n\nDispatch preference:\n- If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: \"arc-doc-writer\", task: \"<filled prompt>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"doc-writer\", task=\"<filled prompt>\")`\n\n**Otherwise** — spawn an `builder` subagent:\n\nUse the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.\n\nDispatch preference:\n- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: \"arc-builder\", task: \"<filled prompt>\", model: \"<tier-if-needed>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"builder\", task=\"<filled prompt>\", model=\"<tier-if-needed>\")`",
+        "Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`haiku`) is correct — omit `model:` unless the docs task is unusually complex.\n\n**Otherwise** — spawn an `coder` subagent:\n\nUse the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.",
+        "Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`haiku`) is correct — omit `model:` unless the docs task is unusually complex.\n\nDispatch preference:\n- If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: \"arc-doc-writer\", task: \"<filled prompt>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"doc-writer\", task=\"<filled prompt>\")`\n\n**Otherwise** — spawn an `coder` subagent:\n\nUse the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.\n\nDispatch preference:\n- If `subagent` is available and `arc-coder` is installed: `subagent({ agent: \"arc-coder\", task: \"<filled prompt>\", model: \"<tier-if-needed>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"builder\", task=\"<filled prompt>\", model=\"<tier-if-needed>\")`",
     ),
     (
         "Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the agent default is appropriate; omit `model:` unless the spec is unusually large or ambiguous.",
@@ -277,8 +316,8 @@ patch_file("skills/arc-build/SKILL.md", [
         "## Parallel Patch Protocol\n\nUse this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_agent(isolation=\"worktree\")`; `arc_agent` intentionally remains sequential-only.",
     ),
     (
-        "All parallel arc_agent tool calls with `isolation: \"worktree\"` **must happen in the same orchestrator message**. This ensures they all branch from the same HEAD.\n\n```\n# In a single response, dispatch all parallel tasks:\narc_agent(agent=\"builder\", isolation=\"worktree\", task=\"Task 1...\")\narc_agent(agent=\"builder\", isolation=\"worktree\", task=\"Task 2...\")\narc_agent(agent=\"builder\", isolation=\"worktree\", task=\"Task 3...\")\n```\n\n**Never** dispatch worktree agents across multiple turns — HEAD may move between turns, causing stale branches.",
-        "Dispatch all parallel tasks in one `subagent` tool call so they branch from the same `PARALLEL_BASE`:\n\n```ts\nsubagent({\n  tasks: [\n    { agent: \"arc-builder\", task: \"<filled builder prompt for task 1>\", model: \"sonnet\" },\n    { agent: \"arc-builder\", task: \"<filled builder prompt for task 2>\", model: \"sonnet\" },\n    { agent: \"arc-doc-writer\", task: \"<filled doc-writer prompt for task 3>\", model: \"haiku\" }\n  ],\n  worktree: true,\n  concurrency: 3,\n  context: \"fresh\"\n})\n```\n\n`pi-subagents` returns diff stats and a `Full patches: <dir>` path. Temporary worktrees are cleaned up; the patches are the handoff artifact.",
+        "All parallel arc_agent tool calls with `isolation: \"worktree\"` **must happen in the same orchestrator message**. This ensures they all branch from the same HEAD.\n\n```\n# In a single response, dispatch all parallel tasks:\narc_agent(agent=\"coder\", isolation=\"worktree\", task=\"Task 1...\")\narc_agent(agent=\"coder\", isolation=\"worktree\", task=\"Task 2...\")\narc_agent(agent=\"coder\", isolation=\"worktree\", task=\"Task 3...\")\n```\n\n**Never** dispatch worktree agents across multiple turns — HEAD may move between turns, causing stale branches.",
+        "Dispatch all parallel tasks in one `subagent` tool call so they branch from the same `PARALLEL_BASE`:\n\n```ts\nsubagent({\n  tasks: [\n    { agent: \"arc-coder\", task: \"<filled coder prompt for task 1>\", model: \"sonnet\" },\n    { agent: \"arc-coder\", task: \"<filled coder prompt for task 2>\", model: \"sonnet\" },\n    { agent: \"arc-doc-writer\", task: \"<filled doc-writer prompt for task 3>\", model: \"haiku\" }\n  ],\n  worktree: true,\n  concurrency: 3,\n  context: \"fresh\"\n})\n```\n\n`pi-subagents` returns diff stats and a `Full patches: <dir>` path. Temporary worktrees are cleaned up; the patches are the handoff artifact.",
     ),
     (
         "- Never proceed after parallel merge without verifying commit history against the recorded HEAD anchor",
@@ -290,11 +329,12 @@ patch_file("skills/arc-build/SKILL.md", [
 # The replacement above adjusts the dispatch example, but the original Claude
 # protocol still describes automatic worktree merge semantics. Pi-subagents
 # returns patch files instead, so replace the whole protocol body.
-build_path = ARC_ROOT / "skills" / "arc-build" / "SKILL.md"
-text = build_path.read_text()
-start = text.index("## Parallel Patch Protocol")
-end = text.index("\n## When to Invoke Debug", start)
-text = text[:start] + """## Parallel Patch Protocol
+if "skills/arc-build/SKILL.md" not in PRESERVED_OVERLAY_SET:
+    build_path = ARC_ROOT / "skills" / "arc-build" / "SKILL.md"
+    text = build_path.read_text()
+    start = text.index("## Parallel Patch Protocol")
+    end = text.index("\n## When to Invoke Debug", start)
+    text = text[:start] + """## Parallel Patch Protocol
 
 Use this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_agent(isolation=\"worktree\")`; `arc_agent` intentionally remains sequential-only.
 
@@ -342,8 +382,8 @@ Dispatch all parallel tasks in one `subagent` tool call so they branch from the 
 ```ts
 subagent({
   tasks: [
-    { agent: \"arc-builder\", task: \"<filled builder prompt for task 1>\", model: \"openai-codex/gpt-5.3-codex\" },
-    { agent: \"arc-builder\", task: \"<filled builder prompt for task 2>\", model: \"openai-codex/gpt-5.3-codex\" },
+    { agent: \"arc-coder\", task: \"<filled coder prompt for task 1>\", model: \"openai-codex/gpt-5.3-codex\" },
+    { agent: \"arc-coder\", task: \"<filled coder prompt for task 2>\", model: \"openai-codex/gpt-5.3-codex\" },
     { agent: \"arc-doc-writer\", task: \"<filled doc-writer prompt for task 3>\", model: \"openai-codex/gpt-5.4-mini\" }
   ],
   worktree: true,
@@ -405,7 +445,7 @@ git log --oneline <reflog-ref>
 ### P7. Resume Sequential
 
 After successful verification, return to the normal orchestration loop (step 1) for any remaining tasks.\n""" + text[end:]
-build_path.write_text(text)
+    build_path.write_text(text)
 
 # Preserve Pi-native model tier and async pi-subagents guidance that differs from
 # the Claude plugin's haiku/sonnet/opus synchronous Agent examples.
@@ -439,7 +479,7 @@ Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/s
 
 Legacy aliases still resolve for compatibility: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. Prefer the Pi-native tier names in new prompts, including `nano` for low-reasoning issue-manager work.
 
-Prefer the `subagent` tool from `pi-subagents` when it is available **and** Arc agent definitions such as `arc-builder` are installed. If Arc specialist definitions are missing, run `/arc-subagents-sync` (project default) or `/arc-subagents-sync user`, then re-check with `subagent({ action: "list" })`. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; `pi-subagents` adds chains, async runs, and worktree-isolated parallel patch generation.
+Prefer the `subagent` tool from `pi-subagents` when it is available **and** Arc agent definitions such as `arc-coder` are installed. If Arc specialist definitions are missing, run `/arc-subagents-sync` (project default) or `/arc-subagents-sync user`, then re-check with `subagent({ action: "list" })`. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; `pi-subagents` adds chains, async runs, and worktree-isolated parallel patch generation.
 
 **Status visibility:** For long Arc workers after `/arc-plan`, prefer `pi-subagents` launches with `async: true, clarify: false`. The returned run appears in `/subagents-status`; you can also poll it with `subagent({ action: "status", id: "<run-id>" })`. Do not continue to validation, review, patch application, or arc closure until the async run is terminal and you have read its final output. The raw `arc_agent` fallback never appears in `/subagents-status`.
 
@@ -456,14 +496,14 @@ Examples:
 
 ```text
 # Self-contained fallback:
-arc_agent(agent="builder", model="small", task="...")       # mechanical
-arc_agent(agent="builder", task="...")                      # standard default
-arc_agent(agent="builder", model="large", task="...")       # complex
+arc_agent(agent="coder", model="small", task="...")       # mechanical
+arc_agent(agent="coder", task="...")                      # standard default
+arc_agent(agent="coder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -496,14 +536,14 @@ Dispatch preference:
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
-**Otherwise** — spawn a `builder` subagent:
+**Otherwise** — spawn a `coder` subagent:
 
-Use the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
+Use the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
 
 Dispatch preference:
-- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-coder` is installed: `subagent({ agent: "arc-coder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
-- Otherwise: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
+- Otherwise: `arc_agent(agent="coder", task="<filled prompt>", model="<tier-if-needed>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 """)
@@ -599,6 +639,7 @@ Dispatch preference (use **async** so longer reviews appear in `/subagents-statu
 # Copy agents as bundled prompts for arc_agent.
 for f in sorted((SRC / "agents").glob("*.md")):
     text = transform_text(f.read_text())
+    dest_name = "coder.md" if f.name == "builder.md" else f.name
     text = text.replace("  - Bash", "  - bash")
     text = text.replace("  - Read", "  - read")
     text = text.replace("  - Write", "  - write")
@@ -615,7 +656,18 @@ for f in sorted((SRC / "agents").glob("*.md")):
                 "## Creating Epics with Tasks",
                 "## Timing / Progress Instrumentation\n\nFor bulk operations, print lightweight progress lines before and after each phase so the dispatcher can tell whether time is spent in the model or in the Arc CLI:\n\n```bash\nSTART_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=start\"\n# phase commands here\nEND_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=done elapsed_ms=$((END_MS-START_MS))\"\n```\n\nUse phase names such as `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include a final `## Timing` section in the summary with per-phase `elapsed_ms` values when available. This instrumentation is informational only; do not add sleeps, polling loops, or extra verification that the manifest did not request.\n\n## Creating Epics with Tasks",
             )
-    (ARC_ROOT / "agents" / f.name).write_text(text)
+    (ARC_ROOT / "agents" / dest_name).write_text(text)
+
+# Restore Pi-preserved overlays after upstream resource migration.
+for rel, text in overlay_text_by_rel.items():
+    target = ARC_ROOT / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+
+# Upstream still ships builder prompt names; Pi canonical name is coder-prompt.
+builder_prompt_path = ARC_ROOT / "skills" / "arc-build" / "builder-prompt.md"
+if builder_prompt_path.exists():
+    builder_prompt_path.unlink()
 
 # Final Pi-native overlays for Claude-source changes that need adaptation or
 # preservation of Pi-only behavior. Keep these near the end so they override
@@ -725,7 +777,7 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
 
 Legacy aliases still resolve for compatibility: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. Prefer the Pi-native tier names in new prompts, including `nano` for low-reasoning issue-manager work.
 
-Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-builder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
+Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-coder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
 
 **Status visibility:** For long Arc workers after `/arc-plan`, prefer `pi-subagents` launches with `async: true, clarify: false`. The returned run appears in `/subagents-status`; you can also poll it with `subagent({ action: "status", id: "<run-id>" })`. Do not continue to validation, review, patch application, or arc closure until the async run is terminal and you have read its final output. The raw `arc_agent` fallback never appears in `/subagents-status`.
 
@@ -742,14 +794,14 @@ Examples:
 
 ```text
 # Self-contained fallback:
-arc_agent(agent="builder", model="small", task="...")       # mechanical
-arc_agent(agent="builder", task="...")                      # standard default
-arc_agent(agent="builder", model="large", task="...")       # complex
+arc_agent(agent="coder", model="small", task="...")       # mechanical
+arc_agent(agent="coder", task="...")                      # standard default
+arc_agent(agent="coder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -777,9 +829,9 @@ Tasks are dispatched one at a time through the orchestration loop below. Use thi
 
 Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:
 - `pi-subagents` loaded and the `subagent` tool is available
-- Arc agent definitions such as `arc-builder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
+- Arc agent definitions such as `arc-coder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
 - 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree
-- No shared files between any builder/doc-writer tasks in the batch
+- No shared files between any coder/doc-writer tasks in the batch
 - No `blocks`/`blockedBy` dependencies between tasks in the batch
 - Each task's scope is clearly defined with no ambiguity
 
@@ -832,14 +884,14 @@ Dispatch preference:
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
-**Otherwise** — spawn a `builder` subagent:
+**Otherwise** — spawn a `coder` subagent:
 
-Use the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
+Use the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
 
 Dispatch preference:
-- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-coder` is installed: `subagent({ agent: "arc-coder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
+- Otherwise: `arc_agent(agent="coder", task="<filled prompt>", model="<tier-if-needed>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 """)
@@ -948,7 +1000,7 @@ patch_file("skills/arc-review/code-reviewer-prompt.md", [
 ])
 
 SUPERVISOR_SECTIONS = {
-    "agents/builder.md": ("## When Tests Can't Run", "implementation plan"),
+    "agents/coder.md": ("## When Tests Can't Run", "implementation plan"),
     "agents/code-reviewer.md": ("## Rules", "review plan"),
     "agents/doc-writer.md": ("## Quality Checklist", "documentation plan"),
     "agents/evaluator.md": ("## Rationalizations You Must Reject", "evaluation plan"),
@@ -957,7 +1009,7 @@ SUPERVISOR_SECTIONS = {
 }
 for rel, (marker, plan_phrase) in SUPERVISOR_SECTIONS.items():
     extra = "Preserve adversarial/read-only expectations and" if rel == "agents/evaluator.md" else "Preserve read-only behavior and" if rel in {"agents/code-reviewer.md", "agents/spec-reviewer.md"} else ""
-    if rel in {"agents/builder.md", "agents/doc-writer.md", "agents/issue-manager.md"}:
+    if rel in {"agents/coder.md", "agents/doc-writer.md", "agents/issue-manager.md"}:
         routine = "Do not send routine completion handoffs through intercom; return your final task result normally."
     else:
         routine = f"{extra} do not send routine completion handoffs through intercom; return your final {'evaluation result' if rel == 'agents/evaluator.md' else 'review result'} normally."

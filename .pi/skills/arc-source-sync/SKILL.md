@@ -110,6 +110,8 @@ Classify each change:
 
 Pi behavior to preserve:
 
+- Pi contract: preserve the coder/devops split. Upstream `agents/builder.md` must map to Pi `agents/coder.md`, generated subagent references must use `arc-coder`, and Pi-only `agents/devops.md` / `arc-devops` support must remain present via reproducible migration overlays.
+
 - Hyphenated prompt names like `/arc-create`, not colon-form Arc command names.
 - Collision-safe skill names like `arc-build`, not bare `build`.
 - Bundled `@juicesharp/rpiv-ask-user-question` provides `ask_user_question`; preserve the snake_case tool name, the package `questions[]` schema, package-provided `Type something.` / `Chat about this` escape-hatch guidance, JSON `questions[]` examples in brainstorm/plan, and `(Recommended)` option convention.
@@ -172,6 +174,8 @@ rg 'Task(Create)|Todo(Write)|Ask(UserQuestion)|Claude[ ]Code' skills prompts
 The `rg` checks should return no unintended leftovers. If matches are intentional source terms in this maintainer skill or docs, call that out explicitly.
 
 Also run a final status check:
+
+For strict-scope maintenance tasks, do not commit regenerated `packages/pi-arc/prompts`, `packages/pi-arc/skills`, or `packages/pi-arc/agents` output changes unless the task explicitly expands scope.
 
 ```bash
 git status --short

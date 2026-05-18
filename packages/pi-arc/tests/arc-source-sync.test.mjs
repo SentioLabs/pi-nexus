@@ -71,6 +71,31 @@ test('migration script rewrites renamed skill path references', () => {
   assert.doesNotMatch(arcSkill, /skills\/(brainstorm|plan)\/SKILL\.md/);
 });
 
+test('migration script codifies coder/devops split overlays', () => {
+  const source = read('scripts/migrate-arc-plugin.py');
+  assert.match(source, /f\.name == "builder\.md"/);
+  assert.match(source, /dest_name = "coder\.md" if f\.name == "builder\.md" else f\.name/);
+  assert.match(source, /PRESERVED_OVERLAY_FILES = \[/);
+  assert.match(source, /"agents\/devops\.md"/);
+  assert.match(source, /"skills\/arc-build\/SKILL\.md"/);
+  assert.match(source, /overlay_text_by_rel\[rel\] = overlay_path\.read_text\(\)/);
+  assert.match(source, /Missing required Pi overlay:/);
+  assert.match(source, /md\.name == "builder-prompt\.md"/);
+  assert.match(source, /md\.replace\(coder_prompt\)/);
+  assert.match(source, /builder_prompt_path = ARC_ROOT \/ "skills" \/ "arc-build" \/ "builder-prompt\.md"/);
+  assert.match(source, /builder_prompt_path\.unlink\(\)/);
+});
+
+test('repo-local source sync contract preserves coder/devops split', () => {
+  const source = read('../../.pi/skills/arc-source-sync/SKILL.md');
+  assert.match(source, /coder\/devops split/i);
+  assert.match(source, /agents\/builder\.md.*agents\/coder\.md/i);
+  assert.match(source, /arc-coder/);
+  assert.match(source, /arc-devops/);
+  assert.match(source, /do not commit regenerated `packages\/pi-arc\/prompts`, `packages\/pi-arc\/skills`, or `packages\/pi-arc\/agents` output changes/i);
+  assert.match(source, /update `scripts\/migrate-arc-plugin\.py` so the guard is reproduced on every future sync/i);
+});
+
 test('arc extension does not ship arc-source-sync slash alias', () => {
   const source = read('extensions/arc.ts');
   assert.doesNotMatch(source, /command: "arc-source-sync"/);
