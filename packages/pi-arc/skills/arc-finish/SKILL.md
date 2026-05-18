@@ -65,20 +65,21 @@ Create a checklist using the bundled `todo` tool (or `/todos`) with all steps an
     ```bash
     git add <file1> <file2> ...
     ```
-12. Commit with conventional commit message:
+12. **Protected-branch check** — perform the check per `skills/arc/_branch-check.md`. This is the *last* place to catch trunk-direct work; ideally `brainstorm` or `build` already established a feature branch earlier, but check anyway because some flows skip those skills.
+13. Commit with conventional commit message:
     ```bash
     git commit -m "feat(scope): summary of changes"
     ```
-13. Push:
+14. Push:
     ```bash
     git push
     ```
-14. Verify push succeeded:
+15. Verify push succeeded:
     ```bash
     git status    # Must show "up to date with origin"
     ```
-15. If push fails → resolve the issue → retry → succeed. Do not leave unpushed commits.
-16. Clean up worktrees:
+16. If push fails → resolve the issue → retry → succeed. Do not leave unpushed commits.
+17. Clean up worktrees:
     ```bash
     git worktree list
     ```
@@ -118,11 +119,11 @@ Create a checklist using the bundled `todo` tool (or `/todos`) with all steps an
 
 ### Phase 5: Verify and Hand Off
 
-17. Confirm the commit:
+18. Confirm the commit:
     ```bash
     git log -1    # Verify latest commit is visible
     ```
-18. Output context for next session:
+19. Output context for next session:
     ```bash
     arc prime
     ```

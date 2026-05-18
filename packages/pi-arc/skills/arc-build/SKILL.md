@@ -11,6 +11,12 @@ Orchestrate task implementation by dispatching fresh `builder` subagents per tas
 
 **The main agent NEVER writes implementation code.** It orchestrates, dispatches, and reviews. If you're tempted to "just quickly fix this" — dispatch a subagent instead.
 
+## Pre-flight: Branch Setup
+
+Before dispatching any task, perform the protected-branch check per `skills/arc/_branch-check.md`.
+
+This catches the case where build was invoked without going through `brainstorm` first. Subagents commit to whatever branch the main agent is on — and the parallel-dispatch checkpoint push (P1) goes there too. Discovering at finish time that an entire epic landed on trunk is not recoverable cheaply. Suggest a branch name from the epic/task title if the user picks "switch."
+
 ## Model Selection
 
 Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
@@ -204,7 +210,7 @@ When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_C
 
 When re-dispatching, include the previous report's concerns / blockers so the implementer knows exactly what to fix:
 
-```text
+```
 Continue implementing this task. A previous attempt reported <status> with these concerns:
 
 <paste concerns>
@@ -275,7 +281,7 @@ The evaluator is **not dispatched by default**. Dispatch only when:
 
 When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run. This gives it a disposable repository copy so it can write acceptance tests and add temporary dependencies without dirtying the main worktree:
 
-```text
+```ts
 subagent({
   tasks: [
     { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5" }
@@ -354,40 +360,51 @@ Use this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_ag
 
 ### P1. Commit Checkpoint
 
-Before switching to parallel, ensure all sequential work is committed and pushed. Run this exact gate:
+Before switching to parallel, ensure all sequential work is committed and pushed:
 
 ```bash
-git status --short
-git push
+git status          # Must be clean — no unstaged or uncommitted changes
+git log -3          # Verify recent sequential commits are present
+git push            # Establish a recovery point on the remote
+```
+
+**Hard gate**: Do NOT proceed if `git status` shows uncommitted changes.
+
+### P2. Record HEAD Anchor
+
+```bash
 PARALLEL_BASE=$(git rev-parse HEAD)
 echo "Parallel base: $PARALLEL_BASE"
 ```
 
-If `git status --short` reports changes, stop and clean the tree first.
+This is the baseline all temporary worktrees will branch from. Record it — you'll need it for verification after patch application.
 
-### P2. Record HEAD Anchor
+### P3. Verify Independence
 
-This anchor is the baseline all temporary worktrees will branch from. Record it before dispatching the batch.
+For each task in the planned parallel batch:
 
-### P3. Re-check Batch Gates Before Dispatch
+```bash
+arc show <task-id>
+```
 
-Re-check these gates immediately before dispatching the batch:
-- `subagent({ action: "list" })` shows Arc specialists such as `arc-builder` and `arc-doc-writer`.
-- Each task in the batch is ready in Arc.
-- No task in the batch blocks another task in the batch.
-- No builder/doc-writer task owns the same file as another task in the batch.
-- Each task has a clear validation command.
+Confirm:
+- No `blocks`/`blockedBy` relationships between tasks in this batch
+- No overlapping file paths in task descriptions
+- Each task has a clearly scoped, non-ambiguous specification
+- Each task can be validated independently after its patch is applied
 
-For each task in the manifest, `arc show <task-id>` and confirm the batch is still independent.
+If any task fails these checks, remove it from the parallel batch and handle it sequentially after.
 
 ### P4. Dispatch with `pi-subagents`
 
-Dispatch the selected batch in one `subagent` tool call so the tasks branch from the same `PARALLEL_BASE`:
+Dispatch all parallel tasks in one `subagent` tool call so they branch from the same `PARALLEL_BASE`:
 
-```text
+```ts
 subagent({
   tasks: [
-    { agent: "arc-builder", task: "<filled builder prompt>", model: "<configured standard model>" }
+    { agent: "arc-builder", task: "<filled builder prompt for task 1>", model: "openai-codex/gpt-5.3-codex" },
+    { agent: "arc-builder", task: "<filled builder prompt for task 2>", model: "openai-codex/gpt-5.3-codex" },
+    { agent: "arc-doc-writer", task: "<filled doc-writer prompt for task 3>", model: "openai-codex/gpt-5.4-mini" }
   ],
   worktree: true,
   concurrency: 3,
@@ -400,8 +417,6 @@ subagent({
 When the async run completes, `pi-subagents` returns diff stats and a `Full patches: <dir>` path. Temporary worktrees are cleaned up; the patches are the handoff artifact.
 
 ### P5. Apply and Verify Patches One at a Time
-
-Apply, validate, review, commit, and close exactly one returned patch at a time.
 
 For each returned patch:
 

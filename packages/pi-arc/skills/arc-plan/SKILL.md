@@ -11,7 +11,7 @@ Break an approved design into bite-sized, self-contained tasks with exact file p
 
 Design docs live in `docs/plans/<file>.md`. The brainstorm skill registers each doc on one of three review surfaces and writes a routing marker as line 1 of the doc itself:
 
-```text
+```
 <!-- arc-review: kind=<legacy|share-local|share-remote> id=<id> -->
 ```
 
@@ -113,7 +113,7 @@ Do NOT create or modify any files outside the Files section above.
 
 ## Steps
 1. Create `internal/types/memory.go` with this exact content:
-   ```text
+   ```go
    package types
 
    import "time"
@@ -125,7 +125,7 @@ Do NOT create or modify any files outside the Files section above.
    }
    ```
 2. Create contract assertions in `internal/memory/memory_test.go`:
-   ```text
+   ```go
    package memory
 
    import (
@@ -345,10 +345,11 @@ After the user chooses:
 **Start implementing now**: Invoke the `implement` skill immediately with the epic ID.
 
 **Implement in a new session**: Output the exact command for the user to copy-paste:
-```text
+```
 Run this in a new Pi session:
 
   /arc-build <epic-id>
+
 ```
 Replace `<epic-id>` with the actual epic ID.
 
@@ -389,7 +390,7 @@ Each task's `--description` must be **self-contained** (~3-5k tokens). The task 
 
 Include in every task description:
 
-```markdown
+```
 ## Files
 - Create: `path/to/new_file.go`
 - Modify: `path/to/existing_file.go`
@@ -403,13 +404,13 @@ the foundation task or a prior task is responsible for shared definitions.
 ## Design Contracts
 
 ### Shared (use verbatim — defined in T0: Foundation)
-   ```text
+```go
 type Memory struct {
     ID        int64     `json:"id" db:"id"`
     Content   string    `json:"content" db:"content"`
     CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
-   ```
+```
 
 ### Task-internal
 - `FeedbackRequest { memory_id: i64, rating: i8, comment: String? }`
@@ -419,7 +420,7 @@ type Memory struct {
 1. Write failing test for <specific behavior> in `path/to/file_test.go`
 2. Run `go test ./path/to/...` — confirm it fails with <expected error>
 3. Implement <specific function> in `path/to/new_file.go`:
-   ```text
+   ```go
    func specificFunction(arg Type) (Result, error) {
        // exact implementation code — not prose descriptions
    }
@@ -447,7 +448,7 @@ If a type the subagent needs is not listed in Design Contracts and is not alread
 
 For `docs-only` tasks, omit `## Test Command` and use `## Verification` instead:
 
-```markdown
+```
 ## Verification
 - All internal links resolve to existing files
 - Heading hierarchy has no skipped levels

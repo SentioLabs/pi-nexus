@@ -11,9 +11,15 @@ Explore requirements through Socratic dialogue before any implementation begins.
 
 **Do NOT write any implementation code, scaffold any project, or take any implementation action until the design is approved.** Brainstorming produces a design document — not code.
 
+## Pre-flight: Branch Setup
+
+Before starting the design dialogue, perform the protected-branch check per `skills/arc/_branch-check.md`.
+
+Brainstorm itself doesn't commit code, but the design doc, the planned tasks, the eventual implementation, and the final commits will all land on whatever branch you start from. Catching trunk *now* avoids "we built three hours of work and it's all on main" at finish time. If the user picks "switch to a feature branch", suggest a name based on the brief they just gave you (e.g. `feat/<topic>`).
+
 ## Workflow
 
-Create a task for each step below using the bundled `todo` checklist (via `todo` tool / `/todos`). Mark each as `in_progress` when starting and `completed` when done. This creates a visible progress list in the CLI that carries forward into the plan skill.
+Create a task for each step below using the bundled `todo` checklist (via `todo` tool / `/todos`). Mark each as `in_progress` when starting and `completed` when done. This creates a visible progress list in the CLI that carries forward into the plan skill. Step 5.5 gets its own task whether or not the user opts into grilling — "No, proceed" still counts as completing the step.
 
 ### 1. Explore Project Context
 
@@ -33,6 +39,8 @@ Create a task for each step below using the bundled `todo` checklist (via `todo`
 - Where a recommendation is clear, make it the first option, append `(Recommended)` to the label, and explain why in the description.
 - Understand: purpose, constraints, success criteria, target users
 - Continue until you have enough to propose approaches
+
+**If the user forecloses clarifying questions up front** (e.g., "no clarifying questions, just proceed", "skip to the design", "don't ask, just build"), keep this step's questions to a minimum or skip them. Step 5.5 is the explicit recovery loop in that case — depth-first interrogation against a draft, which is harder to skip past than a soft Q&A. Default 5.5's recommendation to *"Yes, grill me"* whenever step 2 was foreclosed, regardless of scale.
 
 **Example `ask_user_question` usage:**
 ```json
@@ -178,13 +186,65 @@ These exact definitions and contract tests become the **T0 foundation task** dur
 
 **Skip this step** if the design maps to a single task or purely sequential work.
 
-### 6. Save Design and Register for Review
+### 5.5. Grill the Design (Optional Stress-Test)
 
-Write the design document to `docs/plans/` using `YYYY-MM-DD-<topic>.md` naming.
+Before publishing the design for review, save the draft to disk and offer a stress-test pass. Both this step and step 6 need the design as a file on disk, so first:
+
+- **Write the design document** to `docs/plans/` using `YYYY-MM-DD-<topic>.md` naming. Do this whether or not the user opts into grilling — step 6 picks it up either way.
+
+Then run a relentless-interrogation pass that probes the drafted design for unresolved *internal* decisions before publishing. This is a distinct job from step 7's review loop: that one processes external reviewer feedback you receive back; this one finds gaps the design didn't fully resolve, which become expensive to fix once implementation starts — and prevents publishing a version that's already known to be incomplete.
+
+**When to recommend it.** This is opt-in. Mark "grill" as recommended when the design appears Medium/Large per the Scale Detection table (multiple work items, multiple layers crossed, or migrations/breaking changes). For Small-scale single-task work, default the recommendation to "skip" — the overhead isn't worth it.
+
+**Always recommend grilling when step 2 was foreclosed.** If the user shut down clarifying questions up front, this is the recovery loop — override the scale-based default and mark *"Yes, grill me"* as recommended regardless of how small the design looks.
+
+**Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool with the package `questions[]` schema:**
+
+```json
+{
+  "questions": [
+    {
+      "header": "Grill",
+      "question": "Stress-test the design before publishing?",
+      "options": [
+        {
+          "label": "Yes, grill me (Recommended)",
+          "description": "Interrogate decisions one at a time until the design converges; recommended for medium/large work or when clarifying questions were skipped."
+        },
+        {
+          "label": "No, proceed",
+          "description": "Skip the stress-test and register the saved design for review now."
+        }
+      ]
+    }
+  ]
+}
+```
+
+If "Yes", run the loop:
+
+**Loop rules:**
+
+- Walk the design's decision tree **depth-first, ordered by dependency**. Resolve decisions that constrain later answers first (e.g., "what storage layer?" before "how do we serialize sessions?"). When a resolution opens new branches, recurse into them before backtracking.
+- **One question per turn** via ``ask_user_question``. Mark the recommended option. When the choice is genuinely contested, offer 2-3 options; when one option is objectively dominant, a single recommendation is fine — but never rubber-stamp open questions just because you have an opinion.
+- **Codebase-first rule.** Before each question, name the symbol, file, or pattern that would answer it. If you can name one, search first (Grep / Read / symbol search) and only ask when the codebase doesn't — or can't — answer. This is the single biggest difference from step 2's clarifying questions, where you don't yet have a draft to ground against.
+- **Capture resolutions in-place.** Each resolved decision is an edit to `docs/plans/<file>.md` — update the relevant section, don't maintain a separate Q&A log. The design doc is the artifact.
+
+**Stop when ANY of:**
+
+- The user says "done", "enough", or "stop"
+- Two consecutive rounds surface no new unresolved branches (the tree is exhausted)
+- The loop has run ~10 rounds (hard cap — if you still have open branches at this point, surface them as a "remaining open questions" note in the design doc instead of asking another)
+
+Then proceed to step 6.
+
+### 6. Register for Review
+
+The design doc already exists on disk from step 5.5. This step registers it for review on the surface the user picks.
 
 Arc supports three review surfaces. They differ along two axes — *who reviews* (just you vs. teammates on other machines) and *do you want encryption + the new annotation/accept-resolve UI* (legacy planner is plain HTTP and simpler; `arc share` is encrypted and richer). Pick based on how the design will actually be reviewed, not which command you happen to remember.
 
-**Use the `ask_user_question` tool:**
+**Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool with the package `questions[]` schema:**
 
 ```json
 {
@@ -207,7 +267,7 @@ Arc supports three review surfaces. They differ along two axes — *who reviews*
         },
         {
           "label": "Save for later",
-          "description": "Write the design file to docs/plans and skip server registration for now."
+          "description": "Keep the saved design file and stop without server registration; resume in a new session."
         }
       ]
     }
@@ -261,25 +321,27 @@ The encrypted-share CLI persists the edit_token + key into the local arc keyring
 
 ### 7. Review Loop
 
-Print the URL from step 6 again as a reminder. **Use the `ask_user_question` tool:**
+**Skip this step entirely if step 6's answer was "Save for later"** — no surface was registered, no URL exists, no marker was written. Step 6 already terminated the skill in that case.
+
+Otherwise, print the URL from step 6 again as a reminder. **Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool with the package `questions[]` schema:**
 
 ```json
 {
   "questions": [
     {
       "header": "Review",
-      "question": "Plan ready for review at <url> — how would you like to proceed?",
+      "question": "Design ready for review at <url> — how would you like to proceed?",
       "options": [
         {
           "label": "Approve",
           "description": "Mark the design approved and continue to routing analysis."
         },
         {
-          "label": "Pull comments",
-          "description": "Fetch reviewer feedback, apply accepted changes, update the review surface, and repeat review."
+          "label": "I've finished review (pull comments now)",
+          "description": "Fetch accepted reviewer feedback, apply edits, update the review surface if needed, and repeat review."
         },
         {
-          "label": "Save for later",
+          "label": "Pause review",
           "description": "Leave the design saved in docs/plans and resume in a future session."
         }
       ]
@@ -311,7 +373,7 @@ For legacy, after re-creating, replace the `id=<old>` portion of line 1 with the
 
 ### 8. Routing Analysis & Transition
 
-After the plan is approved, **you MUST produce a routing analysis before presenting options**. This analysis helps the user make an informed decision about what to do next.
+After the design is approved (step 7's Approve), **you MUST produce a routing analysis before presenting options**. This analysis helps the user make an informed decision about what to do next.
 
 #### Routing Analysis
 
@@ -328,7 +390,7 @@ Evaluate the approved design against these criteria and present a summary:
 
 Then produce a **recommendation** with reasoning:
 
-```text
+```
 📊 Routing Analysis
 ───────────────────
 Work items:       N tasks identified
@@ -375,9 +437,9 @@ After the analysis, use the **`ask_user_question` tool** — mark the recommende
 
 If `/arc-build` is recommended instead, swap which option gets the "(recommended)" tag.
 
-- **Break into tasks**: invoke the `plan` skill, passing the plan ID
+- **Break into tasks**: invoke the `plan` skill, passing the review ID from the line-1 marker (the `id=…` value; whether it's a legacy plan ID or a share ID depends on `kind=…`)
 - **Implement directly**: invoke the `implement` skill
-- **Done for now**: tell the user the plan is approved and they can run `/arc-plan` in a new session
+- **Done for now**: tell the user the design is approved and they can run `/arc-plan` in a new session
 
 ## Scale Detection
 
