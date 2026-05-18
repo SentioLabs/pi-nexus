@@ -1,10 +1,44 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+const UPSTREAM_ARC_SOURCE = '/Volumes/ExternalSamsung/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc';
+
 function read(path) {
   return readFileSync(path, 'utf8');
+}
+
+function looksLikeClaudeArcSource(root) {
+  return ['commands', 'skills', 'agents', '.claude-plugin/plugin.json']
+    .every((rel) => existsSync(join(root, rel)));
+}
+
+function snapshotTree(root) {
+  const rows = [];
+  function walk(dir) {
+    for (const entry of readdirSync(dir).sort()) {
+      const fullPath = join(dir, entry);
+      const stats = statSync(fullPath);
+      if (stats.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      const hash = createHash('sha256').update(readFileSync(fullPath)).digest('hex');
+      rows.push(`${relative(root, fullPath)}\0${hash}`);
+    }
+  }
+  walk(root);
+  return rows.join('\n');
+}
+
+function snapshotGeneratedResources(packageRoot) {
+  return ['agents', 'prompts', 'skills']
+    .map((rel) => `${rel}\n${snapshotTree(join(packageRoot, rel))}`)
+    .join('\n---\n');
 }
 
 test('migration script documents configurable source path', () => {
@@ -84,6 +118,42 @@ test('migration script codifies coder/devops split overlays', () => {
   assert.match(source, /md\.replace\(coder_prompt\)/);
   assert.match(source, /builder_prompt_path = ARC_ROOT \/ "skills" \/ "arc-build" \/ "builder-prompt\.md"/);
   assert.match(source, /builder_prompt_path\.unlink\(\)/);
+  assert.doesNotMatch(source, /arc_agent\(agent=\\?"builder/);
+});
+
+test('migration script deterministically maps upstream builder resources to coder/devops overlays', (t) => {
+  if (!looksLikeClaudeArcSource(UPSTREAM_ARC_SOURCE)) {
+    t.skip(`Claude Arc source checkout not available at ${UPSTREAM_ARC_SOURCE}`);
+    return;
+  }
+
+  const tempRoot = mkdtempSync(join(tmpdir(), 'pi-arc-source-sync-'));
+  const packageCopy = join(tempRoot, 'pi-arc');
+  try {
+    cpSync('.', packageCopy, { recursive: true });
+    const originalDevopsOverlay = read('agents/devops.md');
+
+    execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {
+      cwd: packageCopy,
+      encoding: 'utf8',
+    });
+
+    assert.equal(existsSync(join(packageCopy, 'agents/coder.md')), true);
+    assert.equal(existsSync(join(packageCopy, 'agents/devops.md')), true);
+    assert.equal(existsSync(join(packageCopy, 'agents/builder.md')), false);
+    assert.equal(existsSync(join(packageCopy, 'skills/arc-build/coder-prompt.md')), true);
+    assert.equal(existsSync(join(packageCopy, 'skills/arc-build/builder-prompt.md')), false);
+    assert.equal(readFileSync(join(packageCopy, 'agents/devops.md'), 'utf8'), originalDevopsOverlay);
+
+    const firstSnapshot = snapshotGeneratedResources(packageCopy);
+    execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {
+      cwd: packageCopy,
+      encoding: 'utf8',
+    });
+    assert.equal(snapshotGeneratedResources(packageCopy), firstSnapshot);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('repo-local source sync contract preserves coder/devops split', () => {
@@ -93,6 +163,7 @@ test('repo-local source sync contract preserves coder/devops split', () => {
   assert.match(source, /arc-coder/);
   assert.match(source, /arc-devops/);
   assert.match(source, /do not commit regenerated `packages\/pi-arc\/prompts`, `packages\/pi-arc\/skills`, or `packages\/pi-arc\/agents` output changes/i);
+  assert.match(source, /ordinary source-sync tasks where regenerated resources are the intended deliverable/i);
   assert.match(source, /update `scripts\/migrate-arc-plugin\.py` so the guard is reproduced on every future sync/i);
 });
 
