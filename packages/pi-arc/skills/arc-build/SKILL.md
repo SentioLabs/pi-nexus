@@ -107,10 +107,11 @@ Tasks are dispatched one at a time through the orchestration loop below. Use thi
 
 Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:
 - `pi-subagents` loaded and the `subagent` tool is available
-- Arc agent definitions such as `arc-coder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
+- Arc agent definitions such as `arc-coder` / `arc-devops` / `arc-doc-writer` are auto-materialized for `pi-subagents`
 - 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree
-- No shared files between any coder/doc-writer tasks in the batch
+- No shared files or operational targets between any coder/devops/doc-writer tasks in the batch
 - No `blocks`/`blockedBy` dependencies between tasks in the batch
+- Do not parallelize live devops operations; live operations require sequential orchestration even when labels/dependencies look independent
 - Each task's scope is clearly defined with no ambiguity
 
 `pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.

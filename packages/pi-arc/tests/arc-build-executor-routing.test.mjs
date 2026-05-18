@@ -52,3 +52,11 @@ test('arc-build docs routing updates doc-writer and docs review wording', () => 
   assert.doesNotMatch(source, /> \*\*Docs-only tasks\*\*: Skip this step\./i);
   assert.doesNotMatch(source, /> \*\*Docs-only tasks\*\*: Skip code quality review\./i);
 });
+
+test('arc-build documents devops parallel dispatch policy', () => {
+  const source = read('skills/arc-build/SKILL.md');
+
+  assert.match(source, /`arc-coder` \/ `arc-devops` \/ `arc-doc-writer`/);
+  assert.match(source, /No shared files or operational targets between any coder\/devops\/doc-writer tasks/i);
+  assert.match(source, /Do not parallelize live devops operations/i);
+});
