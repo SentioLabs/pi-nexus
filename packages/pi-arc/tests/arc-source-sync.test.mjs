@@ -6,8 +6,8 @@ import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const UPSTREAM_ARC_SOURCE = process.env.PI_ARC_SOURCE
-  ?? '/Volumes/ExternalSamsung/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc';
+const FIXTURE_ARC_SOURCE = join('tests', 'fixtures', 'arc-plugin-source');
+const UPSTREAM_ARC_SOURCE = process.env.PI_ARC_SOURCE ?? FIXTURE_ARC_SOURCE;
 
 function read(path) {
   return readFileSync(path, 'utf8');
@@ -125,7 +125,7 @@ test('migration script deterministically maps upstream builder resources to code
   assert.equal(
     looksLikeClaudeArcSource(UPSTREAM_ARC_SOURCE),
     true,
-    `Claude Arc source checkout not available at ${UPSTREAM_ARC_SOURCE}; set PI_ARC_SOURCE to run source-sync contract tests`,
+    `Claude Arc source fixture not available at ${UPSTREAM_ARC_SOURCE}; set PI_ARC_SOURCE to override`,
   );
 
   const tempRoot = mkdtempSync(join(tmpdir(), 'pi-arc-source-sync-'));
@@ -144,6 +144,7 @@ test('migration script deterministically maps upstream builder resources to code
     assert.equal(existsSync(join(packageCopy, 'agents/builder.md')), false);
     assert.equal(existsSync(join(packageCopy, 'skills/arc-build/coder-prompt.md')), true);
     assert.equal(existsSync(join(packageCopy, 'skills/arc-build/builder-prompt.md')), false);
+    assert.equal(existsSync(join(packageCopy, 'skills/arc-source-sync/SKILL.md')), false);
     assert.equal(readFileSync(join(packageCopy, 'agents/devops.md'), 'utf8'), originalDevopsOverlay);
 
     const firstSnapshot = snapshotGeneratedResources(packageCopy);
@@ -163,8 +164,6 @@ test('repo-local source sync contract preserves coder/devops split', () => {
   assert.match(source, /agents\/builder\.md.*agents\/coder\.md/i);
   assert.match(source, /arc-coder/);
   assert.match(source, /arc-devops/);
-  assert.match(source, /do not commit regenerated `packages\/pi-arc\/prompts`, `packages\/pi-arc\/skills`, or `packages\/pi-arc\/agents` output changes/i);
-  assert.match(source, /ordinary source-sync tasks where regenerated resources are the intended deliverable/i);
   assert.match(source, /update `scripts\/migrate-arc-plugin\.py` so the guard is reproduced on every future sync/i);
 });
 

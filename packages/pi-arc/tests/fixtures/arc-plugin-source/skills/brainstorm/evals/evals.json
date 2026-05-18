@@ -1,0 +1,23 @@
+{
+  "skill_name": "brainstorm",
+  "evals": [
+    {
+      "id": 0,
+      "eval_name": "solo-refactor-prefers-legacy",
+      "prompt": "I'm brainstorming a small solo refactor: extract a 200-line transcoding function in `internal/media/transcode.go` into three smaller helpers. Just me, no remote reviewers. I don't need encryption or accept/resolve workflows — a plain comment thread is fine. Walk me through what you'd do at section 6 (Save Design and Register for Review): which AskUserQuestion option you'd surface as recommended, the exact CLI command you'd run, the exact marker line you'd write to line 1 of `docs/plans/2026-05-01-transcode-refactor.md` (showing both the kind= and id= placeholder), and what URL the CLI is expected to print. Don't actually run anything — describe the plan in detail.",
+      "expected_output": "Recommends 'Legacy planner', shows `arc plan create docs/plans/2026-05-01-transcode-refactor.md`, marker line `<!-- arc-review: kind=legacy id=<id> -->`, prints `Review at: http://localhost:7432/planner/<id>`. No mention of `--local` or `--share` (dropped flags). No promise of `arc share pull`-style filtering."
+    },
+    {
+      "id": 1,
+      "eval_name": "multi-machine-review-picks-share-remote",
+      "prompt": "I'm designing the new auth handler for our SaaS. I want my coworker Steve (on a different laptop in another city) and one other reviewer to comment before we commit to an approach. Walk me through what you'd do at section 6: which AskUserQuestion option you'd surface as recommended, the exact CLI command, the marker line for `docs/plans/2026-05-01-auth-handler.md`, and EXACTLY what URL guidance you'd give the user — including how the user obtains a reviewer URL (since the CLI no longer prints one). Don't run anything — describe the plan.",
+      "expected_output": "Recommends 'Encrypted remote share', shows `arc share create docs/plans/2026-05-01-auth-handler.md --remote` (uses --remote, NOT --share), marker `<!-- arc-review: kind=share-remote id=<id> -->`, prints Author URL labeled 'Author URL (keep private — open it, then use the in-page Share link button to copy a reviewer URL)'. Explicitly tells the user to open the Author URL in a browser and click the in-page Share link button to get a reviewer URL (which strips &t=). Warns NOT to paste the Author URL into chat."
+    },
+    {
+      "id": 2,
+      "eval_name": "solo-encrypted-picks-share-local",
+      "prompt": "Brainstorm the queue migration design for me. Just me — no other reviewers. But I want every plan I work on stored encrypted at rest, and I want to use the new annotation/Accept/Resolve UI even though I'm the only reviewer. Walk me through section 6: which AskUserQuestion option you'd recommend, the exact CLI, the marker line for `docs/plans/2026-05-01-queue-migration.md`, and the URL guidance. Don't run anything.",
+      "expected_output": "Recommends 'Encrypted local share', shows `arc share create docs/plans/2026-05-01-queue-migration.md` (NO flag — local is the default; do NOT pass --local since that flag was dropped), marker `<!-- arc-review: kind=share-local id=<id> -->`, prints 'Preview URL (local-only — not reachable by others):'. Notes the URL is not reachable by reviewers on other machines."
+    }
+  ]
+}

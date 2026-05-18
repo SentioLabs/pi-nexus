@@ -1,0 +1,26 @@
+{
+  "skill_name": "plan",
+  "evals": [
+    {
+      "id": 0,
+      "eval_name": "marker-legacy-routes-to-arc-plan",
+      "prompt": "You're given the design doc at `docs/plans/2026-05-01-transcode-refactor.md`. The first line of the file is exactly:\n\n    <!-- arc-review: kind=legacy id=42 -->\n\nFollowing the plan skill, walk me through Step 1 (Read the Design) and Step 4 (Read the full plan content first). Show the EXACT shell commands you'd run to (a) read the marker, (b) read the plan content, (c) look up the plan file path if all you had was the ID. Don't actually execute anything — show the commands.",
+      "expected_output": "Step 1 reads the marker via `head -1`, extracts kind=legacy and id=42, then runs `arc plan show 42` (NOT `arc share show`). Step 4's read uses the same `arc plan show 42`. The file-path lookup uses `arc plan show 42 | grep -oE '^File: \\S+' | awk '{print $2}'` (NOT the `arc share list --json | jq` form, since legacy plans aren't in the share keyring).",
+      "files": []
+    },
+    {
+      "id": 1,
+      "eval_name": "marker-share-local-routes-to-arc-share",
+      "prompt": "You're given the design doc at `docs/plans/2026-05-01-queue-migration.md`. The first line is exactly:\n\n    <!-- arc-review: kind=share-local id=01HX3K9VPKABCDEF -->\n\nFollowing the plan skill, walk me through Step 1 and Step 4. Show the EXACT shell commands you'd run for (a) reading the marker, (b) reading the plan content, (c) looking up the plan file path from the ID. Don't execute anything.",
+      "expected_output": "Step 1 reads the marker via `head -1`, extracts kind=share-local and id=01HX3K9VPKABCDEF, then runs `arc share show 01HX3K9VPKABCDEF`. Step 4's content read is the same. The file-path lookup uses `arc share list --json | jq -r '.[] | select(.id==\"01HX3K9VPKABCDEF\") | .plan_file'`. Does NOT call `arc plan show`.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "eval_name": "no-marker-falls-back-to-share-list",
+      "prompt": "You're given the design doc at `docs/plans/2025-old-design.md`. The first line of the file is `# Old design` — there's no `<!-- arc-review: ... -->` marker (it predates the marker contract). The user remembers this design was a `share-local` plan but doesn't remember the share ID. Walk me through what you'd do at Step 1 (Read the Design) and how you'd derive the ID. Show exact commands. Don't execute.",
+      "expected_output": "Detects the missing marker. Falls back to `arc share list --json | jq -r '.[] | select(.plan_file==\"docs/plans/2025-old-design.md\") | .id'` to derive the ID. After getting the ID, runs `arc share show <id>` to read the plan. Notes that this fallback only covers share-local/share-remote plans — if it returns empty, asks the user which review surface the plan was registered on.",
+      "files": []
+    }
+  ]
+}

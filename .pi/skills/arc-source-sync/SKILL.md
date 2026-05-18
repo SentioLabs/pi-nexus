@@ -175,8 +175,6 @@ The `rg` checks should return no unintended leftovers. If matches are intentiona
 
 Also run a final status check:
 
-When a maintenance task explicitly excludes generated outputs, do not commit regenerated `packages/pi-arc/prompts`, `packages/pi-arc/skills`, or `packages/pi-arc/agents` output changes unless the task expands scope. For ordinary source-sync tasks where regenerated resources are the intended deliverable, include those generated outputs after review.
-
 ```bash
 git status --short
 git diff --stat
