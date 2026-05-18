@@ -88,7 +88,18 @@ export function resolveArcModelsConfigPath(env: NodeJS.ProcessEnv = process.env,
 export async function loadArcModelsConfig(filePath = resolveArcModelsConfigPath()): Promise<ArcModelsConfig> {
   try {
     const raw = await readFile(filePath, "utf8");
-    return normalizeArcModelsConfig(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    const normalized = normalizeArcModelsConfig(parsed);
+
+    if (shouldPersistLegacyBuilderMigration(parsed)) {
+      try {
+        await saveArcModelsConfig(normalized, filePath);
+      } catch {
+        // Keep loaded config even if migration write fails.
+      }
+    }
+
+    return normalized;
   } catch {
     return { version: ARC_MODELS_CONFIG_VERSION, modelProfiles: {} };
   }
@@ -107,17 +118,13 @@ export function normalizeArcModelsConfig(input: unknown): ArcModelsConfig {
   const config: ArcModelsConfig = { version: ARC_MODELS_CONFIG_VERSION, modelProfiles: {} };
 
   for (const key of ARC_MODEL_PROFILE_KEYS) {
-    const rawProfile = input.modelProfiles[key];
-    if (!isRecord(rawProfile)) continue;
+    const profile = normalizeArcModelProfile(input.modelProfiles[key]);
+    if (profile) config.modelProfiles[key] = profile;
+  }
 
-    const profile: ArcModelProfile = {};
-    if (typeof rawProfile.model === "string" && rawProfile.model.trim()) profile.model = rawProfile.model.trim();
-    if (typeof rawProfile.thinking === "string" && (ARC_THINKING_LEVELS as readonly string[]).includes(rawProfile.thinking)) {
-      profile.thinking = rawProfile.thinking as ArcThinkingLevel;
-    }
-    if (typeof rawProfile.escalateTo === "string" && rawProfile.escalateTo.trim()) profile.escalateTo = rawProfile.escalateTo.trim();
-
-    if (Object.keys(profile).length > 0) config.modelProfiles[key] = profile;
+  if (!config.modelProfiles.coder) {
+    const legacyBuilder = normalizeArcModelProfile(input.modelProfiles.builder);
+    if (legacyBuilder) config.modelProfiles.coder = legacyBuilder;
   }
 
   if (isRecord(input.setup)) {
@@ -137,6 +144,32 @@ export function normalizeArcModelsConfig(input: unknown): ArcModelsConfig {
   }
 
   return config;
+}
+
+function normalizeArcModelProfile(rawProfile: unknown): ArcModelProfile | undefined {
+  if (!isRecord(rawProfile)) return undefined;
+
+  const profile: ArcModelProfile = {};
+  if (typeof rawProfile.model === "string" && rawProfile.model.trim()) profile.model = rawProfile.model.trim();
+  if (typeof rawProfile.thinking === "string" && (ARC_THINKING_LEVELS as readonly string[]).includes(rawProfile.thinking)) {
+    profile.thinking = rawProfile.thinking as ArcThinkingLevel;
+  }
+  if (typeof rawProfile.escalateTo === "string" && rawProfile.escalateTo.trim()) profile.escalateTo = rawProfile.escalateTo.trim();
+
+  if (Object.keys(profile).length === 0) return undefined;
+  return profile;
+}
+
+function shouldPersistLegacyBuilderMigration(input: unknown): boolean {
+  if (!isRecord(input) || input.version !== ARC_MODELS_CONFIG_VERSION || !isRecord(input.modelProfiles)) {
+    return false;
+  }
+
+  const coder = normalizeArcModelProfile(input.modelProfiles.coder);
+  if (coder) return false;
+
+  const builder = normalizeArcModelProfile(input.modelProfiles.builder);
+  return !!builder;
 }
 
 function splitKnownThinkingSuffix(model: string): { baseModel: string; thinkingSuffix: string } {
