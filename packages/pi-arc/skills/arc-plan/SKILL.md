@@ -251,7 +251,9 @@ Description:
 - T4 blocked by T3
 
 ## Labels
-- T3: docs-only
+- T1: executor:coder
+- T2: executor:devops
+- T3: executor:docs
 
 ## Required Output
 | Task | Arc ID | Title |
@@ -272,7 +274,57 @@ The `## Timing` section is required for bulk issue creation; use `unknown` for a
 
 **IMPORTANT**: The epic description MUST contain the complete approved design. The agent reads the plan file directly to avoid any summarization or content loss. The plan file is ephemeral; the epic description is the permanent record.
 
-For each task, check whether **all** files in its `## Files` section are documentation (`.md`, `.txt`, `README`, `CHANGELOG`, or anything under `docs/`). If so, include it in the `## Labels` section with `docs-only`. Doc-only tasks skip TDD — the `implement` skill routes them to `doc-writer` instead of `coder`.
+Every new implementation task must include exactly one executor label: `executor:coder`, `executor:devops`, or `executor:docs`. Multiple or missing executor labels are plan failures.
+
+Use `executor:docs` as the source of truth for new docs tasks. `docs-only` is a legacy input handled by arc-build only and must not be emitted for new tasks.
+
+### Executor Classification
+
+| Task content | Executor label |
+|---|---|
+| Application/library/CLI code changes | `executor:coder` |
+| Kubernetes, Terraform/OpenTofu, Helm, Kustomize, ArgoCD, CI/CD, cloud infra, runbooks, live operational checks | `executor:devops` |
+| Documentation-only changes | `executor:docs` |
+
+Live operations require the `live-ops-approved` label plus explicit task-body authorization.
+
+### DevOps Task Description Format
+
+Use this format for tasks labeled `executor:devops`:
+
+```markdown
+## Executor
+executor:devops
+
+## Live Operation Authorization
+- Explicit task-body authorization: <required statement>
+- Requires label: live-ops-approved (for live operations)
+
+## Target Environment
+- <environment>
+
+## Allowed Operations
+- <allowed commands/actions>
+
+## Scope Boundary
+- <in-scope systems>
+- <out-of-scope systems>
+
+## Preflight Checks
+1. <check>
+
+## Execution Steps
+1. <step>
+
+## Rollback Plan
+1. <rollback step>
+
+## Validation/Post-checks
+1. <validation command>
+
+## Evidence to Report
+- <logs/screenshots/command output>
+```
 
 ### 5. Validate Returned Results
 
@@ -446,7 +498,7 @@ Include a `## Design Contracts` section in every non-T0 task description, placed
 
 If a type the subagent needs is not listed in Design Contracts and is not already on HEAD from T0, the subagent must NOT create it. This rule complements the Scope Boundary section — Scope Boundary restricts file ownership, Design Contracts restricts type ownership.
 
-For `docs-only` tasks, omit `## Test Command` and use `## Verification` instead:
+For `executor:docs` tasks, omit `## Test Command` and use `## Verification` instead. `docs-only` is legacy input only:
 
 ```
 ## Verification

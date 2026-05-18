@@ -122,13 +122,16 @@ When receiving a structured manifest from the `plan` or `brainstorm` skills, par
    ```bash
    arc dep add <real-later-id> <real-earlier-id> --type=blocks
    ```
-5. **Apply labels after dependencies**, or in the same post-creation phase.
+5. **Validate executor labels before applying labels**: every child task must carry exactly one executor label.
+   - Allowed values: `executor:coder`, `executor:devops`, `executor:docs`
+   - Missing executor labels or multiple executor labels on one task are manifest failures.
+6. **Apply labels after dependencies**, or in the same post-creation phase.
    ```bash
    # Labels are managed via the REST API (no CLI command exists)
-   # Use arc update to add label context in the description, or
-   # note the labels in the summary for the dispatcher to handle
+   # If CLI cannot apply labels directly, report the exact labels
+   # per task in the summary so the dispatcher can apply them.
    ```
-6. **Return the final ID table, dependency summary, and `## Timing` summary**.
+7. **Return the final ID table, dependency summary, and `## Timing` summary**.
 
 Print `[arc-issue-manager] phase=<name> status=start|done elapsed_ms=<n>` progress lines around each phase (`epic`, `child_tasks`, `dependencies`, `labels`, and optional `verification`) so long-running issue creation is observable.
 
