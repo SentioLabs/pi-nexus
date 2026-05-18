@@ -158,15 +158,25 @@ Record the current HEAD before dispatching — needed for review if escalated:
 PRE_TASK_SHA=$(git rev-parse HEAD)
 ```
 
-Check whether the task has a `docs-only` label:
+Resolve executor from issue labels:
 
 ```bash
-arc show <task-id> --json | jq -e '.labels[] | select(. == "docs-only")' > /dev/null 2>&1
+arc show <task-id> --json | jq -r '.labels[]' | grep '^executor:'
 ```
 
-**If `docs-only`** (exit code 0) — spawn a `doc-writer` subagent:
+Routing contract:
+- exactly one `executor:coder` → `coder`
+- exactly one `executor:devops` → `devops`
+- exactly one `executor:docs` → `doc-writer`
+- zero executor labels + old `docs-only` label → `doc-writer` (legacy fallback)
+- zero executor labels + no `docs-only` label → `coder` (legacy fallback)
+- multiple or unknown executor labels → stop and require issue correction before dispatch
 
-Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
+If executor resolution fails, do not dispatch. Add an arc comment describing the invalid labels and request correction.
+
+**If resolved executor is `doc-writer`** — spawn a `doc-writer` subagent:
+
+Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
 
 Dispatch preference:
 - If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
@@ -175,7 +185,20 @@ Dispatch preference:
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
-**Otherwise** — spawn a `coder` subagent:
+**If resolved executor is `devops`** — spawn a `devops` subagent:
+
+Use the task spec directly and include evidence expectations in the prompt (changed files, command output, logs/runbook/config proof, and rollback notes when applicable).
+
+Dispatch preference:
+- If `subagent` is available and `arc-devops` is installed: `subagent({ agent: "arc-devops", task: "<task spec and evidence instructions>", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
+- Otherwise: `arc_agent(agent="devops", task="<task spec and evidence instructions>")`
+
+Devops tasks may legitimately finish as evidence-only with no commit when no repository files changed. Treat command output and operational evidence as the deliverable in that case.
+
+For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+
+**If resolved executor is `coder`** — spawn a `coder` subagent:
 
 Use the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
 
@@ -247,6 +270,8 @@ Handle results:
 - Circuit breaker: 3 spec-review/fix cycles without resolution → escalate to user.
 
 > **Docs-only tasks**: Skip this step. The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For docs-only tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
+>
+> **Devops evidence-only tasks**: If executor resolved to `devops` and no repo files changed, a missing diff/commit is acceptable. Verify the reported devops evidence (commands, outputs, config/runbook state, operational proof) against the task spec before proceeding.
 
 ### 6. Code Quality Review
 
@@ -272,6 +297,8 @@ Handle findings:
 Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.
 
 > **Docs-only tasks**: Skip code quality review. For substantial documentation changes (developer-facing API docs, architecture docs), optionally dispatch `code-reviewer` for a quality check.
+>
+> **Devops evidence-only tasks**: Reviewers may receive no code diff when no repo files changed. In that case, review the devops evidence package for completeness and task alignment instead of requiring a commit.
 
 ### 6.5. High-Risk Evaluation (Optional)
 
@@ -304,7 +331,7 @@ Use the template at `./evaluator-prompt.md`. Fill placeholder `{TASK_ID}`. Becau
 
 When you plan to run the evaluator, set the code quality reviewer's `## Evaluator Status` to `active`; otherwise set it to `not dispatched`.
 
-Triage evaluator findings:
+Triage evaluator findings (for devops tasks, evaluators should also inspect reported devops evidence and can pass evidence-only runs when no repo files changed):
 
 | Evaluator verdict | Orchestrator action |
 |---|---|
