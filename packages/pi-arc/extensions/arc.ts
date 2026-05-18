@@ -83,11 +83,6 @@ const WORKFLOW_SKILLS: Array<{ command: string; skill: string; description: stri
     skill: "arc-finish",
     description: "Use arc-finish to wrap up a session and persist handoff context",
   },
-  {
-    command: "arc-source-sync",
-    skill: "arc-source-sync",
-    description: "Maintainer-only: sync pi-arc resources from the Arc source plugin",
-  },
 ];
 
 function outputOf(result: ArcCommandResult): string {

@@ -282,7 +282,6 @@ Implemented:
 - Pi-native `arc_agent` custom tool for sequential subagent execution
 - Auto-materialized Arc specialists in pi-subagents user scope; `/arc-subagents-sync` is deprecated repair/backcompat only
 - Optional `pi-subagents` integration for worktree-isolated evaluator runs, independent parallel builder batches, and phased issue-manager creation
-- Maintainer-only `/arc-source-sync` workflow for syncing from the Claude Arc plugin source
 
 Not yet implemented:
 
@@ -310,13 +309,12 @@ npm run pack:dry-run
 
 ### Maintainer source sync
 
-This repo includes a maintainer-only `/arc-source-sync` skill/command for syncing Pi resources from the Claude Arc plugin source while preserving Pi-specific behavior.
+Source checkouts of the `pi-nexus` monorepo include a repo-local maintainer skill at `.pi/skills/arc-source-sync/SKILL.md` for syncing Pi resources from the Claude Arc plugin source while preserving Pi-specific behavior. This maintainer skill is intentionally not shipped in the `@sentiolabs/pi-arc` package.
 
-Use the skill when asking an agent to evaluate and apply upstream changes:
+Use the repo-local skill when asking an agent to evaluate and apply upstream changes:
 
 ```text
-/arc-source-sync
-/arc-source-sync ~/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc
+/skill:arc-source-sync ~/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc
 ```
 
 Regenerate migrated resources directly from the default source path:

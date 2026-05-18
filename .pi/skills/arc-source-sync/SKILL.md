@@ -7,7 +7,7 @@ description: Maintainer-only workflow for syncing this pi-arc package from the C
 
 Synchronize the Pi Arc package with changes from the Claude Arc plugin source while preserving Pi-native behavior.
 
-This is a **maintainer-only** workflow for this repository. Run it from a `pi-arc` source checkout where `scripts/migrate-arc-plugin.py` exists; it is not part of the normal end-user Arc issue workflow.
+This is a **repo-local maintainer-only** workflow for the `pi-nexus` source checkout. It operates on `packages/pi-arc` and is intentionally not shipped in the `@sentiolabs/pi-arc` npm package; it is not part of the normal end-user Arc issue workflow.
 
 ## Core Rule
 
@@ -30,15 +30,17 @@ The Claude plugin and Pi package intentionally differ:
 If the user provides a source path, use it. Examples:
 
 ```text
-/arc-source-sync ~/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc
+/skill:arc-source-sync ~/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc
 /skill:arc-source-sync ~/foo/bar/arc
 ```
 
-If no path is provided, use the migration script default:
+All package commands below should run from `packages/pi-arc`:
 
 ```bash
-../agent-nexus/claude-marketplace/plugins/arc
+cd packages/pi-arc
 ```
+
+If no path is provided, you may try the migration script default, but verify it before using it; in monorepo checkouts an explicit source path is usually clearer.
 
 Expand `~` and verify the source looks like the Claude Arc plugin:
 
@@ -55,10 +57,11 @@ Stop and ask the user for the correct path if these checks fail.
 
 Before running the migration script, understand both repositories.
 
-In `pi-arc`:
+In the repository root and then in `packages/pi-arc` context:
 
 ```bash
 git status --short
+cd packages/pi-arc
 ```
 
 If unrelated local changes exist, pause and ask before proceeding. The generator rewrites `prompts/`, `skills/`, and `agents/`.
@@ -75,7 +78,7 @@ Note which upstream files changed and whether they affect prompts, workflow skil
 
 ## 3. Regenerate Mechanical Resources
 
-Run the migration script with the resolved source path:
+From `packages/pi-arc`, run the migration script with the resolved source path:
 
 ```bash
 python3 scripts/migrate-arc-plugin.py "$SOURCE"
@@ -157,6 +160,7 @@ Only update tests when the intended Pi contract has genuinely changed. Do not up
 Run these checks before claiming the sync is complete:
 
 ```bash
+cd packages/pi-arc
 python3 scripts/migrate-arc-plugin.py --help
 git diff --check
 npm test

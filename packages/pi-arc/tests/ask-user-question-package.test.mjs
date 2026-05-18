@@ -42,7 +42,7 @@ test('docs teach rpiv ask_user_question schema and escape hatches', () => {
   const readme = read('README.md');
   const brainstorm = read('skills/arc-brainstorm/SKILL.md');
   const plan = read('skills/arc-plan/SKILL.md');
-  const sourceSync = read('skills/arc-source-sync/SKILL.md');
+  const sourceSync = read('../../.pi/skills/arc-source-sync/SKILL.md');
   const migrate = read('scripts/migrate-arc-plugin.py');
 
   for (const source of [readme, brainstorm, plan, sourceSync, migrate]) {

@@ -7,7 +7,7 @@ import re
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ARC_ROOT = REPO_ROOT
 DEFAULT_SRC = (REPO_ROOT / "../agent-nexus/claude-marketplace/plugins/arc").resolve()
-PI_LOCAL_SKILL_DIRS = {"arc-source-sync"}
+PI_LOCAL_SKILL_DIRS = set()
 
 
 def parse_args() -> argparse.Namespace:

@@ -25,17 +25,19 @@ test('migration script validates source before rewriting resources', () => {
   assert.match(source, /"\.claude-plugin\/plugin\.json"/);
 });
 
-test('arc-source-sync skill exists and is maintainer-only', () => {
-  const source = read('skills/arc-source-sync/SKILL.md');
+test('arc-source-sync skill is repo-local and maintainer-only', () => {
+  const source = read('../../.pi/skills/arc-source-sync/SKILL.md');
+  assert.equal(existsSync('skills/arc-source-sync/SKILL.md'), false);
   assert.match(source, /name: arc-source-sync/);
-  assert.match(source, /maintainer-only/i);
+  assert.match(source, /repo-local maintainer-only/i);
+  assert.match(source, /intentionally not shipped in the `@sentiolabs\/pi-arc` npm package/);
   assert.match(source, /Never blindly copy/);
   assert.match(source, /python3 scripts\/migrate-arc-plugin\.py "\$SOURCE"/);
   assert.match(source, /Release Please-managed/);
 });
 
 test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
-  const source = read('skills/arc-source-sync/SKILL.md');
+  const source = read('../../.pi/skills/arc-source-sync/SKILL.md');
   assert.match(source, /Quality bar/i);
   assert.match(source, /tests as executable Pi contracts/);
   assert.match(source, /Adapt Pi-Specific Patches/);
@@ -49,10 +51,11 @@ test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
   assert.match(source, /Do not tell the user "ready to push"/);
 });
 
-test('migration script preserves Pi-only skills and excludes upstream eval fixtures', () => {
+test('migration script excludes upstream eval fixtures without preserving package-local maintainer skills', () => {
   const source = read('scripts/migrate-arc-plugin.py');
-  assert.match(source, /PI_LOCAL_SKILL_DIRS = \{"arc-source-sync"\}/);
+  assert.match(source, /PI_LOCAL_SKILL_DIRS = set\(\)/);
   assert.match(source, /ignore=shutil\.ignore_patterns\("evals"\)/);
+  assert.equal(existsSync('skills/arc-source-sync/SKILL.md'), false);
   assert.equal(existsSync('skills/arc-brainstorm/evals'), false);
   assert.equal(existsSync('skills/arc-plan/evals'), false);
 });
@@ -68,18 +71,19 @@ test('migration script rewrites renamed skill path references', () => {
   assert.doesNotMatch(arcSkill, /skills\/(brainstorm|plan)\/SKILL\.md/);
 });
 
-test('arc extension registers arc-source-sync slash alias', () => {
+test('arc extension does not ship arc-source-sync slash alias', () => {
   const source = read('extensions/arc.ts');
-  assert.match(source, /command: "arc-source-sync"/);
-  assert.match(source, /skill: "arc-source-sync"/);
-  assert.match(source, /Maintainer-only: sync pi-arc resources/);
+  assert.doesNotMatch(source, /command: "arc-source-sync"/);
+  assert.doesNotMatch(source, /skill: "arc-source-sync"/);
   assert.match(source, /pi\.sendUserMessage\(`\/skill:\$\{skill\}\$\{args\.trim\(\)/);
 });
 
-test('README documents maintainer-only source sync', () => {
+test('README documents repo-local maintainer source sync', () => {
   const source = read('README.md');
   assert.match(source, /Maintainer source sync/);
-  assert.match(source, /maintainer-only `\/arc-source-sync` skill\/command/);
+  assert.match(source, /repo-local maintainer skill/);
+  assert.match(source, /intentionally not shipped in the `@sentiolabs\/pi-arc` package/);
+  assert.match(source, /\/skill:arc-source-sync ~\/devspace\/personal\/sentiolabs\/agent-nexus\/claude-marketplace\/plugins\/arc/);
   assert.match(source, /python3 scripts\/migrate-arc-plugin\.py --source ~\/foo\/bar\/arc/);
 });
 
