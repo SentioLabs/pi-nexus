@@ -67,4 +67,7 @@ test('issue-manager manifest guidance includes executor labels', () => {
   assert.match(source, /executor:devops/);
   assert.match(source, /executor:docs/);
   assert.match(source, /exactly one executor label/i);
+  assert.match(source, /before applying labels/i);
+  assert.match(source, /manifest failures/i);
+  assert.match(source, /report the exact labels/i);
 });
