@@ -122,7 +122,8 @@ export function normalizeArcModelsConfig(input: unknown): ArcModelsConfig {
     if (profile) config.modelProfiles[key] = profile;
   }
 
-  if (!config.modelProfiles.coder) {
+  const hasRawCoderProfile = Object.prototype.hasOwnProperty.call(input.modelProfiles, "coder");
+  if (!hasRawCoderProfile) {
     const legacyBuilder = normalizeArcModelProfile(input.modelProfiles.builder);
     if (legacyBuilder) config.modelProfiles.coder = legacyBuilder;
   }
@@ -165,8 +166,8 @@ function shouldPersistLegacyBuilderMigration(input: unknown): boolean {
     return false;
   }
 
-  const coder = normalizeArcModelProfile(input.modelProfiles.coder);
-  if (coder) return false;
+  const hasRawCoderProfile = Object.prototype.hasOwnProperty.call(input.modelProfiles, "coder");
+  if (hasRawCoderProfile) return false;
 
   const builder = normalizeArcModelProfile(input.modelProfiles.builder);
   return !!builder;
