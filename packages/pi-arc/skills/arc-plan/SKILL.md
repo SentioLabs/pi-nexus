@@ -272,7 +272,7 @@ The `## Timing` section is required for bulk issue creation; use `unknown` for a
 
 **IMPORTANT**: The epic description MUST contain the complete approved design. The agent reads the plan file directly to avoid any summarization or content loss. The plan file is ephemeral; the epic description is the permanent record.
 
-For each task, check whether **all** files in its `## Files` section are documentation (`.md`, `.txt`, `README`, `CHANGELOG`, or anything under `docs/`). If so, include it in the `## Labels` section with `docs-only`. Doc-only tasks skip TDD — the `implement` skill routes them to `doc-writer` instead of `builder`.
+For each task, check whether **all** files in its `## Files` section are documentation (`.md`, `.txt`, `README`, `CHANGELOG`, or anything under `docs/`). If so, include it in the `## Labels` section with `docs-only`. Doc-only tasks skip TDD — the `implement` skill routes them to `doc-writer` instead of `coder`.
 
 ### 5. Validate Returned Results
 

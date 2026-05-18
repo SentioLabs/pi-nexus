@@ -1,6 +1,6 @@
-# Implementer Prompt Template
+# Coder Prompt Template
 
-Use this template when dispatching `builder` for a task.
+Use this template when dispatching `coder` for a task.
 
 **Placeholders:**
 - `{TASK_ID}` — arc issue ID (e.g., `task.abc123`)
@@ -9,7 +9,7 @@ Use this template when dispatching `builder` for a task.
 - `{MODEL_TIER_NOTE}` — optional hint about expected complexity
 
 ````text
-You are implementing arc task {TASK_ID}.
+You are coding arc task {TASK_ID}.
 
 ## Task Spec
 <paste output of: arc show {TASK_ID}>

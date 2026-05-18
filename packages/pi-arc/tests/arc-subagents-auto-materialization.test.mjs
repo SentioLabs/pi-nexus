@@ -16,7 +16,7 @@ function renderTestAgent(mod, source, target, modelsConfigHash = 'models-hash') 
     sourceMarkdown: `# ${source}`,
     parsedSource: { prompt: `# ${source}` },
     resolvedModel: 'openai-codex/gpt-5.4-mini',
-    modelProfileKey: 'builder',
+    modelProfileKey: 'coder',
     modelResolutionSource: 'test',
     modelsConfigHash,
     generatedAt: '2026-05-03T00:00:00.000Z',
@@ -110,13 +110,13 @@ test('Arc materializer preserves non-generated files and reports project shadows
 
     const targetDir = mod.resolveArcSubagentDir('user', cwd, homeDir);
     await mkdir(targetDir, { recursive: true });
-    await writeFile(path.join(targetDir, 'arc-builder.md'), '', 'utf8');
+    await writeFile(path.join(targetDir, 'arc-coder.md'), '', 'utf8');
 
     const projectAgentsDir = path.join(cwd, '.pi', 'agents');
     const legacyProjectAgentsDir = path.join(cwd, '.agents');
     await mkdir(projectAgentsDir, { recursive: true });
     await mkdir(legacyProjectAgentsDir, { recursive: true });
-    await writeFile(path.join(projectAgentsDir, 'arc-builder.md'), renderTestAgent(mod, 'builder', 'arc-builder'), 'utf8');
+    await writeFile(path.join(projectAgentsDir, 'arc-coder.md'), renderTestAgent(mod, 'coder', 'arc-coder'), 'utf8');
     await writeFile(path.join(legacyProjectAgentsDir, 'arc-doc-writer.md'), 'custom project shadow', 'utf8');
 
     const result = await mod.materializeArcSubagents({
@@ -129,10 +129,10 @@ test('Arc materializer preserves non-generated files and reports project shadows
       renderAgent: async (source, target) => renderTestAgent(mod, source, target),
     });
 
-    const builder = result.writes.find((entry) => entry.agent === 'arc-builder');
-    assert.equal(builder?.status, 'skipped');
-    assert.equal(await readFile(path.join(targetDir, 'arc-builder.md'), 'utf8'), '');
-    assert.ok(result.shadows.some((shadow) => shadow.projectPath.endsWith(path.join('.pi', 'agents', 'arc-builder.md'))));
+    const coder = result.writes.find((entry) => entry.agent === 'arc-coder');
+    assert.equal(coder?.status, 'skipped');
+    assert.equal(await readFile(path.join(targetDir, 'arc-coder.md'), 'utf8'), '');
+    assert.ok(result.shadows.some((shadow) => shadow.projectPath.endsWith(path.join('.pi', 'agents', 'arc-coder.md'))));
     assert.ok(result.shadows.some((shadow) => shadow.projectPath.endsWith(path.join('.agents', 'arc-doc-writer.md'))));
     assert.ok(result.shadows.every((shadow) => shadow.message.includes('project scope wins over user scope')));
   } finally {
@@ -166,7 +166,7 @@ test('Arc materializer falls back to legacy user directory when modern user dire
     const legacyDir = path.join(homeDir, '.pi', 'agent', 'agents');
     assert.equal(result.targetDir, legacyDir);
     assert.equal(result.writes.filter((entry) => entry.status === 'written').length, mod.ARC_PI_SUBAGENTS.length);
-    assert.match(await readFile(path.join(legacyDir, 'arc-builder.md'), 'utf8'), /name: arc-builder/);
+    assert.match(await readFile(path.join(legacyDir, 'arc-coder.md'), 'utf8'), /name: arc-coder/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -208,7 +208,7 @@ test('Arc materializer reports modern per-file target failures instead of legacy
 
 test('Arc source agents document optional supervisor escalation without bundling pi-intercom', () => {
   for (const file of [
-    'agents/builder.md',
+    'agents/coder.md',
     'agents/code-reviewer.md',
     'agents/doc-writer.md',
     'agents/evaluator.md',

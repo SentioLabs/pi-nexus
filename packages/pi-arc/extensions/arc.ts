@@ -92,10 +92,10 @@ function outputOf(result: ArcCommandResult): string {
   return stdout || stderr || `(exit code ${result.code ?? "unknown"}, no output)`;
 }
 
-type ArcAgentName = "builder" | "code-reviewer" | "doc-writer" | "evaluator" | "issue-manager" | "spec-reviewer";
+type ArcAgentName = "coder" | "code-reviewer" | "doc-writer" | "evaluator" | "issue-manager" | "spec-reviewer";
 
 const ARC_AGENT_NAMES = [
-  "builder",
+  "coder",
   "code-reviewer",
   "doc-writer",
   "evaluator",
@@ -250,7 +250,7 @@ const ARC_RECOMMENDED_PROFILE_KEYS: ArcModelProfileKey[] = [
   "brainstorm",
   "plan",
   "issueManager",
-  "builder",
+  "coder",
   "codeReviewer",
   "docWriter",
   "specReviewer",
@@ -269,7 +269,7 @@ const ARC_PROFILE_RECOMMENDATIONS: Record<ArcModelProfileKey, ArcProfileRecommen
   brainstorm: { modelId: "gpt-5.5", thinking: "high", reason: "design exploration and architecture judgment" },
   plan: { modelId: "gpt-5.5", thinking: "high", reason: "task breakdown and sequencing" },
   issueManager: { modelId: "gpt-5.4-mini", thinking: "off", reason: "Arc CLI formatting and issue updates" },
-  builder: { modelId: "gpt-5.3-codex", thinking: "medium", reason: "implementation and code navigation" },
+  coder: { modelId: "gpt-5.3-codex", thinking: "medium", reason: "implementation and code navigation" },
   codeReviewer: { modelId: "gpt-5.5", thinking: "high", reason: "review judgment and risk detection" },
   docWriter: { modelId: "gpt-5.4-mini", thinking: "low", reason: "documentation prose and light reasoning" },
   specReviewer: { modelId: "gpt-5.5", thinking: "high", reason: "spec compliance and ambiguity detection" },
@@ -823,10 +823,10 @@ export default function arcExtension(pi: ExtensionAPI) {
     name: "arc_agent",
     label: "Arc Agent",
     description:
-      "Run a bundled Arc specialist agent (builder, reviewer, issue-manager, etc.) in a fresh Pi subprocess. Output is truncated to 50KB/2000 lines.",
+      "Run a bundled Arc specialist agent (coder, reviewer, issue-manager, etc.) in a fresh Pi subprocess. Output is truncated to 50KB/2000 lines.",
     promptSnippet: "Delegate Arc issue-management, implementation, review, docs, and evaluation tasks to bundled specialist agents.",
     promptGuidelines: [
-      "Prefer true pi-subagents Arc specialists (arc-builder, arc-issue-manager, arc-code-reviewer, etc.) when available/auto-materialized so long runs can be monitored with /subagents-status.",
+      "Prefer true pi-subagents Arc specialists (arc-coder, arc-issue-manager, arc-code-reviewer, etc.) when available/auto-materialized so long runs can be monitored with /subagents-status.",
       "For bulk issue creation, do not use arc_agent issue-manager when subagent({ action: \"list\" }) shows arc-issue-manager; dispatch arc-issue-manager asynchronously instead.",
       "Use arc_agent only as the self-contained fallback when Arc pi-subagents definitions are unavailable or a workflow skill explicitly asks for the fallback.",
       "Right-size fallback arc_agent dispatches with model tiers: nano for bulk CLI issue creation, small for mechanical/docs tasks, standard for normal contained work, large for complex or high-risk work.",
@@ -996,7 +996,7 @@ export default function arcExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("arc-subagents-sync", {
-    description: "Repair generated Arc specialist definitions (arc-builder, arc-doc-writer, arc-spec-reviewer, arc-code-reviewer, arc-evaluator, arc-issue-manager) in user/project scope",
+    description: "Repair generated Arc specialist definitions (arc-coder, arc-doc-writer, arc-spec-reviewer, arc-code-reviewer, arc-evaluator, arc-issue-manager) in user/project scope",
     handler: async (args, ctx) => {
       const parsedArgs = parseArcSubagentScopeArg(args);
       if (parsedArgs.error) {

@@ -51,7 +51,7 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
   - When Arc recommends an option, list it first, append `(Recommended)` to the label, and explain why in the description.
 - **`arc_agent` tool**:
   - Runs bundled Arc specialist prompts from `agents/*.md` in fresh Pi subprocesses.
-  - Supports `builder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`.
+  - Supports `coder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`.
   - Resolves Arc model tiers (`small`, `standard`, `large`) to concrete Pi models so orchestrators can right-size subagent dispatches.
   - Current limitation: `isolation: "worktree"` is recognized but not implemented yet.
 - **Optional `pi-subagents` companion support**:
@@ -172,7 +172,7 @@ The brainstorm skill writes a first-line marker like `<!-- arc-review: kind=shar
 
 Use `/arc-models` to configure Arc's recommended Pi model and thinking level per workflow role. Arc stores profile preferences at `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`, with top-level `modelProfiles`.
 
-Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `builder`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
+Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `coder`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
 
 ```json
 {
@@ -186,7 +186,7 @@ Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueMan
       "model": "openai-codex/gpt-5.4-mini",
       "thinking": "off"
     },
-    "builder": {
+    "coder": {
       "model": "openai-codex/gpt-5.3-codex",
       "thinking": "medium"
     },
@@ -213,7 +213,7 @@ Arc writes generated specialists to `~/.agents/` by default. Legacy user scope `
 
 Generated specialists include:
 
-- `arc-builder`
+- `arc-coder`
 - `arc-doc-writer`
 - `arc-spec-reviewer`
 - `arc-code-reviewer`
@@ -281,11 +281,11 @@ Implemented:
 - Bundled `@juicesharp/rpiv-ask-user-question` package for interactive workflow decisions
 - Pi-native `arc_agent` custom tool for sequential subagent execution
 - Auto-materialized Arc specialists in pi-subagents user scope; `/arc-subagents-sync` is deprecated repair/backcompat only
-- Optional `pi-subagents` integration for worktree-isolated evaluator runs, independent parallel builder batches, and phased issue-manager creation
+- Optional `pi-subagents` integration for worktree-isolated evaluator runs, independent parallel coder batches, and phased issue-manager creation
 
 Not yet implemented:
 
-- Native `arc_agent` worktree isolation for parallel Arc builders.
+- Native `arc_agent` worktree isolation for parallel Arc coders.
 - Arc issue autocomplete in the Pi editor.
 
 Intentionally not ported:

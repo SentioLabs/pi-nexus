@@ -5,7 +5,7 @@ description: You MUST use this skill to execute implementation tasks from a plan
 
 # Implement — Subagent-Driven TDD Execution
 
-Orchestrate task implementation by dispatching fresh `builder` subagents per task. Each subagent gets a clean context window with just the task description.
+Orchestrate task implementation by dispatching fresh `coder` subagents per task. Each subagent gets a clean context window with just the task description.
 
 ## Core Rule
 
@@ -56,7 +56,7 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
 
 Legacy aliases still resolve for compatibility: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. Prefer the Pi-native tier names in new prompts, including `nano` for low-reasoning issue-manager work.
 
-Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-builder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
+Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-coder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
 
 **Status visibility:** For long Arc workers after `/arc-plan`, prefer `pi-subagents` launches with `async: true, clarify: false`. The returned run appears in `/subagents-status`; you can also poll it with `subagent({ action: "status", id: "<run-id>" })`. Do not continue to validation, review, patch application, or arc closure until the async run is terminal and you have read its final output. The raw `arc_agent` fallback never appears in `/subagents-status`.
 
@@ -73,14 +73,14 @@ Examples:
 
 ```text
 # Self-contained fallback:
-arc_agent(agent="builder", model="small", task="...")       # mechanical
-arc_agent(agent="builder", task="...")                      # standard default
-arc_agent(agent="builder", model="large", task="...")       # complex
+arc_agent(agent="coder", model="small", task="...")       # mechanical
+arc_agent(agent="coder", task="...")                      # standard default
+arc_agent(agent="coder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-coder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -107,9 +107,9 @@ Tasks are dispatched one at a time through the orchestration loop below. Use thi
 
 Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:
 - `pi-subagents` loaded and the `subagent` tool is available
-- Arc agent definitions such as `arc-builder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
+- Arc agent definitions such as `arc-coder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
 - 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree
-- No shared files between any builder/doc-writer tasks in the batch
+- No shared files between any coder/doc-writer tasks in the batch
 - No `blocks`/`blockedBy` dependencies between tasks in the batch
 - Each task's scope is clearly defined with no ambiguity
 
@@ -175,20 +175,20 @@ Dispatch preference:
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
-**Otherwise** — spawn a `builder` subagent:
+**Otherwise** — spawn a `coder` subagent:
 
-Use the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
+Use the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
 
 Dispatch preference:
-- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-coder` is installed: `subagent({ agent: "arc-coder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
+- Otherwise: `arc_agent(agent="coder", task="<filled prompt>", model="<tier-if-needed>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
 ### 4. Evaluate Result
 
-When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
+When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Coder Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
 
 **On `DONE`:**
 - Run the project tests. If they pass → proceed to step 5 (Spec Compliance Review).
@@ -202,13 +202,13 @@ When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_C
 **On `BLOCKED` or `NEEDS_CONTEXT`:**
 - Do NOT proceed to review. Do NOT close the task.
 - For `NEEDS_CONTEXT`: gather the requested information, re-dispatch with it.
-- For `BLOCKED`: assess the blocker per the Handle Implementer Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.
+- For `BLOCKED`: assess the blocker per the Handle Coder Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.
 - After 3 re-dispatches on the same task without clean `DONE`, invoke the `debug` skill.
 
 **If the subagent did not include a Status field** (malformed report):
 - Treat as `BLOCKED`. Re-dispatch with an explicit reminder to use the four-status Report Format.
 
-When re-dispatching, include the previous report's concerns / blockers so the implementer knows exactly what to fix:
+When re-dispatching, include the previous report's concerns / blockers so the coder knows exactly what to fix:
 
 ```
 Continue implementing this task. A previous attempt reported <status> with these concerns:
@@ -241,9 +241,9 @@ Do **not** substitute the generic `worker` or `reviewer` agent for spec complian
 
 Handle results:
 - `COMPLIANT` → proceed to Step 6
-- `ISSUES (Missing)` → re-dispatch `builder` with specific gaps listed by the spec reviewer. Re-run spec compliance review after.
-- `ISSUES (Extra)` → re-dispatch `builder` to remove the extras listed by the spec reviewer. Re-run spec compliance review after.
-- `ISSUES (Misunderstood)` → re-dispatch `builder` with clarification from the spec reviewer's findings. Re-run spec compliance review after.
+- `ISSUES (Missing)` → re-dispatch `coder` with specific gaps listed by the spec reviewer. Re-run spec compliance review after.
+- `ISSUES (Extra)` → re-dispatch `coder` to remove the extras listed by the spec reviewer. Re-run spec compliance review after.
+- `ISSUES (Misunderstood)` → re-dispatch `coder` with clarification from the spec reviewer's findings. Re-run spec compliance review after.
 - Circuit breaker: 3 spec-review/fix cycles without resolution → escalate to user.
 
 > **Docs-only tasks**: Skip this step. The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For docs-only tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
@@ -264,9 +264,9 @@ Handle findings:
 
 | Finding | Action |
 |---------|--------|
-| **Critical/Important** | Re-dispatch `builder` with fixes. Re-review after. |
+| **Critical/Important** | Re-dispatch `coder` with fixes. Re-review after. |
 | **Minor** | Note in arc comment. Proceed. |
-| **Deviation (fix)** | Re-dispatch `builder` to match the design. |
+| **Deviation (fix)** | Re-dispatch `coder` to match the design. |
 | **Deviation (accept)** | Log as arc comment: "Accepted deviation: \<description\>. Rationale: \<why\>." Proceed. |
 
 Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.
@@ -309,9 +309,9 @@ Triage evaluator findings:
 | Evaluator verdict | Orchestrator action |
 |---|---|
 | `PASS` | No action — evaluator confirms the spec intent is satisfied. |
-| `CONCERNS` | Read the concerns. Re-dispatch `builder` if the concerns describe substantive behavior gaps. Otherwise note as arc comments and proceed. |
-| `FAIL — Spec-Intent Gap` | Re-dispatch `builder` with the evaluator's quoted spec text and the failing behavior description. |
-| `FAIL — Missing Behavior` | Re-dispatch `builder` — the spec requires behavior that wasn't built. |
+| `CONCERNS` | Read the concerns. Re-dispatch `coder` if the concerns describe substantive behavior gaps. Otherwise note as arc comments and proceed. |
+| `FAIL — Spec-Intent Gap` | Re-dispatch `coder` with the evaluator's quoted spec text and the failing behavior description. |
+| `FAIL — Missing Behavior` | Re-dispatch `coder` — the spec requires behavior that wasn't built. |
 | `FAIL — Edge Case` | Lower-severity. Re-dispatch if the spec clearly implies the edge case; otherwise record as a known limitation. |
 | `ERROR — Cannot Test` | The public API is insufficient. Re-dispatch with a request to expose the needed surface. |
 | `BLOCKED` | Evaluator itself is blocked. Escalate per the Model Selection rules or involve the human. |
@@ -330,20 +330,20 @@ After closing 2-3 related tasks, or before switching to a new epic phase, run th
 make test-integration
 ```
 
-This catches cross-task regressions that individual implementer gate checks won't — each implementer only validates its own task's scope. Do not wait until all tasks are complete to discover integration failures.
+This catches cross-task regressions that individual coder gate checks won't — each coder only validates its own task's scope. Do not wait until all tasks are complete to discover integration failures.
 
 If integration tests fail:
 - Identify which task's changes caused the failure
-- Re-dispatch `builder` with the failing test details and the relevant task context
+- Re-dispatch `coder` with the failing test details and the relevant task context
 - If the failure spans multiple tasks, invoke the `debug` skill
 
 ### 9. Repeat
 
 Go to step 1 for the next task. Continue until all tasks in the epic are closed.
 
-## Handle Implementer Status
+## Handle Coder Status
 
-Every `builder` and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
+Every `coder` and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
 
 | Status | Orchestrator action |
 |---|---|
@@ -402,8 +402,8 @@ Dispatch all parallel tasks in one `subagent` tool call so they branch from the 
 ```ts
 subagent({
   tasks: [
-    { agent: "arc-builder", task: "<filled builder prompt for task 1>", model: "openai-codex/gpt-5.3-codex" },
-    { agent: "arc-builder", task: "<filled builder prompt for task 2>", model: "openai-codex/gpt-5.3-codex" },
+    { agent: "arc-coder", task: "<filled coder prompt for task 1>", model: "openai-codex/gpt-5.3-codex" },
+    { agent: "arc-coder", task: "<filled coder prompt for task 2>", model: "openai-codex/gpt-5.3-codex" },
     { agent: "arc-doc-writer", task: "<filled doc-writer prompt for task 3>", model: "openai-codex/gpt-5.4-mini" }
   ],
   worktree: true,
@@ -485,7 +485,7 @@ arc close <id> -r "reason"            # Close completed task
 
 - Never write implementation code as the main agent — always dispatch
 - Never close a task without confirming tests pass yourself (fresh run)
-- Never close a task if the implementer reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching
+- Never close a task if the coder reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching
 - When re-dispatching after `BLOCKED`, escalate one model tier per the Model Selection table — never retry the same dispatch unchanged
 - If in doubt about the result, re-dispatch rather than fixing manually
 - Never dispatch parallel agents without committing and pushing all sequential work first

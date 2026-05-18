@@ -8,7 +8,7 @@ export const ARC_MODEL_PROFILE_KEYS = [
   "brainstorm",
   "plan",
   "issueManager",
-  "builder",
+  "coder",
   "codeReviewer",
   "docWriter",
   "specReviewer",

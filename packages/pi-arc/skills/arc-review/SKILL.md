@@ -62,16 +62,16 @@ When the reviewer reports back:
 
 | Severity | Action |
 |----------|--------|
-| **Critical** | Fix immediately — re-dispatch `builder` with the specific fix. Then re-review. |
-| **Important** | Fix before moving to next task — re-dispatch `builder`. Then re-review. |
+| **Critical** | Fix immediately — re-dispatch `coder` with the specific fix. Then re-review. |
+| **Important** | Fix before moving to next task — re-dispatch `coder`. Then re-review. |
 | **Minor** | Note in arc issue comment for later. Proceed. |
-| **Deviation (fix)** | Re-dispatch `builder` with the specific deviation to correct. |
+| **Deviation (fix)** | Re-dispatch `coder` with the specific deviation to correct. |
 | **Deviation (accept)** | Note the deviation as an arc comment on the task for traceability. Proceed. |
 
 ### 5. Handle Fixes
 
 If fixes are needed:
-1. Re-dispatch `builder` with the specific findings to address
+1. Re-dispatch `coder` with the specific findings to address
 2. After the implementer reports back, re-review (go to step 1 with updated SHAs)
 3. Continue until the review is clean (no Critical or Important findings)
 
@@ -121,10 +121,10 @@ When the `code-reviewer` reports findings, triage by severity:
 
 | Severity | Action |
 |----------|--------|
-| **Critical** | Fix immediately — re-dispatch `builder` with the specific fix. Then re-review. |
-| **Important** | Fix before moving to next task — re-dispatch `builder`. Then re-review. |
+| **Critical** | Fix immediately — re-dispatch `coder` with the specific fix. Then re-review. |
+| **Important** | Fix before moving to next task — re-dispatch `coder`. Then re-review. |
 | **Minor** | Note in arc issue comment for later. Proceed. |
-| **Deviation (fix)** | Re-dispatch `builder` with the specific deviation to correct. |
+| **Deviation (fix)** | Re-dispatch `coder` with the specific deviation to correct. |
 | **Deviation (accept)** | Note the deviation as an arc comment on the task for traceability. Proceed. |
 
 Never agree performatively to Critical or Important findings. Never dismiss them without technical reasoning. If a finding is wrong, show *why* with evidence from the codebase.
@@ -157,7 +157,7 @@ This skill works in orchestrated Arc execution:
 
 | Context | How review works |
 |---------|-----------------|
-| **Sequential build** | Main agent dispatches `code-reviewer` subagent after the builder reports completion |
+| **Sequential build** | Main agent dispatches `code-reviewer` subagent after the coder reports completion |
 | **Parallel patch batch** | Main agent applies each accepted patch to the main worktree, then dispatches `code-reviewer` against the applied diff |
 
 ## Rules

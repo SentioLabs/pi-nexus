@@ -26,7 +26,7 @@ const EXPECTED_RECOMMENDATIONS = [
   ['brainstorm', 'gpt-5.5', 'high', 'design exploration and architecture judgment'],
   ['plan', 'gpt-5.5', 'high', 'task breakdown and sequencing'],
   ['issueManager', 'gpt-5.4-mini', 'off', 'Arc CLI formatting and issue updates'],
-  ['builder', 'gpt-5.3-codex', 'medium', 'implementation and code navigation'],
+  ['coder', 'gpt-5.3-codex', 'medium', 'implementation and code navigation'],
   ['codeReviewer', 'gpt-5.5', 'high', 'review judgment and risk detection'],
   ['docWriter', 'gpt-5.4-mini', 'low', 'documentation prose and light reasoning'],
   ['specReviewer', 'gpt-5.5', 'high', 'spec compliance and ambiguity detection'],
@@ -52,6 +52,8 @@ test('arc model profiles UI exports the editor entrypoint and section-style labe
   assert.match(source, /\[r\]ecommended/);
   assert.match(source, /\[d\]isable/);
   assert.match(source, /\[s\]ave/);
+  assert.match(source, /coder:\s*"Coder"/);
+  assert.doesNotMatch(source, /builder:\s*"Builder"/);
 });
 
 test('arc model profiles UI uses centered overlay options', () => {
