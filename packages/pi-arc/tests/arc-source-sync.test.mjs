@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
@@ -131,7 +131,10 @@ test('migration script deterministically maps upstream builder resources to code
   const tempRoot = mkdtempSync(join(tmpdir(), 'pi-arc-source-sync-'));
   const packageCopy = join(tempRoot, 'pi-arc');
   try {
-    cpSync('.', packageCopy, { recursive: true });
+    mkdirSync(packageCopy, { recursive: true });
+    for (const rel of ['agents', 'prompts', 'scripts', 'skills', 'tests/fixtures']) {
+      cpSync(rel, join(packageCopy, rel), { recursive: true });
+    }
     const originalDevopsOverlay = read('agents/devops.md');
 
     execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {
@@ -147,7 +150,10 @@ test('migration script deterministically maps upstream builder resources to code
     assert.equal(existsSync(join(packageCopy, 'skills/arc-source-sync/SKILL.md')), false);
     assert.equal(readFileSync(join(packageCopy, 'agents/devops.md'), 'utf8'), originalDevopsOverlay);
 
-    const firstSnapshot = snapshotGeneratedResources(packageCopy);
+    const generatedText = snapshotGeneratedResources(packageCopy);
+    assert.doesNotMatch(generatedText, /arc-builder|builder-prompt\.md|agent=\"builder\"|agent: \"builder\"|\bbuilder\b/);
+
+    const firstSnapshot = generatedText;
     execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {
       cwd: packageCopy,
       encoding: 'utf8',
