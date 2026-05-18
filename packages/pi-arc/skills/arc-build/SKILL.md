@@ -5,7 +5,7 @@ description: You MUST use this skill to execute implementation tasks from a plan
 
 # Implement — Subagent-Driven TDD Execution
 
-Orchestrate task implementation by dispatching fresh `coder` subagents per task. Each subagent gets a clean context window with just the task description.
+Orchestrate task implementation by dispatching fresh executor-specific subagents per task. Each subagent gets a clean context window with just the task description.
 
 ## Core Rule
 
@@ -211,7 +211,9 @@ For async `pi-subagents` dispatches, immediately capture the returned run ID, po
 
 ### 4. Evaluate Result
 
-When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Coder Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
+When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Executor Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
+
+For follow-up remediation in steps 5, 6, 6.5, and 8, re-dispatch the resolved executor (`coder`, `devops`, or `doc-writer`) with the specific findings and required fixes.
 
 **On `DONE`:**
 - Run the project tests. If they pass → proceed to step 5 (Spec Compliance Review).
@@ -225,13 +227,13 @@ When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_C
 **On `BLOCKED` or `NEEDS_CONTEXT`:**
 - Do NOT proceed to review. Do NOT close the task.
 - For `NEEDS_CONTEXT`: gather the requested information, re-dispatch with it.
-- For `BLOCKED`: assess the blocker per the Handle Coder Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.
+- For `BLOCKED`: assess the blocker per the Handle Executor Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.
 - After 3 re-dispatches on the same task without clean `DONE`, invoke the `debug` skill.
 
 **If the subagent did not include a Status field** (malformed report):
 - Treat as `BLOCKED`. Re-dispatch with an explicit reminder to use the four-status Report Format.
 
-When re-dispatching, include the previous report's concerns / blockers so the coder knows exactly what to fix:
+When re-dispatching, include the previous report's concerns / blockers so the resolved executor knows exactly what to fix:
 
 ```
 Continue implementing this task. A previous attempt reported <status> with these concerns:
@@ -264,12 +266,12 @@ Do **not** substitute the generic `worker` or `reviewer` agent for spec complian
 
 Handle results:
 - `COMPLIANT` → proceed to Step 6
-- `ISSUES (Missing)` → re-dispatch `coder` with specific gaps listed by the spec reviewer. Re-run spec compliance review after.
-- `ISSUES (Extra)` → re-dispatch `coder` to remove the extras listed by the spec reviewer. Re-run spec compliance review after.
-- `ISSUES (Misunderstood)` → re-dispatch `coder` with clarification from the spec reviewer's findings. Re-run spec compliance review after.
+- `ISSUES (Missing)` → re-dispatch the resolved executor with specific gaps listed by the spec reviewer. Re-run spec compliance review after.
+- `ISSUES (Extra)` → re-dispatch the resolved executor to remove the extras listed by the spec reviewer. Re-run spec compliance review after.
+- `ISSUES (Misunderstood)` → re-dispatch the resolved executor with clarification from the spec reviewer's findings. Re-run spec compliance review after.
 - Circuit breaker: 3 spec-review/fix cycles without resolution → escalate to user.
 
-> **Docs-only tasks**: Skip this step. The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For docs-only tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
+> **Documentation-executor tasks**: Skip this step when the resolved executor is `doc-writer` (including legacy `docs-only`). The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For these tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
 >
 > **Devops evidence-only tasks**: If executor resolved to `devops` and no repo files changed, a missing diff/commit is acceptable. Verify the reported devops evidence (commands, outputs, config/runbook state, operational proof) against the task spec before proceeding.
 
@@ -289,14 +291,14 @@ Handle findings:
 
 | Finding | Action |
 |---------|--------|
-| **Critical/Important** | Re-dispatch `coder` with fixes. Re-review after. |
+| **Critical/Important** | Re-dispatch the resolved executor with fixes. Re-review after. |
 | **Minor** | Note in arc comment. Proceed. |
-| **Deviation (fix)** | Re-dispatch `coder` to match the design. |
+| **Deviation (fix)** | Re-dispatch the resolved executor to match the design. |
 | **Deviation (accept)** | Log as arc comment: "Accepted deviation: \<description\>. Rationale: \<why\>." Proceed. |
 
 Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.
 
-> **Docs-only tasks**: Skip code quality review. For substantial documentation changes (developer-facing API docs, architecture docs), optionally dispatch `code-reviewer` for a quality check.
+> **Documentation-executor tasks**: Skip code quality review when the resolved executor is `doc-writer` (including legacy `docs-only`). For substantial documentation changes (developer-facing API docs, architecture docs), optionally dispatch `code-reviewer` for a quality check.
 >
 > **Devops evidence-only tasks**: Reviewers may receive no code diff when no repo files changed. In that case, review the devops evidence package for completeness and task alignment instead of requiring a commit.
 
@@ -336,11 +338,11 @@ Triage evaluator findings (for devops tasks, evaluators should also inspect repo
 | Evaluator verdict | Orchestrator action |
 |---|---|
 | `PASS` | No action — evaluator confirms the spec intent is satisfied. |
-| `CONCERNS` | Read the concerns. Re-dispatch `coder` if the concerns describe substantive behavior gaps. Otherwise note as arc comments and proceed. |
-| `FAIL — Spec-Intent Gap` | Re-dispatch `coder` with the evaluator's quoted spec text and the failing behavior description. |
-| `FAIL — Missing Behavior` | Re-dispatch `coder` — the spec requires behavior that wasn't built. |
-| `FAIL — Edge Case` | Lower-severity. Re-dispatch if the spec clearly implies the edge case; otherwise record as a known limitation. |
-| `ERROR — Cannot Test` | The public API is insufficient. Re-dispatch with a request to expose the needed surface. |
+| `CONCERNS` | Read the concerns. Re-dispatch the resolved executor if the concerns describe substantive behavior gaps. Otherwise note as arc comments and proceed. |
+| `FAIL — Spec-Intent Gap` | Re-dispatch the resolved executor with the evaluator's quoted spec text and the failing behavior description. |
+| `FAIL — Missing Behavior` | Re-dispatch the resolved executor — the spec requires behavior that wasn't built. |
+| `FAIL — Edge Case` | Lower-severity. Re-dispatch the resolved executor if the spec clearly implies the edge case; otherwise record as a known limitation. |
+| `ERROR — Cannot Test` | The public API is insufficient. Re-dispatch the resolved executor with a request to expose the needed surface. |
 | `BLOCKED` | Evaluator itself is blocked. Escalate per the Model Selection rules or involve the human. |
 
 ### 7. Close Task
@@ -357,20 +359,20 @@ After closing 2-3 related tasks, or before switching to a new epic phase, run th
 make test-integration
 ```
 
-This catches cross-task regressions that individual coder gate checks won't — each coder only validates its own task's scope. Do not wait until all tasks are complete to discover integration failures.
+This catches cross-task regressions that individual executor gate checks won't — each executor subagent only validates its own task's scope. Do not wait until all tasks are complete to discover integration failures.
 
 If integration tests fail:
 - Identify which task's changes caused the failure
-- Re-dispatch `coder` with the failing test details and the relevant task context
+- Re-dispatch the resolved executor with the failing test details and the relevant task context
 - If the failure spans multiple tasks, invoke the `debug` skill
 
 ### 9. Repeat
 
 Go to step 1 for the next task. Continue until all tasks in the epic are closed.
 
-## Handle Coder Status
+## Handle Executor Status
 
-Every `coder` and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
+Every `coder`, `devops`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
 
 | Status | Orchestrator action |
 |---|---|
@@ -512,7 +514,7 @@ arc close <id> -r "reason"            # Close completed task
 
 - Never write implementation code as the main agent — always dispatch
 - Never close a task without confirming tests pass yourself (fresh run)
-- Never close a task if the coder reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching
+- Never close a task if the resolved executor reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching
 - When re-dispatching after `BLOCKED`, escalate one model tier per the Model Selection table — never retry the same dispatch unchanged
 - If in doubt about the result, re-dispatch rather than fixing manually
 - Never dispatch parallel agents without committing and pushing all sequential work first
