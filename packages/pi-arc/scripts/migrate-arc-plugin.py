@@ -59,16 +59,10 @@ validate_source(SRC)
 
 ARC_ROOT.mkdir(parents=True, exist_ok=True)
 
-# Snapshot Pi-preserved overlays before regenerating resources.
-# These tracked files are canonical for preserving the coder/devops split.
+# Snapshot true Pi-only overlays before regenerating resources.
+# Upstream does not ship the devops executor; the tracked file is canonical.
 PRESERVED_OVERLAY_FILES = [
-    "agents/coder.md",
     "agents/devops.md",
-    "agents/issue-manager.md",
-    "skills/arc-build/SKILL.md",
-    "skills/arc-build/coder-prompt.md",
-    "skills/arc-build/doc-writer-prompt.md",
-    "skills/arc-plan/SKILL.md",
 ]
 
 PRESERVED_OVERLAY_SET = set(PRESERVED_OVERLAY_FILES)
@@ -193,6 +187,10 @@ for src_dir in sorted((SRC / "skills").iterdir()):
     # primitives (TeamCreate/TaskCreate/TaskUpdate/Agent team_name). Pi does
     # not provide equivalent semantics, so do not package a misleading skill.
     if old_name == "team-dispatch":
+        continue
+    # arc-source-sync is a repo-local maintainer workflow under .pi/skills;
+    # never recreate a package-local copy even if an upstream source appears.
+    if old_name in {"source-sync", "arc-source-sync"}:
         continue
     new_name = skill_map.get(old_name, f"arc-{old_name}")
     dest_dir = ARC_ROOT / "skills" / new_name
@@ -519,30 +517,53 @@ Record the current HEAD before dispatching — needed for review if escalated:
 PRE_TASK_SHA=$(git rev-parse HEAD)
 ```
 
-Check whether the task has a `docs-only` label:
+Resolve executor from issue labels:
 
 ```bash
-arc show <task-id> --json | jq -e '.labels[] | select(. == "docs-only")' > /dev/null 2>&1
+arc show <task-id> --json | jq -r '.labels[]' | grep '^executor:'
 ```
 
-**If `docs-only`** (exit code 0) — spawn a `doc-writer` subagent:
+Routing contract:
+- exactly one `executor:coder` → `coder`
+- exactly one `executor:devops` → `devops`
+- exactly one `executor:docs` → `doc-writer`
+- zero executor labels + old `docs-only` label → `doc-writer` (legacy fallback)
+- zero executor labels + no `docs-only` label → `coder` (legacy fallback)
+- multiple or unknown executor labels → stop and require issue correction before dispatch
 
-Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
+If executor resolution fails, do not dispatch. Add an arc comment describing the invalid labels and request correction.
+
+**If resolved executor is `doc-writer`** — spawn a `doc-writer` subagent:
+
+Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
 
 Dispatch preference:
 - If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="doc-writer", task="<filled prompt>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
-**Otherwise** — spawn a `coder` subagent:
+**If resolved executor is `devops`** — spawn a `devops` subagent:
+
+Use the task spec directly and include evidence expectations in the prompt (changed files, command output, logs/runbook/config proof, and rollback notes when applicable).
+
+Dispatch preference:
+- If `subagent` is available and `arc-devops` is installed: `subagent({ agent: "arc-devops", task: "<task spec and evidence instructions>", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
+- Otherwise: `arc_agent(agent="devops", task="<task spec and evidence instructions>")`
+
+Devops tasks may legitimately finish as evidence-only with no commit when no repository files changed. Treat command output and operational evidence as the deliverable in that case.
+
+For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+
+**If resolved executor is `coder`** — spawn a `coder` subagent:
 
 Use the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
 
 Dispatch preference:
 - If `subagent` is available and `arc-coder` is installed: `subagent({ agent: "arc-coder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="coder", task="<filled prompt>", model="<tier-if-needed>")`
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
@@ -829,10 +850,11 @@ Tasks are dispatched one at a time through the orchestration loop below. Use thi
 
 Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:
 - `pi-subagents` loaded and the `subagent` tool is available
-- Arc agent definitions such as `arc-coder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
+- Arc agent definitions such as `arc-coder` / `arc-devops` / `arc-doc-writer` are auto-materialized for `pi-subagents`
 - 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree
-- No shared files between any coder/doc-writer tasks in the batch
+- No shared files or operational targets between any coder/devops/doc-writer tasks in the batch
 - No `blocks`/`blockedBy` dependencies between tasks in the batch
+- Do not parallelize live devops operations; live operations require sequential orchestration even when labels/dependencies look independent
 - Each task's scope is clearly defined with no ambiguity
 
 `pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.
@@ -867,15 +889,25 @@ Record the current HEAD before dispatching — needed for review if escalated:
 PRE_TASK_SHA=$(git rev-parse HEAD)
 ```
 
-Check whether the task has a `docs-only` label:
+Resolve executor from issue labels:
 
 ```bash
-arc show <task-id> --json | jq -e '.labels[] | select(. == "docs-only")' > /dev/null 2>&1
+arc show <task-id> --json | jq -r '.labels[]' | grep '^executor:'
 ```
 
-**If `docs-only`** (exit code 0) — spawn a `doc-writer` subagent:
+Routing contract:
+- exactly one `executor:coder` → `coder`
+- exactly one `executor:devops` → `devops`
+- exactly one `executor:docs` → `doc-writer`
+- zero executor labels + old `docs-only` label → `doc-writer` (legacy fallback)
+- zero executor labels + no `docs-only` label → `coder` (legacy fallback)
+- multiple or unknown executor labels → stop and require issue correction before dispatch
 
-Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
+If executor resolution fails, do not dispatch. Add an arc comment describing the invalid labels and request correction.
+
+**If resolved executor is `doc-writer`** — spawn a `doc-writer` subagent:
+
+Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
 
 Dispatch preference:
 - If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
@@ -884,7 +916,20 @@ Dispatch preference:
 
 For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
 
-**Otherwise** — spawn a `coder` subagent:
+**If resolved executor is `devops`** — spawn a `devops` subagent:
+
+Use the task spec directly and include evidence expectations in the prompt (changed files, command output, logs/runbook/config proof, and rollback notes when applicable).
+
+Dispatch preference:
+- If `subagent` is available and `arc-devops` is installed: `subagent({ agent: "arc-devops", task: "<task spec and evidence instructions>", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
+- Otherwise: `arc_agent(agent="devops", task="<task spec and evidence instructions>")`
+
+Devops tasks may legitimately finish as evidence-only with no commit when no repository files changed. Treat command output and operational evidence as the deliverable in that case.
+
+For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+
+**If resolved executor is `coder`** — spawn a `coder` subagent:
 
 Use the template at `./coder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
 
@@ -909,6 +954,229 @@ For async `pi-subagents` dispatches, immediately capture the returned run ID, po
 
 Do **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled sequential `arc_agent` fallback.
 """)
+
+patch_file("skills/arc-build/SKILL.md", [
+    (
+        "Orchestrate task implementation by dispatching fresh `coder` subagents per task. Each subagent gets a clean context window with just the task description.",
+        "Orchestrate task implementation by dispatching fresh executor-specific subagents per task. Each subagent gets a clean context window with just the task description.",
+    ),
+    (
+        "- Never close a task if the implementer reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching",
+        "- Never close a task if the resolved executor reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching",
+    ),
+])
+
+replace_section("skills/arc-build/SKILL.md", "### 4. Evaluate Result\n\n", "\n### 6.5. High-Risk Evaluation", """### 4. Evaluate Result
+
+When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Executor Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
+
+For follow-up remediation in steps 5, 6, 6.5, and 8, re-dispatch the resolved executor (`coder`, `devops`, or `doc-writer`) with the specific findings and required fixes.
+
+**On `DONE`:**
+- Run the project tests. If they pass → proceed to step 5 (Spec Compliance Review).
+- If tests fail despite a `DONE` report, treat as `BLOCKED`: re-dispatch with the failure output.
+
+**On `DONE_WITH_CONCERNS`:**
+- Read the concerns carefully.
+- If the concerns touch correctness or scope (e.g., "I think this edge case isn't handled", "I modified a file outside the spec") — address before review by re-dispatching with specific guidance, or tightening the review prompt.
+- If the concerns are observations (e.g., "this file is getting large") — note them as arc comments on the task and proceed to step 5.
+
+**On `BLOCKED` or `NEEDS_CONTEXT`:**
+- Do NOT proceed to review. Do NOT close the task.
+- For `NEEDS_CONTEXT`: gather the requested information, re-dispatch with it.
+- For `BLOCKED`: assess the blocker per the Handle Executor Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.
+- After 3 re-dispatches on the same task without clean `DONE`, invoke the `debug` skill.
+
+**If the subagent did not include a Status field** (malformed report):
+- Treat as `BLOCKED`. Re-dispatch with an explicit reminder to use the four-status Report Format.
+
+When re-dispatching, include the previous report's concerns / blockers so the resolved executor knows exactly what to fix:
+
+```
+Continue implementing this task. A previous attempt reported <status> with these concerns:
+
+<paste concerns>
+
+Address each concern and re-report.
+```
+
+### 5. Spec Compliance Review
+
+After confirming tests pass, dispatch the `spec-reviewer` to independently verify the implementation matches the spec:
+
+```bash
+BASE_SHA=$PRE_TASK_SHA
+```
+
+Dispatch `spec-reviewer`:
+
+Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.
+
+Dispatch preference:
+- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
+- Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
+
+For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before handling compliance results.
+
+Do **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled sequential `arc_agent` fallback.
+
+Handle results:
+- `COMPLIANT` → proceed to Step 6
+- `ISSUES (Missing)` → re-dispatch the resolved executor with specific gaps listed by the spec reviewer. Re-run spec compliance review after.
+- `ISSUES (Extra)` → re-dispatch the resolved executor to remove the extras listed by the spec reviewer. Re-run spec compliance review after.
+- `ISSUES (Misunderstood)` → re-dispatch the resolved executor with clarification from the spec reviewer's findings. Re-run spec compliance review after.
+- Circuit breaker: 3 spec-review/fix cycles without resolution → escalate to user.
+
+> **Documentation-executor tasks**: Skip this step when the resolved executor is `doc-writer` (including legacy `docs-only`). The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For these tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
+>
+> **Devops evidence-only tasks**: If executor resolved to `devops` and no repo files changed, a missing diff/commit is acceptable. Verify the reported devops evidence (commands, outputs, config/runbook state, operational proof) against the task spec before proceeding.
+
+### 6. Code Quality Review
+
+Only dispatched after spec compliance passes. Use the `review` skill or dispatch `code-reviewer` directly:
+
+```bash
+HEAD_SHA=$(git rev-parse HEAD)
+```
+
+Use the template at `../arc-review/reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or "none", `{EVALUATOR_STATUS}` = "active" if evaluator was dispatched, else "not dispatched"). Follow Model Selection above for the dispatch `model:` — `standard` default is appropriate for most reviews.
+
+**On `{EVALUATOR_STATUS}`:** Decide whether to dispatch the evaluator (step 6.5) BEFORE filling this placeholder. If you plan to run step 6.5 in parallel with step 6, set `{EVALUATOR_STATUS}="active"`. Otherwise set `"not dispatched"`. Step 6.5 has the decision criteria for when to dispatch the evaluator.
+
+Handle findings:
+
+| Finding | Action |
+|---------|--------|
+| **Critical/Important** | Re-dispatch the resolved executor with fixes. Re-review after. |
+| **Minor** | Note in arc comment. Proceed. |
+| **Deviation (fix)** | Re-dispatch the resolved executor to match the design. |
+| **Deviation (accept)** | Log as arc comment: "Accepted deviation: \\<description\\>. Rationale: \\<why\\>." Proceed. |
+
+Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.
+
+> **Documentation-executor tasks**: Skip code quality review when the resolved executor is `doc-writer` (including legacy `docs-only`). For substantial documentation changes (developer-facing API docs, architecture docs), optionally dispatch `code-reviewer` for a quality check.
+>
+> **Devops evidence-only tasks**: Reviewers may receive no code diff when no repo files changed. In that case, review the devops evidence package for completeness and task alignment instead of requiring a commit.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "### 6.5. High-Risk Evaluation (Optional)\n\n", "\n### 7. Close Task", """### 6.5. High-Risk Evaluation (Optional)
+
+The evaluator is **not dispatched by default**. Dispatch only when:
+- Task has a `high-risk` label
+- The orchestrator judges the task warrants independent verification (e.g., complex spec with multiple valid interpretations, security-sensitive code, tasks that modify shared contracts)
+
+When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run. This gives it a disposable repository copy so it can write acceptance tests and add temporary dependencies without dirtying the main worktree:
+
+```ts
+subagent({
+  tasks: [
+    { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5" }
+  ],
+  worktree: true,
+  concurrency: 1,
+  context: "fresh",
+  async: true,
+  clarify: false
+})
+```
+
+If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", model="large", task="<filled evaluator prompt>")` and ensure the evaluator does not leave uncommitted artifacts in the main worktree.
+
+```bash
+PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
+```
+
+Use the template at `./evaluator-prompt.md`. Fill placeholder `{TASK_ID}`. Because evaluation is adversarial verification on high-risk tasks, escalate one tier from the agent default (typically to `large`) — set `model: "large"` on `arc_agent` dispatches unless the task is narrow. For `pi-subagents`, pass the concrete configured large model.
+
+When you plan to run the evaluator, set the code quality reviewer's `## Evaluator Status` to `active`; otherwise set it to `not dispatched`.
+
+Triage evaluator findings (for devops tasks, evaluators should also inspect reported devops evidence and can pass evidence-only runs when no repo files changed):
+
+| Evaluator verdict | Orchestrator action |
+|---|---|
+| `PASS` | No action — evaluator confirms the spec intent is satisfied. |
+| `CONCERNS` | Read the concerns. Re-dispatch the resolved executor if the concerns describe substantive behavior gaps. Otherwise note as arc comments and proceed. |
+| `FAIL — Spec-Intent Gap` | Re-dispatch the resolved executor with the evaluator's quoted spec text and the failing behavior description. |
+| `FAIL — Missing Behavior` | Re-dispatch the resolved executor — the spec requires behavior that wasn't built. |
+| `FAIL — Edge Case` | Lower-severity. Re-dispatch the resolved executor if the spec clearly implies the edge case; otherwise record as a known limitation. |
+| `ERROR — Cannot Test` | The public API is insufficient. Re-dispatch the resolved executor with a request to expose the needed surface. |
+| `BLOCKED` | Evaluator itself is blocked. Escalate per the Model Selection rules or involve the human. |
+""")
+
+replace_section("skills/arc-build/SKILL.md", "### 8. Integration Checkpoint\n\n", "\n### 9. Repeat", """### 8. Integration Checkpoint
+
+After closing 2-3 related tasks, or before switching to a new epic phase, run the full integration test suite:
+
+```bash
+make test-integration
+```
+
+This catches cross-task regressions that individual executor gate checks won't — each executor subagent only validates its own task's scope. Do not wait until all tasks are complete to discover integration failures.
+
+If integration tests fail:
+- Identify which task's changes caused the failure
+- Re-dispatch the resolved executor with the failing test details and the relevant task context
+- If the failure spans multiple tasks, invoke the `debug` skill
+""")
+
+replace_section("skills/arc-build/SKILL.md", "## Handle Implementer Status\n\n", "\n## Parallel Patch Protocol", """## Handle Executor Status
+
+Every `coder`, `devops`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
+
+| Status | Orchestrator action |
+|---|---|
+| `DONE` | Proceed to spec review, then code review. |
+| `DONE_WITH_CONCERNS` | Read the concerns. If they're about correctness or scope, address before review (re-dispatch or tighten review prompt). If they're observations (file getting large, naming doubt), note them as arc comments on the task and proceed to review — close only after a later dispatch yields a clean `DONE`. |
+| `BLOCKED` | Assess the blocker: (1) context problem → provide missing context, re-dispatch same tier; (2) reasoning limit → re-dispatch one tier up per the Model Selection escalation rule; (3) task too large → split and re-plan; (4) plan is wrong → escalate to human. Never retry the same dispatch unchanged. |
+| `NEEDS_CONTEXT` | Gather the specific missing information. Re-dispatch with it in the prompt. |
+
+**Never close a task** whose last report was `BLOCKED`, `NEEDS_CONTEXT`, or `DONE_WITH_CONCERNS` unresolved. Re-dispatch until you have a clean `DONE` — then close.
+""")
+
+patch_file("agents/coder.md", [
+    (
+        "description: Use this agent for implementing a single task using TDD. Dispatched by the implement skill with a task description from arc. Receives task context, implements following RED → GREEN → REFACTOR → GATE, commits results, and reports back.",
+        "description: Use this agent for coding a single task using TDD. Dispatched by the arc-build skill with a task description from arc. Receives task context, works through RED → GREEN → REFACTOR → GATE, commits results, and reports back.",
+    ),
+    ("# Arc Implementer Agent", "# Arc Coder Agent"),
+    (
+        "You are an implementation agent. You receive a single task, implement it using test-driven development, verify your own work against the spec, and report results back to the dispatching agent.",
+        "You are a coder agent. You receive a single task, code it using test-driven development, verify your own work against the spec, and report results back to the dispatching agent.",
+    ),
+    ("**Build ONLY what the task specifies.**", "**Code ONLY what the task specifies.**"),
+    (
+        "If the task seems incomplete** (e.g., it builds a function but doesn't wire it up)",
+        "If the task seems incomplete** (e.g., it defines a function but doesn't wire it up)",
+    ),
+])
+
+patch_file("skills/arc-build/coder-prompt.md", [
+    ("# Implementer Prompt Template", "# Coder Prompt Template"),
+    ("You are implementing arc task {TASK_ID}.", "You are coding arc task {TASK_ID}."),
+])
+
+patch_file("skills/arc-build/doc-writer-prompt.md", [
+    (
+        "Use this template when dispatching `doc-writer` for a task labeled `docs-only`.",
+        "Use this template when dispatching `doc-writer` for a task routed to `executor:docs` (or the legacy `docs-only` fallback).",
+    ),
+])
+
+patch_file("skills/arc-plan/SKILL.md", [
+    (
+        "## Labels\n- T3: docs-only",
+        "## Labels\n- T1: executor:coder\n- T2: executor:devops\n- T3: executor:docs",
+    ),
+    (
+        "For each task, check whether **all** files in its `## Files` section are documentation (`.md`, `.txt`, `README`, `CHANGELOG`, or anything under `docs/`). If so, include it in the `## Labels` section with `docs-only`. Doc-only tasks skip TDD — the `implement` skill routes them to `doc-writer` instead of `coder`.",
+        "Every new implementation task must include exactly one executor label: `executor:coder`, `executor:devops`, or `executor:docs`. Multiple or missing executor labels are plan failures.\n\nUse `executor:docs` as the source of truth for new docs tasks. `docs-only` is a legacy input handled by arc-build only and must not be emitted for new tasks.\n\n### Executor Classification\n\n| Task content | Executor label |\n|---|---|\n| Application/library/CLI code changes | `executor:coder` |\n| Kubernetes, Terraform/OpenTofu, Helm, Kustomize, ArgoCD, CI/CD, cloud infra, runbooks, live operational checks | `executor:devops` |\n| Documentation-only changes | `executor:docs` |\n\nLive operations require the `live-ops-approved` label plus explicit task-body authorization.\n\n### DevOps Task Description Format\n\nUse this format for tasks labeled `executor:devops`:\n\n```markdown\n## Executor\nexecutor:devops\n\n## Live Operation Authorization\n- Explicit task-body authorization: <required statement>\n- Requires label: live-ops-approved (for live operations)\n\n## Target Environment\n- <environment>\n\n## Allowed Operations\n- <allowed commands/actions>\n\n## Scope Boundary\n- <in-scope systems>\n- <out-of-scope systems>\n\n## Preflight Checks\n1. <check>\n\n## Execution Steps\n1. <step>\n\n## Rollback Plan\n1. <rollback step>\n\n## Validation/Post-checks\n1. <validation command>\n\n## Evidence to Report\n- <logs/screenshots/command output>\n```",
+    ),
+    (
+        "For `docs-only` tasks, omit `## Test Command` and use `## Verification` instead:",
+        "For `executor:docs` tasks, omit `## Test Command` and use `## Verification` instead. `docs-only` is legacy input only:",
+    ),
+])
 
 patch_file("skills/arc-plan/SKILL.md", [
     (
@@ -1050,13 +1318,16 @@ When receiving a structured manifest from the `plan` or `brainstorm` skills, par
    ```bash
    arc dep add <real-later-id> <real-earlier-id> --type=blocks
    ```
-5. **Apply labels after dependencies**, or in the same post-creation phase.
+5. **Validate executor labels before applying labels**: every child task must carry exactly one executor label.
+   - Allowed values: `executor:coder`, `executor:devops`, `executor:docs`
+   - Missing executor labels or multiple executor labels on one task are manifest failures.
+6. **Apply labels after dependencies**, or in the same post-creation phase.
    ```bash
    # Labels are managed via the REST API (no CLI command exists)
-   # Use arc update to add label context in the description, or
-   # note the labels in the summary for the dispatcher to handle
+   # If CLI cannot apply labels directly, report the exact labels
+   # per task in the summary so the dispatcher can apply them.
    ```
-6. **Return the final ID table, dependency summary, and `## Timing` summary**.
+7. **Return the final ID table, dependency summary, and `## Timing` summary**.
 
 Print `[arc-issue-manager] phase=<name> status=start|done elapsed_ms=<n>` progress lines around each phase (`epic`, `child_tasks`, `dependencies`, `labels`, and optional `verification`) so long-running issue creation is observable.
 

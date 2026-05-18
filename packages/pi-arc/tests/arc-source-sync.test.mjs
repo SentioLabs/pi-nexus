@@ -6,7 +6,8 @@ import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const UPSTREAM_ARC_SOURCE = '/Volumes/ExternalSamsung/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc';
+const UPSTREAM_ARC_SOURCE = process.env.PI_ARC_SOURCE
+  ?? '/Volumes/ExternalSamsung/devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc';
 
 function read(path) {
   return readFileSync(path, 'utf8');
@@ -109,11 +110,10 @@ test('migration script codifies coder/devops split overlays', () => {
   const source = read('scripts/migrate-arc-plugin.py');
   assert.match(source, /f\.name == "builder\.md"/);
   assert.match(source, /dest_name = "coder\.md" if f\.name == "builder\.md" else f\.name/);
-  assert.match(source, /PRESERVED_OVERLAY_FILES = \[/);
-  assert.match(source, /"agents\/devops\.md"/);
-  assert.match(source, /"skills\/arc-build\/SKILL\.md"/);
+  assert.match(source, /PRESERVED_OVERLAY_FILES = \[\n    "agents\/devops\.md",\n\]/);
   assert.match(source, /overlay_text_by_rel\[rel\] = overlay_path\.read_text\(\)/);
   assert.match(source, /Missing required Pi overlay:/);
+  assert.match(source, /old_name in \{"source-sync", "arc-source-sync"\}/);
   assert.match(source, /md\.name == "builder-prompt\.md"/);
   assert.match(source, /md\.replace\(coder_prompt\)/);
   assert.match(source, /builder_prompt_path = ARC_ROOT \/ "skills" \/ "arc-build" \/ "builder-prompt\.md"/);
@@ -121,11 +121,12 @@ test('migration script codifies coder/devops split overlays', () => {
   assert.doesNotMatch(source, /arc_agent\(agent=\\?"builder/);
 });
 
-test('migration script deterministically maps upstream builder resources to coder/devops overlays', (t) => {
-  if (!looksLikeClaudeArcSource(UPSTREAM_ARC_SOURCE)) {
-    t.skip(`Claude Arc source checkout not available at ${UPSTREAM_ARC_SOURCE}`);
-    return;
-  }
+test('migration script deterministically maps upstream builder resources to coder/devops overlays', () => {
+  assert.equal(
+    looksLikeClaudeArcSource(UPSTREAM_ARC_SOURCE),
+    true,
+    `Claude Arc source checkout not available at ${UPSTREAM_ARC_SOURCE}; set PI_ARC_SOURCE to run source-sync contract tests`,
+  );
 
   const tempRoot = mkdtempSync(join(tmpdir(), 'pi-arc-source-sync-'));
   const packageCopy = join(tempRoot, 'pi-arc');
