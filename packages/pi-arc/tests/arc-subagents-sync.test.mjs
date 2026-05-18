@@ -105,6 +105,11 @@ test('arc-review prefers arc-code-reviewer via pi-subagents before arc_agent fal
   assert.match(source, /clarify: false/);
   assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
   assert.match(source, /arc_agent\(agent="code-reviewer"/);
+  assert.match(source, /executor:devops/);
+  assert.match(source, /devops evidence/i);
+  assert.match(source, /resolved executor \(`coder`, `devops`, or `doc-writer`\)/);
+  assert.doesNotMatch(source, /re-dispatch `coder`/i);
+  assert.doesNotMatch(source, /Re-dispatch `coder`/);
 });
 
 test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents completion guard', () => {
@@ -112,6 +117,9 @@ test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents compl
   assert.match(source, /Review only/i);
   assert.match(source, /return findings only/i);
   assert.match(source, /Do not edit files/i);
+  assert.match(source, /executor:devops/);
+  assert.match(source, /evidence/i);
+  assert.match(source, /config|runbook/i);
   assert.doesNotMatch(source, /\bmust\s+(?:edit|modify|change|fix|patch|apply)\b/i);
   assert.doesNotMatch(source, /\bapply\s+(?:the\s+)?fix(?:es)?\s+directly\b/i);
   assert.doesNotMatch(source, /\bmake\s+(?:the\s+)?code\s+changes\b/i);

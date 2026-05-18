@@ -119,6 +119,8 @@ test('migration script codifies coder/devops split overlays', () => {
   assert.match(source, /builder_prompt_path = ARC_ROOT \/ "skills" \/ "arc-build" \/ "builder-prompt\.md"/);
   assert.match(source, /builder_prompt_path\.unlink\(\)/);
   assert.doesNotMatch(source, /arc_agent\(agent=\\?"builder/);
+  assert.doesNotMatch(source, /PRESERVED_SECTION_OVERLAYS/);
+  assert.doesNotMatch(source, /section_overlay_text_by_key/);
 });
 
 test('migration script deterministically maps upstream builder resources to coder/devops overlays', () => {
@@ -151,7 +153,36 @@ test('migration script deterministically maps upstream builder resources to code
     assert.equal(readFileSync(join(packageCopy, 'agents/devops.md'), 'utf8'), originalDevopsOverlay);
 
     const generatedText = snapshotGeneratedResources(packageCopy);
-    assert.doesNotMatch(generatedText, /arc-builder|builder-prompt\.md|agent=\"builder\"|agent: \"builder\"|\bbuilder\b/);
+    assert.doesNotMatch(generatedText, /arc-builder|builder-prompt\.md|agent=\"builder\"|agent: \"builder\"|`builder`|\bbuilder\b/);
+
+    const generatedFiles = [];
+    for (const rel of ['agents', 'prompts', 'skills']) {
+      for (const row of snapshotTree(join(packageCopy, rel)).split('\n')) {
+        const fileRel = row.split('\0')[0];
+        if (fileRel.endsWith('.md') || fileRel.endsWith('.json') || fileRel.endsWith('.ts') || fileRel.endsWith('.js')) {
+          generatedFiles.push(join(packageCopy, rel, fileRel));
+        }
+      }
+    }
+    for (const file of generatedFiles) {
+      const text = readFileSync(file, 'utf8');
+      assert.doesNotMatch(text, /arc-builder|builder-prompt\.md|agent=\"builder\"|agent: \"builder\"|`builder`|\bbuilder\b/);
+    }
+
+    const reviewSkill = readFileSync(join(packageCopy, 'skills/arc-review/SKILL.md'), 'utf8');
+    const reviewPrompt = readFileSync(join(packageCopy, 'skills/arc-review/code-reviewer-prompt.md'), 'utf8');
+    const codeReviewer = readFileSync(join(packageCopy, 'agents/code-reviewer.md'), 'utf8');
+    const specReviewer = readFileSync(join(packageCopy, 'agents/spec-reviewer.md'), 'utf8');
+    assert.match(reviewSkill, /\{EXECUTOR_CONTEXT\}/);
+    assert.match(reviewSkill, /executor:devops/);
+    assert.match(reviewPrompt, /\{EXECUTOR_CONTEXT\}/);
+    assert.match(reviewPrompt, /executor:devops/);
+    assert.match(reviewPrompt, /Review only; return findings only\. Do not edit files\./);
+    assert.match(reviewPrompt, /infrastructure\/config\/runbook/);
+    assert.match(codeReviewer, /infrastructure\/config, and runbook (changes|updates)/);
+    assert.match(codeReviewer, /executor:devops/);
+    assert.match(codeReviewer, /Review only; return findings only\. Do not edit files\./);
+    assert.match(specReviewer, /executor:devops/);
 
     const firstSnapshot = generatedText;
     execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {

@@ -27,6 +27,8 @@ test('arc-build documents devops dispatch and evidence-only completion', () => {
   assert.match(source, /evidence-only/i);
   assert.match(source, /no commit/i);
   assert.match(source, /devops evidence/i);
+  assert.match(source, /\{EXECUTOR_CONTEXT\}/);
+  assert.match(source, /resolved executor is `devops`/i);
 });
 
 test('arc-build follow-up loops re-dispatch the resolved executor', () => {

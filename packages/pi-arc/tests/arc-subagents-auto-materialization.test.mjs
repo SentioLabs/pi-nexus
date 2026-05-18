@@ -264,6 +264,29 @@ test('Arc devops source agent documents ops gates and safety rules', () => {
   assert.match(source, /runbook/i);
 });
 
+test('Arc reviewer source agents support devops evidence and config review without edit instructions', () => {
+  const specReviewer = read('agents/spec-reviewer.md');
+  assert.match(specReviewer, /target environment/i);
+  assert.match(specReviewer, /allowed operations/i);
+  assert.match(specReviewer, /preflight/i);
+  assert.match(specReviewer, /rollback/i);
+  assert.match(specReviewer, /validation/i);
+  assert.match(specReviewer, /evidence/i);
+  assert.match(specReviewer, /changed artifacts and supplied evidence/i);
+  assert.match(specReviewer, /read-only|never modify code/i);
+  assert.doesNotMatch(specReviewer, /reading actual code|Read the implementation code|Compare actual code/i);
+
+  const codeReviewer = read('agents/code-reviewer.md');
+  assert.match(codeReviewer, /infrastructure|config|runbook/i);
+  assert.match(codeReviewer, /executor:devops/i);
+  assert.match(codeReviewer, /evidence/i);
+  assert.match(codeReviewer, /implementation\/artifact quality/i);
+  assert.match(codeReviewer, /validation quality/i);
+  assert.match(codeReviewer, /operational safety/i);
+  assert.match(codeReviewer, /read-only|never make code changes/i);
+  assert.doesNotMatch(codeReviewer, /Check code quality|SOLID principles|test quality/i);
+});
+
 test('Arc subagent markdown render runtime output matches expected structure', async () => {
   const mod = await import('../extensions/arc/subagents.ts');
   const output = mod.buildArcSubagentMarkdown({

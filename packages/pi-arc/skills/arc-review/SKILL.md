@@ -45,7 +45,11 @@ Extract the design excerpt relevant to this task — typically the sections cove
 
 ### 3. Dispatch Reviewer
 
-Fill the template at `./code-reviewer-prompt.md` with the gathered placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, `{EVALUATOR_STATUS}`). Preserve the template's review-only instruction (`Review only; return findings only. Do not edit files.`) and avoid adding wording that asks the reviewer to apply fixes directly. Prefer true `pi-subagents` so longer reviews are visible in `/subagents-status`:
+Fill the template at `./code-reviewer-prompt.md` with the gathered placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, `{EVALUATOR_STATUS}`, `{EXECUTOR_CONTEXT}`). Preserve the template's review-only instruction (`Review only; return findings only. Do not edit files.`) and avoid adding wording that asks the reviewer to apply fixes directly. Prefer true `pi-subagents` so longer reviews are visible in `/subagents-status`.
+
+Set `{EXECUTOR_CONTEXT}` from the task label:
+- If task label is `executor:devops`, include a short devops review context block that calls out target environment, allowed operations, preflight checks, rollback, validation, and required devops evidence/config/runbook review.
+- Otherwise set `{EXECUTOR_CONTEXT}` to `none`.
 
 Dispatch preference (use **async** so longer reviews appear in `/subagents-status`):
 - Primary: `subagent({ agent: "arc-code-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
@@ -62,16 +66,16 @@ When the reviewer reports back:
 
 | Severity | Action |
 |----------|--------|
-| **Critical** | Fix immediately — re-dispatch `coder` with the specific fix. Then re-review. |
-| **Important** | Fix before moving to next task — re-dispatch `coder`. Then re-review. |
+| **Critical** | Fix immediately — re-dispatch the resolved executor (`coder`, `devops`, or `doc-writer`) with the specific fix. Then re-review. |
+| **Important** | Fix before moving to next task — re-dispatch the resolved executor (`coder`, `devops`, or `doc-writer`). Then re-review. |
 | **Minor** | Note in arc issue comment for later. Proceed. |
-| **Deviation (fix)** | Re-dispatch `coder` with the specific deviation to correct. |
+| **Deviation (fix)** | Re-dispatch the resolved executor with the specific deviation to correct. |
 | **Deviation (accept)** | Note the deviation as an arc comment on the task for traceability. Proceed. |
 
 ### 5. Handle Fixes
 
 If fixes are needed:
-1. Re-dispatch `coder` with the specific findings to address
+1. Re-dispatch the resolved executor with the specific findings to address
 2. After the implementer reports back, re-review (go to step 1 with updated SHAs)
 3. Continue until the review is clean (no Critical or Important findings)
 
@@ -121,10 +125,10 @@ When the `code-reviewer` reports findings, triage by severity:
 
 | Severity | Action |
 |----------|--------|
-| **Critical** | Fix immediately — re-dispatch `coder` with the specific fix. Then re-review. |
-| **Important** | Fix before moving to next task — re-dispatch `coder`. Then re-review. |
+| **Critical** | Fix immediately — re-dispatch the resolved executor (`coder`, `devops`, or `doc-writer`) with the specific fix. Then re-review. |
+| **Important** | Fix before moving to next task — re-dispatch the resolved executor (`coder`, `devops`, or `doc-writer`). Then re-review. |
 | **Minor** | Note in arc issue comment for later. Proceed. |
-| **Deviation (fix)** | Re-dispatch `coder` with the specific deviation to correct. |
+| **Deviation (fix)** | Re-dispatch the resolved executor with the specific deviation to correct. |
 | **Deviation (accept)** | Note the deviation as an arc comment on the task for traceability. Proceed. |
 
 Never agree performatively to Critical or Important findings. Never dismiss them without technical reasoning. If a finding is wrong, show *why* with evidence from the codebase.
