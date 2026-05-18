@@ -52,6 +52,7 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
 - **`arc_agent` tool**:
   - Runs bundled Arc specialist prompts from `agents/*.md` in fresh Pi subprocesses.
   - Supports `coder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`.
+  - Also supports `devops` for evidence-driven infrastructure/config/runbook work via `arc_agent(agent="devops")`.
   - Resolves Arc model tiers (`small`, `standard`, `large`) to concrete Pi models so orchestrators can right-size subagent dispatches.
   - Current limitation: `isolation: "worktree"` is recognized but not implemented yet.
 - **Optional `pi-subagents` companion support**:
@@ -172,7 +173,9 @@ The brainstorm skill writes a first-line marker like `<!-- arc-review: kind=shar
 
 Use `/arc-models` to configure Arc's recommended Pi model and thinking level per workflow role. Arc stores profile preferences at `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`, with top-level `modelProfiles`.
 
-Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `coder`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
+Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `coder`, `devops`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
+
+The former code executor names <code>build&#101;r</code> / <code>arc-build&#101;r</code> were renamed to `coder` / `arc-coder`. Legacy <code>build&#101;r</code> model profile entries migrate to `coder` automatically when `coder` is unset, so existing configs keep working while new configs should use `coder`.
 
 ```json
 {
@@ -214,6 +217,7 @@ Arc writes generated specialists to `~/.agents/` by default. Legacy user scope `
 Generated specialists include:
 
 - `arc-coder`
+- `arc-devops`
 - `arc-doc-writer`
 - `arc-spec-reviewer`
 - `arc-code-reviewer`
@@ -253,7 +257,17 @@ For Arc gates (especially spec compliance), use Arc specialists (`arc-spec-revie
 
 - Sequential Arc build: use when tasks overlap, dependencies are linear, or `pi-subagents` is unavailable.
 - Parallel Arc batch: use when `/arc-plan` provides a T0 foundation, file ownership matrix, parallel batch manifest, and validation matrix.
+- Devops lane: use `arc-devops` / `arc_agent(agent="devops")` for evidence-only operational tasks. If no repository files change, the task may complete without a commit.
 - Ant Colony: future/optional lane for large exploratory work; not a replacement for Arc gates in this iteration.
+
+### Executor labels and legacy routing
+
+- `executor:coder` routes implementation work to `arc-coder`.
+- `executor:devops` routes operational work to `arc-devops`.
+- `executor:docs` routes documentation work to `arc-doc-writer` in pi-subagents or `doc-writer` through `arc_agent`.
+- `live-ops-approved` marks devops tasks that have explicit live-operation authorization.
+- Old unlabeled issues route to `coder` as legacy input.
+- Old `docs-only` issues route to docs as legacy input.
 
 ## Naming differences from the Claude plugin
 
