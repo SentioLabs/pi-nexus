@@ -8,6 +8,7 @@ Use this template when dispatching `code-reviewer` for code review.
 - `{HEAD_SHA}` — ending commit SHA
 - `{DESIGN_EXCERPT}` — relevant design section from parent epic, or "none" if not applicable
 - `{EVALUATOR_STATUS}` — `active` if evaluator was dispatched for this task, else `not dispatched`
+- `{EXECUTOR_CONTEXT}` — `executor:devops` context block for devops tasks, else `none`
 
 ````text
 Review these changes against the task spec and project conventions.
@@ -27,6 +28,11 @@ If "none", omit this section.
 ## Evaluator Status
 {EVALUATOR_STATUS}
 
+## Executor Context
+{EXECUTOR_CONTEXT}
+If `executor:devops`, review infrastructure/config/runbook diffs and required operational evidence for target environment, allowed operations, preflight, rollback, and validation.
+If `none`, omit this section.
+
 ## Report Format
 
 Report findings in three severities:
@@ -40,5 +46,5 @@ If a design spec was provided, also report Plan Adherence:
 - **DEVIATION (fix)** — implementation diverges from design; recommend fixing
 - **DEVIATION (accept)** — implementation diverges from design; recommend accepting the divergence (with reasoning)
 
-When Evaluator Status is `not dispatched`, also flag behavioral concerns — code paths that might not match spec intent. You do not write or run tests; describe what you see and where.
+When Evaluator Status is `not dispatched`, also flag behavioral concerns — changed artifacts, operational steps, or code paths that might not match spec intent. You do not write or run tests; describe what you see and where.
 ````

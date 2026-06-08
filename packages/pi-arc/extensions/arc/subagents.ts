@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ArcModelProfileKey } from "./model-profiles.ts";
@@ -66,8 +66,11 @@ export interface ArcSubagentRenderInput {
   generatedAt: string;
 }
 
+const ARC_STALE_GENERATED_SUBAGENTS = ["arc-builder"] as const;
+
 export const ARC_PI_SUBAGENTS = [
-  { source: "builder", target: "arc-builder", profileKey: "builder" },
+  { source: "coder", target: "arc-coder", profileKey: "coder" },
+  { source: "devops", target: "arc-devops", profileKey: "devops" },
   { source: "doc-writer", target: "arc-doc-writer", profileKey: "docWriter" },
   { source: "spec-reviewer", target: "arc-spec-reviewer", profileKey: "specReviewer" },
   { source: "code-reviewer", target: "arc-code-reviewer", profileKey: "codeReviewer" },
@@ -218,6 +221,64 @@ async function materializeArcSubagentsOnce(input: Parameters<typeof materializeA
 
   const writes: ArcSubagentWriteResult[] = [];
   const shadows: ArcSubagentShadowWarning[] = [];
+
+  const staleDirs = [targetDir];
+  if (input.scope === "user") {
+    const legacyTargetDir = resolveArcSubagentDir("user", input.cwd, input.homeDir, { legacyUserDir: true });
+    if (path.resolve(legacyTargetDir) !== path.resolve(targetDir)) staleDirs.push(legacyTargetDir);
+  }
+
+  for (const staleAgent of ARC_STALE_GENERATED_SUBAGENTS) {
+    for (const staleDir of staleDirs) {
+      const stalePath = path.join(staleDir, `${staleAgent}.md`);
+      let staleContent: string | undefined;
+
+      try {
+        staleContent = await readFile(stalePath, "utf8");
+      } catch (error) {
+        if (errorCode(error) !== "ENOENT") {
+          writes.push({
+            agent: staleAgent,
+            source: stalePath,
+            target: stalePath,
+            status: "failed",
+            reason: `could not inspect stale subagent: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        continue;
+      }
+
+      if (!isGeneratedArcSubagent(staleContent)) {
+        writes.push({
+          agent: staleAgent,
+          source: stalePath,
+          target: stalePath,
+          status: "skipped",
+          reason: "preserving custom stale subagent; missing generated marker",
+        });
+        continue;
+      }
+
+      try {
+        await rm(stalePath, { force: true });
+        writes.push({
+          agent: staleAgent,
+          source: stalePath,
+          target: stalePath,
+          status: "written",
+          reason: "removed stale generated subagent",
+        });
+      } catch (error) {
+        writes.push({
+          agent: staleAgent,
+          source: stalePath,
+          target: stalePath,
+          status: "failed",
+          reason: `could not remove stale generated subagent: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
+  }
 
   for (const { source, target } of ARC_PI_SUBAGENTS) {
     const sourcePath = path.join(input.agentsDir, `${source}.md`);

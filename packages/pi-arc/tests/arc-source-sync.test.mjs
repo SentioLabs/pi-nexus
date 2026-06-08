@@ -1,10 +1,45 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+const FIXTURE_ARC_SOURCE = join('tests', 'fixtures', 'arc-plugin-source');
+const UPSTREAM_ARC_SOURCE = process.env.PI_ARC_SOURCE ?? FIXTURE_ARC_SOURCE;
+
 function read(path) {
   return readFileSync(path, 'utf8');
+}
+
+function looksLikeClaudeArcSource(root) {
+  return ['commands', 'skills', 'agents', '.claude-plugin/plugin.json']
+    .every((rel) => existsSync(join(root, rel)));
+}
+
+function snapshotTree(root) {
+  const rows = [];
+  function walk(dir) {
+    for (const entry of readdirSync(dir).sort()) {
+      const fullPath = join(dir, entry);
+      const stats = statSync(fullPath);
+      if (stats.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+      const hash = createHash('sha256').update(readFileSync(fullPath)).digest('hex');
+      rows.push(`${relative(root, fullPath)}\0${hash}`);
+    }
+  }
+  walk(root);
+  return rows.join('\n');
+}
+
+function snapshotGeneratedResources(packageRoot) {
+  return ['agents', 'prompts', 'skills']
+    .map((rel) => `${rel}\n${snapshotTree(join(packageRoot, rel))}`)
+    .join('\n---\n');
 }
 
 test('migration script documents configurable source path', () => {
@@ -69,6 +104,104 @@ test('migration script rewrites renamed skill path references', () => {
   assert.match(arcSkill, /skills\/arc-brainstorm\/SKILL\.md/);
   assert.match(arcSkill, /skills\/arc-plan\/SKILL\.md/);
   assert.doesNotMatch(arcSkill, /skills\/(brainstorm|plan)\/SKILL\.md/);
+});
+
+test('migration script codifies coder/devops split overlays', () => {
+  const source = read('scripts/migrate-arc-plugin.py');
+  assert.match(source, /f\.name == "builder\.md"/);
+  assert.match(source, /dest_name = "coder\.md" if f\.name == "builder\.md" else f\.name/);
+  assert.match(source, /PRESERVED_OVERLAY_FILES = \[\n    "agents\/devops\.md",\n\]/);
+  assert.match(source, /overlay_text_by_rel\[rel\] = overlay_path\.read_text\(\)/);
+  assert.match(source, /Missing required Pi overlay:/);
+  assert.match(source, /old_name in \{"source-sync", "arc-source-sync"\}/);
+  assert.match(source, /md\.name == "builder-prompt\.md"/);
+  assert.match(source, /md\.replace\(coder_prompt\)/);
+  assert.match(source, /builder_prompt_path = ARC_ROOT \/ "skills" \/ "arc-build" \/ "builder-prompt\.md"/);
+  assert.match(source, /builder_prompt_path\.unlink\(\)/);
+  assert.doesNotMatch(source, /arc_agent\(agent=\\?"builder/);
+  assert.doesNotMatch(source, /PRESERVED_SECTION_OVERLAYS/);
+  assert.doesNotMatch(source, /section_overlay_text_by_key/);
+});
+
+test('migration script deterministically maps upstream builder resources to coder/devops overlays', () => {
+  assert.equal(
+    looksLikeClaudeArcSource(UPSTREAM_ARC_SOURCE),
+    true,
+    `Claude Arc source fixture not available at ${UPSTREAM_ARC_SOURCE}; set PI_ARC_SOURCE to override`,
+  );
+
+  const tempRoot = mkdtempSync(join(tmpdir(), 'pi-arc-source-sync-'));
+  const packageCopy = join(tempRoot, 'pi-arc');
+  try {
+    mkdirSync(packageCopy, { recursive: true });
+    for (const rel of ['agents', 'prompts', 'scripts', 'skills', 'tests/fixtures']) {
+      cpSync(rel, join(packageCopy, rel), { recursive: true });
+    }
+    const originalDevopsOverlay = read('agents/devops.md');
+
+    execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {
+      cwd: packageCopy,
+      encoding: 'utf8',
+    });
+
+    assert.equal(existsSync(join(packageCopy, 'agents/coder.md')), true);
+    assert.equal(existsSync(join(packageCopy, 'agents/devops.md')), true);
+    assert.equal(existsSync(join(packageCopy, 'agents/builder.md')), false);
+    assert.equal(existsSync(join(packageCopy, 'skills/arc-build/coder-prompt.md')), true);
+    assert.equal(existsSync(join(packageCopy, 'skills/arc-build/builder-prompt.md')), false);
+    assert.equal(existsSync(join(packageCopy, 'skills/arc-source-sync/SKILL.md')), false);
+    assert.equal(readFileSync(join(packageCopy, 'agents/devops.md'), 'utf8'), originalDevopsOverlay);
+
+    const generatedText = snapshotGeneratedResources(packageCopy);
+    assert.doesNotMatch(generatedText, /arc-builder|builder-prompt\.md|agent=\"builder\"|agent: \"builder\"|`builder`|\bbuilder\b/);
+
+    const generatedFiles = [];
+    for (const rel of ['agents', 'prompts', 'skills']) {
+      for (const row of snapshotTree(join(packageCopy, rel)).split('\n')) {
+        const fileRel = row.split('\0')[0];
+        if (fileRel.endsWith('.md') || fileRel.endsWith('.json') || fileRel.endsWith('.ts') || fileRel.endsWith('.js')) {
+          generatedFiles.push(join(packageCopy, rel, fileRel));
+        }
+      }
+    }
+    for (const file of generatedFiles) {
+      const text = readFileSync(file, 'utf8');
+      assert.doesNotMatch(text, /arc-builder|builder-prompt\.md|agent=\"builder\"|agent: \"builder\"|`builder`|\bbuilder\b/);
+    }
+
+    const reviewSkill = readFileSync(join(packageCopy, 'skills/arc-review/SKILL.md'), 'utf8');
+    const reviewPrompt = readFileSync(join(packageCopy, 'skills/arc-review/code-reviewer-prompt.md'), 'utf8');
+    const codeReviewer = readFileSync(join(packageCopy, 'agents/code-reviewer.md'), 'utf8');
+    const specReviewer = readFileSync(join(packageCopy, 'agents/spec-reviewer.md'), 'utf8');
+    assert.match(reviewSkill, /\{EXECUTOR_CONTEXT\}/);
+    assert.match(reviewSkill, /executor:devops/);
+    assert.match(reviewPrompt, /\{EXECUTOR_CONTEXT\}/);
+    assert.match(reviewPrompt, /executor:devops/);
+    assert.match(reviewPrompt, /Review only; return findings only\. Do not edit files\./);
+    assert.match(reviewPrompt, /infrastructure\/config\/runbook/);
+    assert.match(codeReviewer, /infrastructure\/config, and runbook (changes|updates)/);
+    assert.match(codeReviewer, /executor:devops/);
+    assert.match(codeReviewer, /Review only; return findings only\. Do not edit files\./);
+    assert.match(specReviewer, /executor:devops/);
+
+    const firstSnapshot = generatedText;
+    execFileSync('python3', ['scripts/migrate-arc-plugin.py', UPSTREAM_ARC_SOURCE], {
+      cwd: packageCopy,
+      encoding: 'utf8',
+    });
+    assert.equal(snapshotGeneratedResources(packageCopy), firstSnapshot);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('repo-local source sync contract preserves coder/devops split', () => {
+  const source = read('../../.pi/skills/arc-source-sync/SKILL.md');
+  assert.match(source, /coder\/devops split/i);
+  assert.match(source, /agents\/builder\.md.*agents\/coder\.md/i);
+  assert.match(source, /arc-coder/);
+  assert.match(source, /arc-devops/);
+  assert.match(source, /update `scripts\/migrate-arc-plugin\.py` so the guard is reproduced on every future sync/i);
 });
 
 test('arc extension does not ship arc-source-sync slash alias', () => {

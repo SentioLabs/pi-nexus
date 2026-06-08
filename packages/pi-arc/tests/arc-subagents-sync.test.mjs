@@ -27,7 +27,8 @@ test('arc-subagents-sync is deprecated repair while user-scope materialization i
 test('arc extension sync map includes all Arc specialists', () => {
   const source = read('extensions/arc.ts');
   for (const name of [
-    'arc-builder',
+    'arc-coder',
+    'arc-devops',
     'arc-doc-writer',
     'arc-spec-reviewer',
     'arc-code-reviewer',
@@ -36,6 +37,7 @@ test('arc extension sync map includes all Arc specialists', () => {
   ]) {
     assert.match(source, new RegExp(name));
   }
+  assert.doesNotMatch(source, /arc-builder/);
   assert.match(source, /existing file is missing the generated marker; preserving user edits/);
 });
 
@@ -57,14 +59,31 @@ test('arc extension sync guidance distinguishes agent discovery from status moni
 
 test('arc-build skill references arc-subagents-sync and async pi-subagents workers', () => {
   const source = read('skills/arc-build/SKILL.md');
+  const prompt = read('skills/arc-build/coder-prompt.md');
   assert.match(source, /\/arc-subagents-sync/);
-  assert.match(source, /arc-builder/);
+  assert.match(source, /arc-coder/);
+  assert.match(source, /coder-prompt\.md/);
+  assert.doesNotMatch(source, /arc-builder|builder-prompt\.md/);
+  assert.match(prompt, /dispatching `coder`/);
+  assert.doesNotMatch(prompt, /dispatching `builder`/);
   assert.match(source, /async: true/);
   assert.match(source, /clarify: false/);
   assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
   assert.match(source, /until terminal/);
   assert.match(source, /read the final output/);
   assert.match(source, /\/subagents-status/);
+});
+
+test('package docs advertise coder and arc-coder as current code executor names', () => {
+  const readme = read('README.md');
+  assert.match(readme, /Supports `coder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`/);
+  assert.match(readme, /`arc-coder`/);
+  assert.match(readme, /"coder": \{/);
+
+  for (const path of ['README.md', 'skills/arc-plan/SKILL.md', 'skills/arc-review/SKILL.md']) {
+    const source = read(path);
+    assert.doesNotMatch(source, /\barc-builder\b|\bbuilders?\b/i, `${path} should not advertise builder executor names`);
+  }
 });
 
 test('arc-plan prefers arc-issue-manager via pi-subagents before arc_agent fallback', () => {
@@ -86,6 +105,11 @@ test('arc-review prefers arc-code-reviewer via pi-subagents before arc_agent fal
   assert.match(source, /clarify: false/);
   assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
   assert.match(source, /arc_agent\(agent="code-reviewer"/);
+  assert.match(source, /executor:devops/);
+  assert.match(source, /devops evidence/i);
+  assert.match(source, /resolved executor \(`coder`, `devops`, or `doc-writer`\)/);
+  assert.doesNotMatch(source, /re-dispatch `coder`/i);
+  assert.doesNotMatch(source, /Re-dispatch `coder`/);
 });
 
 test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents completion guard', () => {
@@ -93,6 +117,9 @@ test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents compl
   assert.match(source, /Review only/i);
   assert.match(source, /return findings only/i);
   assert.match(source, /Do not edit files/i);
+  assert.match(source, /executor:devops/);
+  assert.match(source, /evidence/i);
+  assert.match(source, /config|runbook/i);
   assert.doesNotMatch(source, /\bmust\s+(?:edit|modify|change|fix|patch|apply)\b/i);
   assert.doesNotMatch(source, /\bapply\s+(?:the\s+)?fix(?:es)?\s+directly\b/i);
   assert.doesNotMatch(source, /\bmake\s+(?:the\s+)?code\s+changes\b/i);

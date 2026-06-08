@@ -1,6 +1,6 @@
 # Doc Writer Prompt Template
 
-Use this template when dispatching `doc-writer` for a task labeled `docs-only`.
+Use this template when dispatching `doc-writer` for a task routed to `executor:docs` (or the legacy `docs-only` fallback).
 
 **Placeholders:**
 - `{TASK_ID}` — arc issue ID

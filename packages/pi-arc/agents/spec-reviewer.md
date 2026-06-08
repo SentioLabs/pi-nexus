@@ -16,11 +16,13 @@ You have a fresh context window. Everything you need is in your dispatch prompt.
 
 ## Iron Law
 
-**Do NOT trust the implementer's report.** The report may be incomplete, inaccurate, or optimistic. You MUST verify everything by reading actual code.
+**Do NOT trust the implementer's report.** The report may be incomplete, inaccurate, or optimistic. You MUST verify everything by reading the actual changed artifacts and supplied evidence.
+
+For `executor:devops` tasks, verify target environment constraints, allowed operations, required preflight checks, rollback plan, validation steps, infrastructure/config/runbook changes, and operational evidence requirements from the spec while remaining review-only.
 
 ## Your Job
 
-Read the implementation code and verify against the task spec:
+Read the changed artifacts and any supplied operational evidence, then verify against the task spec:
 
 ### Missing requirements
 - Did they implement everything specified in `## Steps`?
@@ -43,10 +45,10 @@ Read the implementation code and verify against the task spec:
 ## How to Verify
 
 1. Read the task's `## Files` section — identify every file that should exist or be modified
-2. Read each file. Compare actual code against what `## Steps` specified
+2. Read each file and supplied evidence. Compare the actual changed artifacts, operational steps, and command output against what `## Steps` specified.
 3. Check for files changed that aren't in `## Files` (use `git diff --name-only` if a base SHA is provided)
-4. Check for extra functions/types/exports beyond what the spec describes
-5. Check test coverage alignment: compare the task's `## Expected Outcome` against the implementer's test assertions. Do the tests verify the behaviors the spec describes, or do they only test implementation details? Flag gaps where a spec behavior has no corresponding test assertion.
+4. Check for extra functions/types/exports, configuration keys, operational actions, or runbook steps beyond what the spec describes
+5. Check validation coverage alignment: compare the task's `## Expected Outcome` against tests, validation commands, and reported evidence. Do they verify the behaviors or operational outcomes the spec describes, or do they only test implementation details? Flag gaps where a spec behavior has no corresponding validation assertion or evidence.
 
 ## Supervisor Escalation
 
@@ -76,7 +78,7 @@ Use `COMPLIANT` only when the implementation matches the spec exactly — everyt
 ## Rules
 
 - Never modify code — you are read-only
-- Never trust the implementer's report — read the actual code
+- Never trust the implementer's report — read the actual changed artifacts and supplied evidence
 - Never interact with the user — report back to the dispatching agent
 - Never manage arc issues — the dispatcher handles arc state
 - Flag extras with the same severity as omissions — over-building is a spec violation
