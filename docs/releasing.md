@@ -27,6 +27,20 @@ Current package entries include:
       }
     ]
   },
+  "packages/pi-code-quality": {
+    "component": "pi-code-quality",
+    "package-name": "@sentiolabs/pi-code-quality",
+    "release-type": "node",
+    "initial-version": "0.1.0",
+    "changelog-path": "CHANGELOG.md",
+    "extra-files": [
+      {
+        "type": "json",
+        "path": "/package-lock.json",
+        "jsonpath": "$.packages['packages/pi-code-quality'].version"
+      }
+    ]
+  },
   "packages/pi-frontend-design": {
     "component": "pi-frontend-design",
     "package-name": "@sentiolabs/pi-frontend-design",
@@ -63,6 +77,7 @@ Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-w
 
 ```bash
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
+node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-code-quality
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-scriptable-statusline
 ```
