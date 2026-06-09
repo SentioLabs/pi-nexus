@@ -50,8 +50,9 @@ test("size-review skill frontmatter is valid for Pi discovery", () => {
 
   assert.match(skill, /^---\n/);
   assert.match(skill, /\nname: size-review\n/);
-  const descriptionBlock = skill.match(/\ndescription: >\n([\s\S]+?)\nlicense: MIT\n/)?.[1] ?? "";
-  const description = descriptionBlock.replace(/\s+/g, " ").trim();
+  const description = (skill.match(/\ndescription:\s*(?:[>|]\n)?([\s\S]+?)\nlicense:\s*MIT\n/)?.[1] ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   assert.ok(description.length >= 20, "description should be descriptive");
   assert.ok(description.length <= 1024, "description should fit Pi skill metadata limits");
   assert.match(skill, /\nlicense: MIT\n/);
@@ -82,6 +83,7 @@ test("prompt aliases point at the correct skills", () => {
   assert.match(slopPrompt, /description: Run an AI slop\/code-quality review/);
   assert.match(slopPrompt, /argument-hint: "\[scope\]"/);
   assert.match(slopPrompt, /Use the `slop-review` skill/);
+  assert.match(slopPrompt, /\$ARGUMENTS/);
   assert.doesNotMatch(slopPrompt, /\/code-quality:slop/);
 
   assert.match(sizePrompt, /^---\n/);
