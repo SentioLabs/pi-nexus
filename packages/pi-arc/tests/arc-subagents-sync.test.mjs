@@ -70,6 +70,18 @@ test('arc-build skill references arc-subagents-sync and async pi-subagents worke
   assert.match(source, /\/subagents-status/);
 });
 
+test('arc-build evaluator examples use explicit large-tier override', () => {
+  const skill = read('skills/arc-build/SKILL.md');
+  const migration = read('scripts/migrate-arc-plugin.py');
+  const evaluatorOverride = /\{ agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex\/gpt-5\.5:high" \}/;
+  const staleEvaluatorOverride = /\{ agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex\/gpt-5\.5" \}/;
+
+  assert.match(skill, evaluatorOverride);
+  assert.doesNotMatch(skill, staleEvaluatorOverride);
+  assert.match(migration, evaluatorOverride);
+  assert.doesNotMatch(migration, staleEvaluatorOverride);
+});
+
 test('arc-plan prefers arc-issue-manager via pi-subagents before arc_agent fallback', () => {
   const source = read('skills/arc-plan/SKILL.md');
   assert.match(source, /arc-issue-manager/);

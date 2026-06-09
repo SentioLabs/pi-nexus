@@ -284,7 +284,7 @@ When `pi-subagents` is available, dispatch the evaluator through a one-task work
 ```ts
 subagent({
   tasks: [
-    { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5" }
+    { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5:high" }
   ],
   worktree: true,
   concurrency: 1,
