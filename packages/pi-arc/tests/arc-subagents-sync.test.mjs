@@ -43,6 +43,9 @@ test('arc extension model tiers include nano', () => {
   const source = read('extensions/arc.ts');
   assert.match(source, /type ArcModelTier = "nano" \| "small" \| "standard" \| "large"/);
   assert.match(source, /nano: "openai-codex\/gpt-5\.4-mini"/);
+  assert.match(source, /standard: "openai-codex\/gpt-5\.5:medium"/);
+  assert.match(source, /large: "openai-codex\/gpt-5\.5:high"/);
+  assert.doesNotMatch(source, /standard: "openai-codex\/gpt-5\.3-codex"/);
   assert.match(source, /nano for bulk CLI issue creation/);
 });
 

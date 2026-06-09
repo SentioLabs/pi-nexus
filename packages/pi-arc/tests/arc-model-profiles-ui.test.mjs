@@ -26,14 +26,14 @@ const EXPECTED_RECOMMENDATIONS = [
   ['brainstorm', 'gpt-5.5', 'high', 'design exploration and architecture judgment'],
   ['plan', 'gpt-5.5', 'high', 'task breakdown and sequencing'],
   ['issueManager', 'gpt-5.4-mini', 'off', 'Arc CLI formatting and issue updates'],
-  ['builder', 'gpt-5.3-codex', 'medium', 'implementation and code navigation'],
+  ['builder', 'gpt-5.5', 'medium', 'implementation and code navigation'],
   ['codeReviewer', 'gpt-5.5', 'high', 'review judgment and risk detection'],
   ['docWriter', 'gpt-5.4-mini', 'low', 'documentation prose and light reasoning'],
   ['specReviewer', 'gpt-5.5', 'high', 'spec compliance and ambiguity detection'],
   ['evaluator', 'gpt-5.5', 'high', 'adversarial validation'],
 ];
 
-const ALLOWED_RECOMMENDED_MODEL_IDS = new Set(['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex']);
+const ALLOWED_RECOMMENDED_MODEL_IDS = new Set(['gpt-5.5', 'gpt-5.4-mini']);
 
 test('arc model profiles UI exports the editor entrypoint and section-style labels', () => {
   const source = read('extensions/arc/model-profiles-ui.ts');

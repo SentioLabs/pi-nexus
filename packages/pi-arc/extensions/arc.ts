@@ -119,8 +119,8 @@ type ArcModelTierMap = Record<ArcModelTier, string>;
 const DEFAULT_ARC_MODEL_TIERS: ArcModelTierMap = {
   nano: "openai-codex/gpt-5.4-mini",
   small: "openai-codex/gpt-5.4-mini",
-  standard: "openai-codex/gpt-5.3-codex",
-  large: "openai-codex/gpt-5.5",
+  standard: "openai-codex/gpt-5.5:medium",
+  large: "openai-codex/gpt-5.5:high",
 };
 
 const MODEL_TIER_ALIASES: Record<string, ArcModelTier> = {
@@ -269,7 +269,7 @@ const ARC_PROFILE_RECOMMENDATIONS: Record<ArcModelProfileKey, ArcProfileRecommen
   brainstorm: { modelId: "gpt-5.5", thinking: "high", reason: "design exploration and architecture judgment" },
   plan: { modelId: "gpt-5.5", thinking: "high", reason: "task breakdown and sequencing" },
   issueManager: { modelId: "gpt-5.4-mini", thinking: "off", reason: "Arc CLI formatting and issue updates" },
-  builder: { modelId: "gpt-5.3-codex", thinking: "medium", reason: "implementation and code navigation" },
+  builder: { modelId: "gpt-5.5", thinking: "medium", reason: "implementation and code navigation" },
   codeReviewer: { modelId: "gpt-5.5", thinking: "high", reason: "review judgment and risk detection" },
   docWriter: { modelId: "gpt-5.4-mini", thinking: "low", reason: "documentation prose and light reasoning" },
   specReviewer: { modelId: "gpt-5.5", thinking: "high", reason: "spec compliance and ambiguity detection" },

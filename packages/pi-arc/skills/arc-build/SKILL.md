@@ -25,8 +25,8 @@ Every Arc subagent dispatch can override the subagent's frontmatter model via th
 |---|---|---|
 | `nano` | `openai-codex/gpt-5.4-mini` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.4-mini` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.3-codex` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.5` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `standard` | `openai-codex/gpt-5.5:medium` | Normal contained implementation/review |
+| `large` | `openai-codex/gpt-5.5:high` | Cross-cutting, architectural, security-sensitive, or adversarial review |
 
 ```markdown
 Arc model selection resolves in this order:
@@ -47,8 +47,8 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
     "modelTiers": {
       "nano": "openai-codex/gpt-5.4-mini",
       "small": "openai-codex/gpt-5.4-mini",
-      "standard": "openai-codex/gpt-5.3-codex",
-      "large": "openai-codex/gpt-5.5"
+      "standard": "openai-codex/gpt-5.5:medium",
+      "large": "openai-codex/gpt-5.5:high"
     }
   }
 }
@@ -78,9 +78,9 @@ arc_agent(agent="builder", task="...")                      # standard default
 arc_agent(agent="builder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
+subagent({ agent: "arc-builder", task: "...", context: "fresh", async: true, clarify: false })
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5:high", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -231,7 +231,7 @@ Dispatch `spec-reviewer`:
 Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.
 
 Dispatch preference:
-- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
 
@@ -402,8 +402,8 @@ Dispatch all parallel tasks in one `subagent` tool call so they branch from the 
 ```ts
 subagent({
   tasks: [
-    { agent: "arc-builder", task: "<filled builder prompt for task 1>", model: "openai-codex/gpt-5.3-codex" },
-    { agent: "arc-builder", task: "<filled builder prompt for task 2>", model: "openai-codex/gpt-5.3-codex" },
+    { agent: "arc-builder", task: "<filled builder prompt for task 1>" },
+    { agent: "arc-builder", task: "<filled builder prompt for task 2>" },
     { agent: "arc-doc-writer", task: "<filled doc-writer prompt for task 3>", model: "openai-codex/gpt-5.4-mini" }
   ],
   worktree: true,
