@@ -1,7 +1,7 @@
 {
   "name": "@sentiolabs/pi-code-quality",
   "version": "0.1.0",
-  "description": "Pi skills and prompts for AI slop and code quality review.",
+  "description": "Pi skills and prompts for AI slop review, PR/branch size review, and code reviewability analysis.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -12,7 +12,11 @@
     "idiom-fluency",
     "ai-authorship",
     "solution-fit",
-    "architecture-review"
+    "architecture-review",
+    "pr-size",
+    "branch-review",
+    "stacked-prs",
+    "reviewability"
   ],
   "license": "MIT",
   "author": {

@@ -2,19 +2,26 @@
 
 > Monorepo location: this package lives at `packages/pi-code-quality` in the `pi-nexus` workspace. From the monorepo root, test it with `npm test --workspace @sentiolabs/pi-code-quality` and load it locally with `pi -e ./packages/pi-code-quality`.
 
-Pi skills and prompts for AI slop and code quality review.
+Pi skills and prompts for AI slop review, PR/branch size review, and code reviewability analysis.
 
-This package ports the Claude Code `code-quality` plugin's `slop-review` workflow to Pi.
+This package ports the Claude Code `code-quality` plugin's `slop-review` and `size-review` workflows to Pi.
 
 ## What is included
 
 - `/skill:slop-review` — 4-lens slop review for AI authorship signals, idiom drift, code quality issues, and architecture/solution-fit problems.
 - `/code-quality-slop [scope]` — prompt alias for reviewing current changes, files, directories, PRs, or broad codebase scopes.
-- Language reference files for Go, Python, Rust, and Svelte/TypeScript.
+- `/skill:size-review` — PR/branch size review that decides whether a change should be split, stacked, cleaned up, or shipped as-is.
+- `/code-quality-size [scope]` — prompt alias for reviewing the current branch, a PR, or a named branch for reviewability and stack seams.
+- Slop-review language references for Go, Python, Rust, and Svelte/TypeScript.
+- Size-review default exclusions for generated files, lockfiles, vendored output, and common machine-generated artifacts.
 
-## Execution behavior
+## Workflow distinction
 
-The skill is portable. When the current Pi session exposes a parallel agent tool, the review can run Step 0 first and then run the applicable Phase 1 lenses in parallel. When no parallel tool is available, the same lenses run sequentially in the current agent context with separated findings.
+`slop-review` evaluates what the code does and whether the implementation quality or solution fit is suspect. `size-review` evaluates how the change is packaged for human review: raw vs post-exclusion size, stacked branch shape, viable seams, split effort, and concrete stack plans.
+
+## Portable execution
+
+The `slop-review` skill is portable. When the current Pi session exposes a parallel agent tool, the review can run Step 0 first and then run the applicable Phase 1 lenses in parallel. When no parallel tool is available, the same lenses run sequentially in the current agent context with separated findings.
 
 Parallelism is opportunistic; the review methodology, calibration, scoring, and output format are the contract.
 
@@ -40,15 +47,12 @@ pi -e ./packages/pi-code-quality
 /code-quality-slop path/to/file.go
 /code-quality-slop #123
 /skill:slop-review
+
+/code-quality-size
+/code-quality-size #123
+/code-quality-size feature/my-branch
+/skill:size-review
 ```
-
-If no scope is provided, `/code-quality-slop` defaults to the current git diff.
-
-## Output behavior
-
-- In interactive Pi sessions, the skill asks before posting to a PR when a PR is detected.
-- If `ask_user_question` is available, the skill uses it for the output choice; otherwise it asks in chat.
-- In CI or explicit non-interactive mode, the skill posts to the detected PR or writes `SLOP_REVIEW.md` when no PR is detected.
 
 ## Development
 
