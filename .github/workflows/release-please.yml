@@ -41,6 +41,9 @@ jobs:
       - name: Publish pi-arc to npm
         run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
 
+      - name: Publish pi-code-quality to npm
+        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-code-quality
+
       - name: Publish pi-frontend-design to npm
         run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
 
