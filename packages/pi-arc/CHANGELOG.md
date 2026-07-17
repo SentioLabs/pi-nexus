@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.10.1...pi-arc-v0.11.0) (2026-07-17)
+
+
+### Features
+
+* **pi-arc:** sync arc workflow resources ([0455fcb](https://github.com/SentioLabs/pi-nexus/commit/0455fcb365bbc01c62b7f0a4acfc0c5206812407))
+* **pi-arc:** sync arc workflow resources ([fcd7362](https://github.com/SentioLabs/pi-nexus/commit/fcd736209f7efeada04720d4d90fb5cef8c51207))
+
 ## [0.10.1](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.10.0...pi-arc-v0.10.1) (2026-05-14)
 
 
