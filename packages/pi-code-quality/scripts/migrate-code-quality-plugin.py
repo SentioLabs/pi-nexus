@@ -136,6 +136,11 @@ def transform_prompt(source_name: str, text: str) -> str:
         raise RuntimeError(f"Unknown prompt source: {source_name}")
     config = PROMPT_CONFIG[source_name]
     body = strip_frontmatter(text, f"{source_name} prompt")
+    title = config["title"]
+    first_line, separator, remainder = body.partition("\n")
+    if first_line != title:
+        raise RuntimeError(f"Expected prompt heading {title} while patching {source_name} prompt")
+    body = title + (separator + remainder if separator else "\n")
     old_invocation = f"Run the `{config['skill']}` skill against the specified target."
     body = require_replace(
         body,
@@ -399,8 +404,31 @@ def transform_deep_review(text: str) -> str:
     )
     text = require_replace(
         text,
-        "3. **Interactive + PR found:** `AskUserQuestion` — post PR comment (recommended)",
-        "3. **Interactive + PR found:** `ask_user_question` — post PR comment (recommended)",
+        "3. **Interactive + PR found:** `AskUserQuestion` — post PR comment (recommended)\n"
+        "   or write `DEEP_REVIEW.md`. **Interactive + no PR:** write `DEEP_REVIEW.md`\n"
+        "   directly, no menu.",
+        "3. **Interactive + PR found + `gh` available/authenticated:** `ask_user_question`\n"
+        "   may offer post PR comment (recommended) or write `DEEP_REVIEW.md`. Before\n"
+        "   offering the PR-post option, require `command -v gh` and successful\n"
+        "   `gh auth status` (or an equivalent explicit availability/auth check).\n"
+        "   **Interactive + PR found but `gh` unavailable or unauthenticated:** do not\n"
+        "   offer the PR-post option; write `DEEP_REVIEW.md` or allow inline/free-form\n"
+        "   output. **Interactive + no PR:** write `DEEP_REVIEW.md` directly, no menu.",
+        context,
+    )
+    text = require_replace(
+        text,
+        "4. **Non-interactive:** PR found → auto-post the PR comment, no confirmation;\n"
+        "   no PR → write `DEEP_REVIEW.md` and print a one-line verdict summary to stdout.\n"
+        "   If posting fails, exit non-zero — never silently fall back.",
+        "4. **Non-interactive:** PR found + `gh` available/authenticated → auto-post\n"
+        "   the PR comment, no confirmation, after the same `command -v gh` /\n"
+        "   `gh auth status` preflight; PR found but `gh` unavailable or\n"
+        "   unauthenticated → write `DEEP_REVIEW.md`, print the one-line verdict\n"
+        "   summary to stdout, and surface that PR delivery was unavailable; no PR →\n"
+        "   write `DEEP_REVIEW.md` and print the one-line verdict summary to stdout.\n"
+        "   If preflight passed but the actual `gh pr comment` post fails, exit\n"
+        "   non-zero — never silently fall back.",
         context,
     )
     return text
@@ -454,17 +482,60 @@ def transform_output_actions(text: str) -> str:
         "  by design.",
         context,
     )
+    text = require_replace(
+        text,
+        "- **Default behavior depends on PR detection** (next section):\n"
+        "  - PR detected → post the rendered PR comment automatically.\n"
+        "  - No PR detected → write `DEEP_REVIEW.md` to the working directory and\n"
+        "    additionally print a one-line summary (verdict + grade + final score)\n"
+        "    to stdout so the CI log captures it.\n"
+        "- **Never prompt for confirmation before posting.** In CI the user has\n"
+        "  already opted in to auto-posting by triggering the workflow; an\n"
+        "  unanswered confirm would block the job.\n"
+        "- **Surface failures visibly.** If `gh pr comment` fails (auth, rate\n"
+        "  limit, repo permissions), exit non-zero with the error so the workflow\n"
+        "  step fails loudly. Do not silently fall back.",
+        "- **Default behavior depends on PR detection and GitHub delivery preflight**\n"
+        "  (next sections):\n"
+        "  - PR detected and `command -v gh` plus `gh auth status` succeed → post\n"
+        "    the rendered PR comment automatically.\n"
+        "  - PR detected but `gh` is unavailable or unauthenticated → write\n"
+        "    `DEEP_REVIEW.md`, print the one-line summary, and surface that PR\n"
+        "    delivery was unavailable.\n"
+        "  - No PR detected → write `DEEP_REVIEW.md` to the working directory and\n"
+        "    additionally print a one-line summary (verdict + grade + final score)\n"
+        "    to stdout so the CI log captures it.\n"
+        "- **Never prompt for confirmation before posting.** In CI the user has\n"
+        "  already opted in to auto-posting by triggering the workflow; an\n"
+        "  unanswered confirm would block the job.\n"
+        "- **Surface failures visibly.** If the preflight passes but the actual\n"
+        "  `gh pr comment` post fails (auth, rate limit, repo permissions), exit\n"
+        "  non-zero with the error so the workflow step fails loudly. Do not\n"
+        "  silently fall back.",
+        context,
+    )
     text = replace_section(
         text,
         "## 3. Ask the user (interactive mode only)\n",
         "\n## 4. Posting to a PR",
         "## 3. Ask the user (interactive mode only)\n\n"
-        "**Skip this section entirely in non-interactive mode** (per §1). In CI:\n"
-        "post the PR comment via §4 if a PR was detected, otherwise write\n"
-        "`DEEP_REVIEW.md` via §6.\n\n"
-        "In interactive mode, use the `ask_user_question` tool. The exact options\n"
-        "depend on whether a PR was detected.\n\n"
-        "**PR detected — present two options using the package `questions[]` shape:**\n\n"
+        "**Skip this section entirely in non-interactive mode** (per §1). In CI,\n"
+        "post the PR comment via §4 only when a PR was detected and GitHub delivery\n"
+        "preflight passes. If a PR was detected but `gh` is unavailable or\n"
+        "unauthenticated, write `DEEP_REVIEW.md`, print the one-line summary, and\n"
+        "surface that PR delivery was unavailable.\n\n"
+        "In interactive mode, use the `ask_user_question` tool. When a PR was\n"
+        "detected, first verify GitHub delivery availability:\n\n"
+        "```bash\n"
+        "command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1\n"
+        "```\n\n"
+        "An equivalent explicit availability/auth check is acceptable. If this\n"
+        "preflight fails, **Do not offer the PR-post option**. Offer\n"
+        "`Write DEEP_REVIEW.md` and `Return inline` (or use the package free-form\n"
+        "escape hatches), and tell the user GitHub PR delivery is unavailable or\n"
+        "unauthenticated.\n\n"
+        "**PR detected and GitHub delivery available — present two options using\n"
+        "the package `questions[]` shape:**\n\n"
         "```json\n"
         "{\n"
         "  \"questions\": [\n"
@@ -486,9 +557,10 @@ def transform_output_actions(text: str) -> str:
         "  ]\n"
         "}\n"
         "```\n\n"
-        "Use 2-4 concise options. Mark the PR option as `(Recommended)` when a PR is\n"
-        "detected. The package provides the `Type something.` and `Chat about this`\n"
-        "escape hatches; do not add manual pseudo-options for those choices.\n\n"
+        "Use 2-4 concise options. Mark the PR option as `(Recommended)` only when\n"
+        "a PR is detected and GitHub delivery is available. The package provides the\n"
+        "`Type something.` and `Chat about this` escape hatches; do not add manual\n"
+        "pseudo-options for those choices.\n\n"
         "**No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and\n"
         "tell the user: \"No open PR found for this branch — wrote findings to\n"
         "`DEEP_REVIEW.md` (untracked).\" If the user wants something else they can\n"
@@ -501,6 +573,56 @@ def transform_output_actions(text: str) -> str:
         "- GitHub issues for each confirmed finding — see §7\n"
         "- Inline review comments at specific lines — see §7\n"
         "- Print to terminal only — just emit the markdown report and exit\n",
+        context,
+    )
+    text = replace_section(
+        text,
+        "## 4. Posting to a PR\n",
+        "\n## 5. PR Comment Format",
+        "## 4. Posting to a PR\n\n"
+        "Only post when a PR was detected and GitHub delivery preflight succeeds.\n"
+        "Run the preflight before offering a PR-post option and again immediately\n"
+        "before posting in non-interactive mode:\n\n"
+        "```bash\n"
+        "command -v gh >/dev/null 2>&1\n"
+        "gh auth status >/dev/null 2>&1\n"
+        "```\n\n"
+        "An equivalent explicit availability/auth check is acceptable. If preflight\n"
+        "fails:\n\n"
+        "- **Interactive:** Do not offer the PR-post option. Write `DEEP_REVIEW.md`,\n"
+        "  return inline output, or honor a free-form delivery request; tell the user\n"
+        "  GitHub PR delivery is unavailable or unauthenticated.\n"
+        "- **Non-interactive:** write `DEEP_REVIEW.md`, print the one-line summary,\n"
+        "  and surface that PR delivery was unavailable. Do not attempt\n"
+        "  `gh pr comment`.\n\n"
+        "When preflight passes and the user selects \"Post comment to PR\"\n"
+        "(interactive) OR when running non-interactively with a PR detected, render\n"
+        "the report using the **PR Comment Format** in §5. **This is structurally\n"
+        "different from the full markdown report** — the report is exhaustive; the\n"
+        "PR comment is glanceable with collapsibles for the deep tables.\n\n"
+        "Steps:\n\n"
+        "1. Render the comment to a temp file (e.g., `/tmp/deep-review-<pr>.md`).\n"
+        "2. **Interactive mode only:** show the user a brief preview hint (top 5\n"
+        "   lines + section list) and confirm — even though they already chose\n"
+        "   this option, the comment contents weren't visible at the time of\n"
+        "   choice. A confirmation here avoids posting a comment they wouldn't\n"
+        "   have approved. **Skip the confirm in non-interactive mode** — the user\n"
+        "   pre-authorized auto-posting by triggering the workflow.\n"
+        "3. Post:\n\n"
+        "   ```bash\n"
+        "   gh pr comment <PR_NUMBER> --body-file <path> --repo <owner>/<repo>\n"
+        "   ```\n\n"
+        "   `--repo` is required when the PR is in a different repository than the\n"
+        "   current working directory; §2's detection returns the value to use.\n"
+        "   In GitHub Actions the value is `$GITHUB_REPOSITORY`.\n"
+        "4. Echo the comment URL returned by `gh pr comment` back to the user (or\n"
+        "   to stdout in CI) so they can verify.\n"
+        "5. If the actual `gh pr comment` post fails after preflight passed, exit\n"
+        "   non-zero with the error. Do not silently fall back to writing\n"
+        "   `DEEP_REVIEW.md` — that hides a real delivery failure.\n\n"
+        "**Do not** reference `DEEP_REVIEW.md` or other uncommitted files in the\n"
+        "posted comment — links to untracked paths 404 from the PR view. Attribution\n"
+        "should be a plain `<sub>` footer with no links.\n",
         context,
     )
     text = require_replace(
