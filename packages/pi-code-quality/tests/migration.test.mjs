@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -289,6 +289,7 @@ const sizeReviewSkillSource = () => [
   "skill, which can drive the actual split end-to-end.",
 ].join("\n") + "\n";
 
+// Focused overlay-contract fixture; the maintainer real-source smoke/determinism check remains authoritative.
 const createSourceFixture = (overrides = {}) => {
   const root = mkdtempSync(path.join(os.tmpdir(), "pi-code-quality-source-"));
   const files = {
@@ -403,31 +404,26 @@ test("prompt heading drift fails before installing generated resources", () => {
 test("staged installation restores both live roots when the second swap fails", () => {
   const packageCopy = createTemporaryPackage();
   const generated = mkdtempSync(path.join(os.tmpdir(), "pi-code-quality-generated-"));
-  writeFixtureFile(packageCopy.root, "prompts/live.txt", "live prompts\n");
-  writeFixtureFile(packageCopy.root, "skills/live.txt", "live skills\n");
+  const promptBefore = Buffer.from("live prompts\n", "utf8");
+  const skillBefore = Buffer.from("live skills\n", "utf8");
+  writeFixtureFile(packageCopy.root, "prompts/sentinel.txt", promptBefore);
+  writeFixtureFile(packageCopy.root, "skills/sentinel.txt", skillBefore);
   writeFixtureFile(generated, "prompts/new.txt", "new prompts\n");
   writeFixtureFile(generated, "skills/new.txt", "new skills\n");
   const probe = [
     "import importlib.util, sys",
     "from pathlib import Path",
-    "from unittest.mock import patch",
     "script, package_root, generated = map(Path, sys.argv[1:])",
     "spec = importlib.util.spec_from_file_location('migration', script)",
     "module = importlib.util.module_from_spec(spec)",
     "spec.loader.exec_module(module)",
-    "original_rename = Path.rename",
-    "def fail_second_swap(self, target):",
-    "    if self.name.startswith('.skills.staging-') and Path(target) == package_root / 'skills':",
+    "def move_with_second_swap_failure(source, target):",
+    "    source = Path(source)",
+    "    target = Path(target)",
+    "    if source.name.startswith('.skills.staging-') and target == package_root / 'skills':",
     "        raise OSError('simulated skills swap failure')",
-    "    return original_rename(self, target)",
-    "try:",
-    "    with patch.object(Path, 'rename', fail_second_swap):",
-    "        module.install_generated_tree(generated, package_root)",
-    "except OSError:",
-    "    leftovers = [path.name for path in package_root.iterdir() if '.staging-' in path.name or '.backup-' in path.name]",
-    "    if leftovers:",
-    "        raise AssertionError(f'rollback leftovers: {leftovers}')",
-    "    raise",
+    "    source.rename(target)",
+    "module.install_generated_tree(generated, package_root, move=move_with_second_swap_failure)",
   ].join("\n");
 
   try {
@@ -436,10 +432,14 @@ test("staged installation restores both live roots when the second swap fails", 
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /simulated skills swap failure/);
-    assert.equal(readFileSync(path.join(packageCopy.root, "prompts/live.txt"), "utf8"), "live prompts\n");
-    assert.equal(readFileSync(path.join(packageCopy.root, "skills/live.txt"), "utf8"), "live skills\n");
+    assert.deepEqual(readFileSync(path.join(packageCopy.root, "prompts/sentinel.txt")), promptBefore);
+    assert.deepEqual(readFileSync(path.join(packageCopy.root, "skills/sentinel.txt")), skillBefore);
     assert.equal(existsSync(path.join(packageCopy.root, "prompts/new.txt")), false);
     assert.equal(existsSync(path.join(packageCopy.root, "skills/new.txt")), false);
+    assert.deepEqual(
+      readdirSync(packageCopy.root).filter((entry) => entry.includes(".staging-") || entry.includes(".backup-")),
+      [],
+    );
   } finally {
     rmSync(generated, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });
@@ -480,8 +480,13 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(outputActions, /exit non-zero/);
 
     assert.match(sizeReview, /With a PR but `gh` unavailable or\s+unauthenticated/);
-    assert.match(sizeReview, /do not offer the PR-post option/);
+    assert.match(
+      sizeReview,
+      /Include\s+`Post comment to PR #<N> \(Recommended\)`, `Write SIZE_REVIEW\.md`, and\s+`Return inline`/,
+    );
+    assert.match(sizeReview, /do not\s+offer the PR-post option/);
     assert.match(sizeReview, /write `SIZE_REVIEW\.md`, print the one-line summary/);
+    assert.match(sizeReview, /do not invoke `gh`/);
     assert.match(sizeReview, /PR\s+delivery is unavailable/);
     assert.match(sizeReview, /preflight passes\s+but the actual `gh pr comment` post fails/);
     assert.doesNotMatch(sizeReview, /PR in scope →\s*post the report as a PR comment automatically/);

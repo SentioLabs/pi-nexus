@@ -767,13 +767,14 @@ def transform_size_review(text: str) -> str:
         "delivery is unavailable; do not invoke `gh`. With no PR, write `SIZE_REVIEW.md`\n"
         "and print `size-review: <verdict> · <recommendation>` to stdout.\n\n"
         "In interactive mode with a PR and successful preflight, use `ask_user_question`\n"
-        "with the package `questions[]` JSON shape and 2-4 concise options, including a\n"
-        "`Post comment to PR #<N> (Recommended)` option. When a PR exists but `gh` is\n"
-        "unavailable or unauthenticated, do not offer the PR-post option: offer\n"
-        "`Write SIZE_REVIEW.md`, `Return inline`, or package free-form output and state PR\n"
-        "delivery is unavailable. With no PR, offer only available local or inline delivery.\n"
-        "The package provides the `Type something.` and `Chat about this` free-form guidance;\n"
-        "do not add manual pseudo-options.\n\n"
+        "with the package `questions[]` JSON shape and 2-4 concise options. Include\n"
+        "`Post comment to PR #<N> (Recommended)`, `Write SIZE_REVIEW.md`, and\n"
+        "`Return inline` options when PR delivery is available. When a PR exists but\n"
+        "`gh` is unavailable or unauthenticated, do not offer the PR-post option: offer\n"
+        "`Write SIZE_REVIEW.md`, `Return inline`, or package free-form output and state\n"
+        "PR delivery is unavailable. With no PR, offer only available local or inline\n"
+        "delivery. The package provides the `Type something.` and `Chat about this`\n"
+        "free-form guidance; do not add manual pseudo-options.\n\n"
         "If a stack plan was produced and the user wants to act on it, offer a handoff only to\n"
         "tools or skills that are actually available. GitHub and git-spice delivery are\n"
         "conditional on those tools being installed and authenticated; otherwise keep the\n"
@@ -859,7 +860,11 @@ def validate_generated_tree(temporary_root: Path) -> None:
                 raise RuntimeError(f"Forbidden generated text {forbidden!r} found in {relative}")
 
 
-def install_generated_tree(temporary_root: Path, package_root: Path) -> None:
+def rename_path(source: Path, target: Path) -> None:
+    source.rename(target)
+
+
+def install_generated_tree(temporary_root: Path, package_root: Path, move=rename_path) -> None:
     names = ("prompts", "skills")
     staging = {}
     backups = {}
@@ -869,27 +874,44 @@ def install_generated_tree(temporary_root: Path, package_root: Path) -> None:
         for name in names:
             stage = Path(tempfile.mkdtemp(prefix=f".{name}.staging-", dir=package_root))
             stage.rmdir()
-            shutil.copytree(temporary_root / name, stage)
             staging[name] = stage
+            shutil.copytree(temporary_root / name, stage)
 
         for name in names:
             target = package_root / name
             if target.exists():
                 backup = Path(tempfile.mkdtemp(prefix=f".{name}.backup-", dir=package_root))
                 backup.rmdir()
-                target.rename(backup)
+                move(target, backup)
                 backups[name] = backup
 
         for name in names:
-            staging[name].rename(package_root / name)
+            move(staging[name], package_root / name)
             installed.add(name)
-    except Exception:
-        for name in installed:
-            shutil.rmtree(package_root / name, ignore_errors=True)
-        for name, backup in backups.items():
-            backup.rename(package_root / name)
+    except Exception as install_error:
+        rollback_errors = []
+        for name in reversed(names):
+            if name in installed:
+                shutil.rmtree(package_root / name, ignore_errors=True)
+
+        for name in names:
+            backup = backups.get(name)
+            if backup and backup.exists():
+                target = package_root / name
+                try:
+                    if target.exists() and name in installed:
+                        shutil.rmtree(target, ignore_errors=True)
+                    if not target.exists():
+                        move(backup, target)
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
+
         for stage in staging.values():
             shutil.rmtree(stage, ignore_errors=True)
+
+        if rollback_errors:
+            details = "; ".join(str(error) for error in rollback_errors)
+            raise RuntimeError(f"Failed to roll back generated resource installation: {details}") from install_error
         raise
     else:
         for backup in backups.values():
