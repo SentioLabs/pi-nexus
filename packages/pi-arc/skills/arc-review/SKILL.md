@@ -13,7 +13,7 @@ Create a checklist using the bundled `todo` tool (or `/todos`) with these steps:
 
 ### 1. Get Git SHAs
 
-Use the `PRE_TASK_SHA` recorded by the implement skill before dispatching the implementer:
+Use the `PRE_TASK_SHA` recorded by the build skill before dispatching the implementer:
 
 ```bash
 BASE_SHA=$PRE_TASK_SHA
@@ -32,7 +32,7 @@ HEAD_SHA=$(git rev-parse HEAD)
 
 ### 2. Get Design Context
 
-If the review was invoked from the implement skill, a design excerpt should be available. Retrieve it:
+If the review was invoked from the build skill, a design excerpt should be available. Retrieve it:
 
 ```bash
 # Get the parent epic of this task
@@ -54,7 +54,7 @@ Dispatch preference (use **async** so longer reviews appear in `/subagents-statu
 - Arc code-reviewer should be auto-materialized; if it is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`
 - Fallback only if `pi-subagents` is not installed or cannot load after deprecated repair: `arc_agent(agent="code-reviewer", task="<filled prompt>")`
 
-**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. Model profile: reviews use the `codeReviewer` profile when configured via `/arc-models`; otherwise they fall back to existing tier/frontmatter behavior. Escalate only for large, cross-layer, or security-sensitive diffs. For most reviews, omit `model:` (use the agent's `standard` default). For `pi-subagents`, pass the configured concrete large model only when escalating.
+**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. Reviews use the `codeReviewer` profile when configured via `/arc-models`; otherwise the agent's `large` frontmatter is the fallback. Omit `model:` so the configured profile remains authoritative. Use an explicit override only for deliberate escalation beyond the configured profile.
 
 ### 4. Triage Feedback
 
@@ -80,7 +80,7 @@ If fixes are needed:
 ### 6. Proceed
 
 - If all tasks are done → invoke `finish`
-- If more tasks remain → return to `implement` for the next task
+- If more tasks remain → return to `build` for the next task
 
 ## Response Discipline
 

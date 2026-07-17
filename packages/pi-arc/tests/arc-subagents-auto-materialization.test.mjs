@@ -15,7 +15,7 @@ function renderTestAgent(mod, source, target, modelsConfigHash = 'models-hash') 
     sourceName: source,
     sourceMarkdown: `# ${source}`,
     parsedSource: { prompt: `# ${source}` },
-    resolvedModel: 'openai-codex/gpt-5.4-mini',
+    resolvedModel: 'openai-codex/gpt-5.6-terra',
     modelProfileKey: 'builder',
     modelResolutionSource: 'test',
     modelsConfigHash,
@@ -210,6 +210,7 @@ test('Arc source agents document optional supervisor escalation without bundling
   for (const file of [
     'agents/builder.md',
     'agents/code-reviewer.md',
+    'agents/devops-builder.md',
     'agents/doc-writer.md',
     'agents/evaluator.md',
     'agents/issue-manager.md',
@@ -237,7 +238,7 @@ test('Arc subagent markdown render runtime output matches expected structure', a
       description: 'Use this agent when creating issues. This includes: epics, tasks, labels.',
       tools: ['bash', 'read', 'grep'],
     },
-    resolvedModel: 'openai-codex/gpt-5.4-mini',
+    resolvedModel: 'openai-codex/gpt-5.6-luna',
     modelProfileKey: 'issueManager',
     modelResolutionSource: 'profile',
     modelsConfigHash: 'abc123',
@@ -246,7 +247,7 @@ test('Arc subagent markdown render runtime output matches expected structure', a
 
   assert.ok(output.startsWith('---\nname: arc-issue-manager'));
   assert.ok(output.includes('description: "Use this agent when creating issues. This includes: epics, tasks, labels."'));
-  assert.ok(output.includes('model: openai-codex/gpt-5.4-mini'));
+  assert.ok(output.includes('model: openai-codex/gpt-5.6-luna'));
   assert.ok(output.includes('tools: bash, read, grep'));
   assert.ok(output.includes('systemPromptMode: replace'));
   assert.ok(output.includes('inheritProjectContext: true'));

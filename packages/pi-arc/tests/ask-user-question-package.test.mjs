@@ -42,10 +42,11 @@ test('docs teach rpiv ask_user_question schema and escape hatches', () => {
   const readme = read('README.md');
   const brainstorm = read('skills/arc-brainstorm/SKILL.md');
   const plan = read('skills/arc-plan/SKILL.md');
+  const summarize = read('skills/arc-summarize/SKILL.md');
   const sourceSync = read('../../.pi/skills/arc-source-sync/SKILL.md');
   const migrate = read('scripts/migrate-arc-plugin.py');
 
-  for (const source of [readme, brainstorm, plan, sourceSync, migrate]) {
+  for (const source of [readme, brainstorm, plan, summarize, sourceSync, migrate]) {
     assert.match(source, /questions\[\]/);
   }
 
@@ -56,8 +57,12 @@ test('docs teach rpiv ask_user_question schema and escape hatches', () => {
     assert.match(source, /\(Recommended\)/);
   }
 
-  for (const source of [brainstorm, plan]) {
+  for (const source of [brainstorm, plan, summarize]) {
     assert.doesNotMatch(source, /^Question:\s*"/m);
     assert.doesNotMatch(source, /^Options:/m);
   }
+
+  assert.match(summarize, /@juicesharp\/rpiv-ask-user-question/);
+  assert.doesNotMatch(summarize, /`ask_user_question`:\s*$/m);
+  assert.doesNotMatch(summarize, /label:\s*"(?:Other|Next|Type something\.|Chat about this)"/);
 });

@@ -38,6 +38,12 @@ arc create "Title" --type=task --stdin <<'EOF'
 Multi-line description here.
 Context, acceptance criteria, etc.
 EOF
+
+# With a canonical description file (preferred for long content and lossless internal content):
+arc create "Title" --type=task --stdin < /path/to/description.md
+
+# With labels (repeatable flag):
+arc create "Title" --type=task --label=docs-only --label=urgent
 ```
 
 Priority levels: 0=Critical, 1=High, 2=Medium, 3=Low, 4=Backlog
@@ -49,11 +55,16 @@ arc update <id> --take                     # Claim work (sets session ID + in_pr
 arc update <id> --status=blocked        # Mark as blocked
 arc update <id> --priority=1            # Change priority
 arc update <id> --title="New title"     # Update title
+arc update <id> --label-add=docs-only   # Add a label (repeatable)
+arc update <id> --label-remove=stale    # Remove a label (repeatable)
 
 # Update description via stdin (use --stdin flag):
 arc update <id> --stdin <<'EOF'
 COMPLETED: X. IN PROGRESS: Y. NEXT: Z
 EOF
+
+# Replace description from a canonical file (preserves all internal content):
+arc update <id> --stdin < /path/to/description.md
 ```
 
 ### Closing Issues
@@ -108,37 +119,42 @@ The `--parent` flag automatically creates a parent-child dependency. No manual `
 
 ## Processing Task Manifests
 
-When receiving a structured manifest from the `plan` or `brainstorm` skills, parse the `## Epic` and `## Tasks` sections to assemble the manifest, then process it in phases:
+When receiving a manifest from the `plan` or `brainstorm` skills, parse titles, metadata, labels, dependencies, and canonical description-file paths. Arc normalizes outer whitespace from `--stdin`; the planner has already canonicalized these files to match. Never summarize, trim, paraphrase, or retype their content. Transfer canonical bytes only with shell redirection.
+
+Process every manifest in these phases:
 
 1. **Create the epic first** and capture the epic ID.
-2. **Create all child tasks** with the epic as parent before applying dependencies.
    ```bash
-   arc create "Task title" --type=task --parent=<epic-id> --stdin <<'EOF'
-   Full multi-line description here.
-   EOF
+   arc create "Epic title" --type=epic --stdin < "/path/to/plan.md"
    ```
-3. **Capture the complete task-name-to-ID table**.
+2. **Create all child tasks** with the epic as parent before applying dependencies. Create them in manifest order; do not claim concurrent Arc writes are safe.
+   ```bash
+   arc create "Task title" --type=task --parent=<epic-id> --stdin < "/path/to/T1.md"
+   ```
+3. **Capture the complete task-name-to-ID table** before any dependency command.
 4. **Apply dependencies only after all child IDs exist**.
    ```bash
    arc dep add <real-later-id> <real-earlier-id> --type=blocks
    ```
-5. **Apply labels after dependencies**, or in the same post-creation phase.
+5. **Apply labels after dependencies** using the CLI's repeatable update flag.
    ```bash
-   # Labels are managed via the REST API (no CLI command exists)
-   # Use arc update to add label context in the description, or
-   # note the labels in the summary for the dispatcher to handle
+   arc update <id> --label-add=docs-only
+   arc update <id> --label-add=devops
    ```
-6. **Return the final ID table, dependency summary, and `## Timing` summary**.
+6. **Verify every stored description equals its canonical file** and return the final ID table, dependency summary, label summary, and `## Timing` section.
+   ```bash
+   wc -l < "/path/to/T1.md"
+   arc show <id> --json | jq -r .description | wc -l
+   ```
+   Compare `sha256sum < "/path/to/T1.md"` with `arc show <id> --json | jq -j .description | sha256sum`; the hashes must match. Line counts are diagnostic only. On mismatch, repair mechanically with `arc update <id> --stdin < "/path/to/T1.md"` and re-check.
 
-Print `[arc-issue-manager] phase=<name> status=start|done elapsed_ms=<n>` progress lines around each phase (`epic`, `child_tasks`, `dependencies`, `labels`, and optional `verification`) so long-running issue creation is observable.
-
-**Concurrency note:** Concurrent child-task creation is future work pending Arc CLI/server concurrency verification. Do not claim true parallel CLI issue creation is safe today.
+Print `[arc-issue-manager] phase=<name> status=start|done elapsed_ms=<n>` around `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include all phase values in `## Timing`; use `unknown` only when a timestamp cannot be captured.
 
 **Handling partial failures**: If a task creation fails mid-manifest:
 - Continue creating the remaining tasks in order — do not abort the manifest
 - Report partial results clearly: "Created 4/5 tasks. T3 failed: `<error message>`"
-- Include the ID mapping for all successfully created tasks so the dispatcher can act on what exists
-- Do not attempt to clean up already-created tasks — the dispatcher will decide
+- Include the ID mapping for all successfully created tasks
+- Do not clean up already-created tasks; the dispatcher decides recovery
 
 This is the primary interface used by the `plan` and `brainstorm` skills for bulk issue creation.
 
@@ -158,6 +174,7 @@ arc close <id3> --reason "resolved"
 
 ## Important Guidelines
 
+- **Never summarize, trim, or paraphrase content you were given to store.** Descriptions handed to you are the implementer's only context — every dropped line is lost forever. When content is long, that is a reason to pipe it from a file, never a reason to shorten it.
 - Always report issue IDs after creation so the user can reference them
 - When creating related issues, add dependencies to show relationships
 - Use `arc show <id>` to verify changes were applied

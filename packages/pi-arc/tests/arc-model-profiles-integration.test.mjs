@@ -23,17 +23,18 @@ function extractFunctionBlock(source, functionName, stopToken) {
 }
 
 const EXPECTED_RECOMMENDATIONS = [
-  ['brainstorm', 'gpt-5.5', 'high', 'design exploration and architecture judgment'],
-  ['plan', 'gpt-5.5', 'high', 'task breakdown and sequencing'],
-  ['issueManager', 'gpt-5.4-mini', 'off', 'Arc CLI formatting and issue updates'],
-  ['builder', 'gpt-5.3-codex', 'medium', 'implementation and code navigation'],
-  ['codeReviewer', 'gpt-5.5', 'high', 'review judgment and risk detection'],
-  ['docWriter', 'gpt-5.4-mini', 'low', 'documentation prose and light reasoning'],
-  ['specReviewer', 'gpt-5.5', 'high', 'spec compliance and ambiguity detection'],
-  ['evaluator', 'gpt-5.5', 'high', 'adversarial validation'],
+  ['brainstorm', 'gpt-5.6-sol', 'high', 'design exploration and architecture judgment'],
+  ['plan', 'gpt-5.6-sol', 'high', 'task breakdown and sequencing'],
+  ['issueManager', 'gpt-5.6-luna', 'off', 'Arc CLI formatting and issue updates'],
+  ['builder', 'gpt-5.6-terra', 'medium', 'implementation and code navigation'],
+  ['devopsBuilder', 'gpt-5.6-sol', 'high', 'live-system operations and blast-radius judgment'],
+  ['codeReviewer', 'gpt-5.6-sol', 'high', 'review judgment and risk detection'],
+  ['docWriter', 'gpt-5.6-luna', 'low', 'documentation prose and light reasoning'],
+  ['specReviewer', 'gpt-5.6-sol', 'high', 'spec compliance and ambiguity detection'],
+  ['evaluator', 'gpt-5.6-sol', 'high', 'adversarial validation'],
 ];
 
-const ALLOWED_RECOMMENDED_MODEL_IDS = new Set(['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex']);
+const ALLOWED_RECOMMENDED_MODEL_IDS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
 
 test('arc extension wires model profiles into commands and agent dispatch', () => {
   const source = read('extensions/arc.ts');
@@ -46,6 +47,7 @@ test('arc extension wires model profiles into commands and agent dispatch', () =
     'resolveArcModelProfile',
     'ARC_AGENT_PROFILE_KEYS',
     'builder',
+    'devopsBuilder',
     'codeReviewer',
     'docWriter',
     'evaluator',
@@ -132,20 +134,20 @@ test('README modelProfiles example stays within the recommended model set', () =
   const end = source.indexOf('## Sync Arc specialists', start);
   assert.notEqual(end, -1, 'missing next README section');
   const section = source.slice(start, end);
-  assert.doesNotMatch(section, /gpt-5\.4-(?!mini\b)[a-z0-9-]+|gpt-5\.1|claude|haiku|opus|sonnet/i);
-  assert.match(section, /openai-codex\/gpt-5\.5/);
-  assert.match(section, /openai-codex\/gpt-5\.4-mini/);
-  assert.match(section, /openai-codex\/gpt-5\.3-codex/);
+  assert.doesNotMatch(section, /gpt-5\.[1-5](?:\b|[-.])|claude|haiku|opus|sonnet/i);
+  assert.match(section, /openai-codex\/gpt-5\.6-sol/);
+  assert.match(section, /openai-codex\/gpt-5\.6-terra/);
+  assert.match(section, /openai-codex\/gpt-5\.6-luna/);
 });
 
-test('issue-manager docs recommend gpt-5.4-mini while preserving legacy fallback guidance', () => {
+test('issue-manager docs recommend gpt-5.6-luna while preserving legacy fallback guidance', () => {
   const readme = read('README.md');
-  assert.match(readme, /issueManager profile \(recommended gpt-5\.4-mini with thinking off\)/);
+  assert.match(readme, /issueManager profile \(recommended gpt-5\.6-luna with thinking off\)/);
   assert.doesNotMatch(readme, /issueManager profile \(nano tier, thinking off\)/);
 
   const source = read('skills/arc-plan/SKILL.md');
   assert.match(source, /issueManager profile/);
-  assert.match(source, /gpt-5\.4-mini with thinking off/);
+  assert.match(source, /gpt-5\.6-luna with thinking off/);
   assert.match(source, /defaults to `nano`/);
   assert.match(source, /legacy tier\/frontmatter behavior/);
   assert.doesNotMatch(source, /recommended profile uses a nano-tier model with thinking off/);

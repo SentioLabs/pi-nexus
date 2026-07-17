@@ -1,6 +1,6 @@
 ---
 name: arc-brainstorm
-description: You MUST use this skill for any design exploration, architecture decision, or trade-off analysis before implementation begins — especially when the user says "brainstorm", "explore the design", "think through", "what approach should we take", or describes a feature with multiple valid strategies. This is the arc-native brainstorming skill that writes designs to docs/plans/ and registers them on one of three review surfaces (legacy `arc plan`, encrypted local `arc share`, or encrypted remote `arc share --remote`), depending on who's reviewing and whether encryption is needed. Always prefer this over generic brainstorming when the project uses arc issue tracking.
+description: You MUST use this skill for any design exploration, architecture decision, or trade-off analysis before implementation begins — especially when the user says "brainstorm", "explore the design", "think through", "what approach should we take", or describes a feature with multiple valid strategies. This is the arc-native brainstorming skill that writes designs to docs/plans/ and registers them on the arc planner review surface (`arc plan`). Always prefer this over generic brainstorming when the project uses arc issue tracking.
 ---
 
 # Brainstorm — Design Discovery
@@ -17,6 +17,17 @@ Before starting the design dialogue, perform the protected-branch check per `ski
 
 Brainstorm itself doesn't commit code, but the design doc, the planned tasks, the eventual implementation, and the final commits will all land on whatever branch you start from. Catching trunk *now* avoids "we built three hours of work and it's all on main" at finish time. If the user picks "switch to a feature branch", suggest a name based on the brief they just gave you (e.g. `feat/<topic>`).
 
+## Presenting Choices: Text First, Then `ask_user_question`
+
+The `ask_user_question` UI renders only compact option chips — short labels (1-5 words) and one-line descriptions. Anything longer is cut off and the user never sees it.
+
+So wherever a step below says "use the `ask_user_question` tool":
+
+1. **Write the substance in the conversation first** — approach summaries, trade-offs, recommendations, analysis — as a normal markdown message immediately before the tool call.
+2. **Then call `ask_user_question` to capture the decision only.** Keep labels short and descriptions to one line; they may reference the content above ("Approach A", "as analyzed above") instead of restating it.
+
+Never put information into an option label or description that appears nowhere else. If the user reads only your text message plus the option labels, they must have everything they need to decide.
+
 ## Workflow
 
 Create a task for each step below using the bundled `todo` checklist (via `todo` tool / `/todos`). Mark each as `in_progress` when starting and `completed` when done. This creates a visible progress list in the CLI that carries forward into the plan skill. Step 5.5 gets its own task whether or not the user opts into grilling — "No, proceed" still counts as completing the step.
@@ -27,7 +38,7 @@ Create a task for each step below using the bundled `todo` checklist (via `todo`
 - Review existing arc issues (`arc list`)
 - Understand what already exists and what constraints are in play
 
-**Scope check before proceeding:** Before asking detailed clarifying questions, assess whether the request describes multiple independent subsystems (e.g., "build a platform with chat, storage, billing, and analytics"). If so, help the user decompose into sub-projects first — each sub-project gets its own brainstorm → plan → implement cycle. Don't spend questions refining details of a project that needs to be split. A decomposition sketch (what are the independent pieces, how do they relate, what order should they be built) is more valuable than a half-specified monolith.
+**Scope check before proceeding:** Before asking detailed clarifying questions, assess whether the request describes multiple independent subsystems (e.g., "build a platform with chat, storage, billing, and analytics"). If so, help the user decompose into sub-projects first — each sub-project gets its own brainstorm → plan → build cycle. Don't spend questions refining details of a project that needs to be split. A decomposition sketch (what are the independent pieces, how do they relate, what order should they be built) is more valuable than a half-specified monolith.
 
 ### 2. Ask Clarifying Questions
 
@@ -72,10 +83,11 @@ Create a task for each step below using the bundled `todo` checklist (via `todo`
 
 - Each approach: summary, trade-offs, estimated complexity
 - Include a recommendation with reasoning
-- **Use the `ask_user_question` tool** to present approaches as structured choices
+- **Present every approach in full as normal text first** — summary, trade-offs, complexity, and your recommendation all go in the conversation message, NOT inside the tool call
+- **Then use the `ask_user_question` tool** to capture the choice with short labels
 - Apply YAGNI — remove features from all designs that aren't explicitly required
 
-**Example `ask_user_question` usage:**
+**Example — after presenting the full approach write-ups as text:**
 ```json
 {
   "questions": [
@@ -85,15 +97,15 @@ Create a task for each step below using the bundled `todo` checklist (via `todo`
       "options": [
         {
           "label": "Approach A (Recommended)",
-          "description": "Best balance of scope, risk, and implementation speed for the current constraints."
+          "description": "Recommended for the reasons analyzed above."
         },
         {
           "label": "Approach B",
-          "description": "Lower short-term code churn, but leaves more long-term maintenance risk."
+          "description": "Choose the second approach analyzed above."
         },
         {
           "label": "Approach C",
-          "description": "Most flexible, but likely needs larger-model implementation and more review cycles."
+          "description": "Choose the third approach analyzed above."
         }
       ]
     }
@@ -112,6 +124,10 @@ Create a task for each step below using the bundled `todo` checklist (via `todo`
 **Design for isolation and clarity:** Break the system into smaller units that each have one clear purpose, communicate through well-defined interfaces, and can be understood and tested independently. For each unit, you should be able to answer three questions: what does it do, how do you use it, and what does it depend on. Smaller, well-bounded units are also easier for subagents to work with — they reason better about code they can hold in context at once, and their edits are more reliable when files are focused. If a file in the design is projected to grow large, that's often a signal that it's doing too much — consider splitting the responsibility at design time.
 
 **In existing codebases:** Follow existing patterns. Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design — the way a good developer improves code they're working in. Don't propose unrelated refactoring. Stay focused on what serves the current goal.
+
+**Required: a `## Success Criteria` section.** Every design doc must include a `## Success Criteria` section listing observable, testable conditions that define "this feature is done and correct" — not implementation steps, but outcomes (e.g., "a request with an expired token returns 401", "the migration is reversible", "cold-start under 200ms"). This section is the single source of truth that the rest of the pipeline maps to: the planner derives each task's `## Expected Outcome` from it, the evaluator derives acceptance tests from it, and `build`'s Epic Completion Gate checks the closed work against it. Keep criteria concrete enough that a reader can mechanically decide pass/fail. If the user gave success criteria during step 2, crystallize them here; if not, propose them and get agreement.
+
+**For infrastructure/operations designs** (cluster upgrades, IaC/provisioning changes, pipeline work), the same rule applies but success criteria are **observable live-system states**, not unit-test assertions — e.g. "all nodes report v1.29 and `Ready`", "zero pods in `CrashLoopBackOff` for 10 min post-change", "`terraform plan` shows no drift", "p99 latency unchanged after rollout". Additionally, an ops design should state up front: the **blast radius / staging strategy** (canary, one-at-a-time, maintenance window), the **rollback strategy** (and honestly flag any irreversible steps), and the **target environments** in scope. These flow downstream: `plan` turns them into `devops`-labeled runbook tasks (with `## Verification`, `## Safeguards`, `## Rollback`), and `build` routes those to the `devops-builder` agent. Reach for this framing whenever the work is primarily operating live systems rather than writing application code.
 
 ### 5. Identify Shared Contracts (Parallel Readiness)
 
@@ -226,8 +242,8 @@ If "Yes", run the loop:
 **Loop rules:**
 
 - Walk the design's decision tree **depth-first, ordered by dependency**. Resolve decisions that constrain later answers first (e.g., "what storage layer?" before "how do we serialize sessions?"). When a resolution opens new branches, recurse into them before backtracking.
-- **One question per turn** via ``ask_user_question``. Mark the recommended option. When the choice is genuinely contested, offer 2-3 options; when one option is objectively dominant, a single recommendation is fine — but never rubber-stamp open questions just because you have an opinion.
-- **Codebase-first rule.** Before each question, name the symbol, file, or pattern that would answer it. If you can name one, search first (Grep / Read / symbol search) and only ask when the codebase doesn't — or can't — answer. This is the single biggest difference from step 2's clarifying questions, where you don't yet have a draft to ground against.
+- **One question per turn** via ``ask_user_question``. State the decision being probed and any relevant codebase findings as text before the tool call — the options carry only short labels. Mark the recommended option. When the choice is genuinely contested, offer 2-3 options; when one option is objectively dominant, a single recommendation is fine — but never rubber-stamp open questions just because you have an opinion.
+- **Codebase-first rule.** Before each question, name the symbol, file, or pattern that would answer it. If you can name one, search first (`grep` / `read` / symbol search) and only ask when the codebase doesn't — or can't — answer. This is the single biggest difference from step 2's clarifying questions, where you don't yet have a draft to ground against.
 - **Capture resolutions in-place.** Each resolved decision is an edit to `docs/plans/<file>.md` — update the relevant section, don't maintain a separate Q&A log. The design doc is the artifact.
 
 **Stop when ANY of:**
@@ -240,34 +256,26 @@ Then proceed to step 6.
 
 ### 6. Register for Review
 
-The design doc already exists on disk from step 5.5. This step registers it for review on the surface the user picks.
+The design doc already exists on disk from step 5.5. This step registers it on the arc planner for review.
 
-Arc supports three review surfaces. They differ along two axes — *who reviews* (just you vs. teammates on other machines) and *do you want encryption + the new annotation/accept-resolve UI* (legacy planner is plain HTTP and simpler; `arc share` is encrypted and richer). Pick based on how the design will actually be reviewed, not which command you happen to remember.
+The planner is a plain-HTTP comment surface served at `http://localhost:7432/planner/<id>` — a markdown render of the design with a flat comment thread. Register the design there unless the user wants to keep it as a local file and resume later.
 
-**Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool with the package `questions[]` schema:**
+Explain the two paths in text first, **then use the `ask_user_question` tool:**
 
 ```json
 {
   "questions": [
     {
       "header": "Review",
-      "question": "How would you like to review this design?",
+      "question": "Register this design on the planner for review?",
       "options": [
         {
-          "label": "Legacy planner",
-          "description": "Solo plain-HTTP review at /planner/<id>; simplest, with no encryption or accept/resolve UI."
-        },
-        {
-          "label": "Encrypted local",
-          "description": "Solo encrypted review with annotations and accept/resolve UI on this machine only."
-        },
-        {
-          "label": "Encrypted remote",
-          "description": "Multiple reviewers can open the remote encrypted share; the author URL must stay private."
+          "label": "Register (Recommended)",
+          "description": "Create a local planner comment thread at /planner/<id>."
         },
         {
           "label": "Save for later",
-          "description": "Keep the saved design file and stop without server registration; resume in a new session."
+          "description": "Keep the local design file and stop without registering it."
         }
       ]
     }
@@ -275,49 +283,36 @@ Arc supports three review surfaces. They differ along two axes — *who reviews*
 }
 ```
 
-Route on the answer:
+If the user picks "Save for later", stop here — no server registration; the user resumes in a new session. **That choice terminates the skill: skip steps 7 and 8.** Otherwise register the design:
 
-| Choice | CLI to run | Marker `kind=` | URL printed |
-|---|---|---|---|
-| Legacy planner | `arc plan create docs/plans/<file>.md` | `legacy` | `Review at: http://localhost:7432/planner/<id>` |
-| Encrypted local | `arc share create docs/plans/<file>.md` | `share-local` | `Preview URL (local-only — not reachable by others):` |
-| Encrypted remote | `arc share create docs/plans/<file>.md --remote` | `share-remote` | `Author URL (keep private — open it, then use the in-page Share link button to copy a reviewer URL):` |
-| Save for later | (no command) | (no marker) | n/a |
+| Choice | CLI to run | URL printed |
+|---|---|---|
+| Register on the planner | `arc plan create --no-frontmatter docs/plans/<file>.md` | `Review at: http://localhost:7432/planner/<id>` |
+| Save for later | (no command) | n/a |
 
-**Capture the ID and write the review marker.** After the create call succeeds, prepend a single HTML-comment line to the design doc so `/arc-plan` (and any future skill that queries review state) knows which CLI to call. Today only `/arc-plan` reads it — `/arc-build` and the dispatched implementer/reviewer agents read design content from the parent epic's description, not from the share/plan CLIs — but the marker is the canonical record of which surface this doc lives on. Without it, downstream falls back to `arc share list --json | jq` which doesn't cover legacy plans.
+**Capture the ID and write the review marker.** After the create call succeeds, prepend a single HTML-comment line to the design doc so `/arc-plan` (and any future skill that queries review state) knows the plan ID. Today only `/arc-plan` reads it — `/arc-build` and the dispatched implementer/reviewer agents read design content from the parent epic's description, not from the plan CLI — but the marker is the canonical record of the plan this doc is registered as.
 
 ```bash
-# Run the chosen CLI and capture stdout.
-OUT=$(arc share create docs/plans/2026-05-01-foo.md --remote)
+# Run the create CLI and capture stdout.
+OUT=$(arc plan create --no-frontmatter docs/plans/2026-05-01-foo.md)
 echo "$OUT"   # ALWAYS print verbatim — the user needs to see the URL
 
-# Extract the ID:
-#   - share-local / share-remote: the URL fragment contains /share/<id>#...
-#   - legacy: the first line is "Plan created: <id> (file: ..., status: ...)"
-ID=$(echo "$OUT" | grep -oE '/share/[^#]+' | head -1 | sed 's|/share/||')
-# For legacy, instead:  ID=$(echo "$OUT" | grep -oE 'Plan created: \S+' | awk '{print $3}')
-
-KIND="share-remote"   # legacy | share-local | share-remote (matches the chosen branch)
+# Extract the ID: the first line is "Plan created: <id> (file: ..., status: ...)"
+ID=$(echo "$OUT" | grep -oE 'Plan created: \S+' | awk '{print $3}')
 
 # Prepend the marker idempotently. If line 1 already starts with "<!-- arc-review:",
 # replace it; otherwise prepend a new line.
 FILE="docs/plans/2026-05-01-foo.md"
 if head -1 "$FILE" | grep -q '^<!-- arc-review:'; then
-  sed -i.bak "1s|.*|<!-- arc-review: kind=$KIND id=$ID -->|" "$FILE" && rm "$FILE.bak"
+  sed -i.bak "1s|.*|<!-- arc-review: id=$ID -->|" "$FILE" && rm "$FILE.bak"
 else
-  { echo "<!-- arc-review: kind=$KIND id=$ID -->"; cat "$FILE"; } > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+  { echo "<!-- arc-review: id=$ID -->"; cat "$FILE"; } > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
 fi
 ```
 
-The marker format is fixed: `<!-- arc-review: kind=<legacy|share-local|share-remote> id=<id> -->`. Always line 1, always exactly one space between fields.
+The marker format is fixed: `<!-- arc-review: id=<id> -->`. Always line 1, always exactly one space between fields.
 
-**URL handling rules — print exactly what the CLI printed, then add a kind-specific instruction:**
-
-- **Legacy** — print the `Review at:` line. Tell the user this URL is local-only (their browser must reach `http://localhost:7432`).
-- **Encrypted local** — print the Preview URL line. Tell the user it's not reachable from other machines; if they need a reviewer on a different machine, re-create the share with `--remote` instead.
-- **Encrypted remote** — print the Author URL line. Then tell the user: *"Open this URL yourself; that's the author view. To send a reviewer link, click the **Share link** button in the page header — it strips `&t=` and copies a reviewer URL to your clipboard. Don't paste the Author URL into chat or tickets — the `&t=` token gives the recipient your edit privileges."*
-
-The encrypted-share CLI persists the edit_token + key into the local arc keyring (a `shares` table in `~/.arc/data.db`, served by the local arc-server — never written to disk as JSON). If a share Author URL is lost, regenerate it with `arc share show <id> --author-url`. Legacy plans don't have this — the URL is just `<base>/planner/<id>` and there are no edit tokens.
+**URL handling:** Print the `Review at:` line exactly as the CLI printed it, then tell the user this URL is local-only — their browser must reach `http://localhost:7432`. The planner URL is just `<base>/planner/<id>`; there are no edit tokens or keys to manage.
 
 ### 7. Review Loop
 
@@ -334,15 +329,15 @@ Otherwise, print the URL from step 6 again as a reminder. **Use the bundled `@ju
       "options": [
         {
           "label": "Approve",
-          "description": "Mark the design approved and continue to routing analysis."
+          "description": "Approve the design and continue to routing analysis."
         },
         {
-          "label": "I've finished review (pull comments now)",
-          "description": "Fetch accepted reviewer feedback, apply edits, update the review surface if needed, and repeat review."
+          "label": "Pull comments",
+          "description": "Read planner feedback, apply edits, re-register if needed, and repeat review."
         },
         {
           "label": "Pause review",
-          "description": "Leave the design saved in docs/plans and resume in a future session."
+          "description": "Leave the design saved in docs/plans and resume later."
         }
       ]
     }
@@ -350,26 +345,16 @@ Otherwise, print the URL from step 6 again as a reminder. **Use the bundled `@ju
 }
 ```
 
-Branch the CLI by the marker's `kind`:
+Run the matching CLI:
 
-| kind | Approve | Pull comments |
-|---|---|---|
-| `legacy` | `arc plan approve <id>` | `arc plan comments <id>` (no accepted-only filter — review the thread inline) |
-| `share-local` | `arc share approve <id>` | `arc share pull <id>` (accepted-only by default) |
-| `share-remote` | `arc share approve <id>` | `arc share pull <id>` (accepted-only by default) |
+| Action | CLI |
+|---|---|
+| Approve | `arc plan approve <id>` |
+| Pull comments | `arc plan comments <id>` (flat thread — review the comments inline; there's no accepted-only filter) |
 
-**Why the legacy path lacks `pull`:** legacy plan comments don't have an Accept/Resolve/Reject state — they're a flat thread. The trade-off was made when picking legacy in step 6; if the volume of comments grows, suggest re-creating the design as `share-local` so the user gets the accepted-only filter.
+Planner comments are a flat thread with no Accept/Resolve/Reject state, so read the whole thread and decide which comments to act on yourself.
 
-**For `share-local` / `share-remote`** — only `accepted` comments flow into refinement when pulled. The author is the only one who can mark comments as `accepted` (verified by the plan's `author_name`). For `share-remote`, reviewers comment via the reviewer URL (the in-page Share link button; *not* the Author URL).
-
-After a refinement pass, if the design changed materially, update the review surface to match the new content. The CLI and marker handling differ by `kind`:
-
-| kind | Update CLI | ID stable? | Marker action |
-|---|---|---|---|
-| `share-local` / `share-remote` | `arc share update <id> <plan-file>` | yes | leave marker as-is |
-| `legacy` | `arc plan create <plan-file>` (no in-place update — re-creates with a new ID) | **no — new ID** | rewrite line 1 with the new ID |
-
-For legacy, after re-creating, replace the `id=<old>` portion of line 1 with the new ID — the idempotent `sed` snippet from step 6 works as-is: set `KIND=legacy` and `ID=<new>` and the "marker already present" branch overwrites line 1. Then loop back to step 7.
+After a refinement pass, if the design changed materially, re-register the updated content. The planner has no in-place update — `arc plan create --no-frontmatter <plan-file>` re-creates the plan with a **new ID**, so rewrite line 1 with the new ID. The idempotent `sed` snippet from step 6 works as-is: set `ID=<new>` and the "marker already present" branch overwrites line 1. Then loop back to step 7.
 
 ### 8. Routing Analysis & Transition
 
@@ -405,9 +390,9 @@ Scale:            Small / Medium / Large
 ```
 
 **Routing rules** (use these to drive the recommendation):
-- **→ arc:plan** when ANY of: 2+ work items, shared contracts exist, multiple layers crossed, migrations or breaking changes present, medium/large scale
-- **→ arc:build** when ALL of: single work item, no shared contracts, single layer, no risk areas, small scale
-- When borderline, recommend `arc:plan` — the overhead of planning is low, but the cost of a disorganized multi-task implementation is high
+- **→ /arc-plan** when ANY of: 2+ work items, shared contracts exist, multiple layers crossed, migrations or breaking changes present, medium/large scale
+- **→ /arc-build** when ALL of: single work item, no shared contracts, single layer, no risk areas, small scale
+- When borderline, recommend `/arc-plan` — the overhead of planning is low, but the cost of a disorganized multi-task implementation is high
 
 After the analysis, use the **`ask_user_question` tool** — mark the recommended option:
 ```json
@@ -437,8 +422,8 @@ After the analysis, use the **`ask_user_question` tool** — mark the recommende
 
 If `/arc-build` is recommended instead, swap which option gets the "(recommended)" tag.
 
-- **Break into tasks**: invoke the `plan` skill, passing the review ID from the line-1 marker (the `id=…` value; whether it's a legacy plan ID or a share ID depends on `kind=…`)
-- **Implement directly**: invoke the `implement` skill
+- **Break into tasks**: invoke the `plan` skill, passing the review ID from the line-1 marker (the `id=…` value)
+- **Implement directly**: this path skips `plan`, so no arc tasks exist yet — `build` dispatches existing arc issues and won't invent one. First canonicalize the approved design to match Arc's outer-whitespace normalization, then create one self-contained task without passing the body through the model: `TMP=$(mktemp); python3 -c 'from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().strip())' docs/plans/<file>.md "$TMP"; arc create "<title>" -t task --stdin < "$TMP"; rm -f "$TMP"`. Then invoke the `build` skill with that task ID.
 - **Done for now**: tell the user the design is approved and they can run `/arc-plan` in a new session
 
 ## Scale Detection
@@ -451,9 +436,10 @@ If `/arc-build` is recommended instead, swap which option gets the "(recommended
 
 ## Rules
 
-- The ONLY next skill after brainstorm is `plan` (or `implement` for small work)
+- The ONLY next skill after brainstorm is `plan` (or `build` for small work, after creating a single task)
 - Never invoke implementation skills from brainstorm
-- Design documents go in `docs/plans/` and are registered via one of three review surfaces (`arc plan create` for legacy, `arc share create` for encrypted local, `arc share create … --remote` for encrypted remote). The skill writes a `<!-- arc-review: kind=… id=… -->` marker as line 1 of the doc so downstream skills can route their CLI calls.
+- `ask_user_question` captures decisions only — all substance goes in a normal text message first (see "Presenting Choices: Text First, Then `ask_user_question`")
+- Design documents go in `docs/plans/` and are registered on the planner via `arc plan create --no-frontmatter`. The skill writes a `<!-- arc-review: id=… -->` marker as line 1 of the doc so downstream skills can find the plan ID.
 - Arc issues track persistent work; the bundled `todo` checklist tracks in-session workflow progress in the CLI
 - YAGNI: if the user didn't ask for it, don't design it
 - Format all arc content (descriptions, plans, comments) per `skills/arc/_formatting.md`

@@ -21,6 +21,10 @@ You are implementing arc task {TASK_ID}.
 ## Pre-Task SHA
 {PRE_TASK_SHA}
 
+## Definition of Done
+
+You are done when **every item in the task's `## Expected Outcome` works** and the task's `## Test Command` exits 0 with zero failures. That is the target — the steps below are how you reach it, and the gate checks in your agent instructions are how you confirm it before reporting `DONE`.
+
 ## Your Job
 
 1. Read the task spec end-to-end before writing code

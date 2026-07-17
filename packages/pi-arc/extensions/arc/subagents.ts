@@ -68,6 +68,7 @@ export interface ArcSubagentRenderInput {
 
 export const ARC_PI_SUBAGENTS = [
   { source: "builder", target: "arc-builder", profileKey: "builder" },
+  { source: "devops-builder", target: "arc-devops-builder", profileKey: "devopsBuilder" },
   { source: "doc-writer", target: "arc-doc-writer", profileKey: "docWriter" },
   { source: "spec-reviewer", target: "arc-spec-reviewer", profileKey: "specReviewer" },
   { source: "code-reviewer", target: "arc-code-reviewer", profileKey: "codeReviewer" },

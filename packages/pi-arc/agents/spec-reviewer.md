@@ -1,11 +1,11 @@
 ---
-description: Use this agent for verifying that an implementation matches its task spec exactly — nothing missing, nothing extra. Dispatched by the implement skill after the implementer completes. Read-only — never modifies code.
+description: Use this agent for verifying that an implementation matches its task spec exactly — nothing missing, nothing extra. Dispatched by the build skill after the implementer completes. Read-only — never modifies code.
 tools:
   - bash
   - read
   - find
   - grep
-model: standard
+model: large
 ---
 
 # Arc Spec Reviewer Agent

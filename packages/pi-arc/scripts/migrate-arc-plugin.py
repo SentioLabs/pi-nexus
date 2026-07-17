@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 import argparse
+import atexit
 from pathlib import Path
 import shutil
+import tempfile
 import re
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ARC_ROOT = REPO_ROOT
-DEFAULT_SRC = (REPO_ROOT / "../agent-nexus/claude-marketplace/plugins/arc").resolve()
+DEFAULT_SOURCE_CANDIDATES = (
+    Path.home() / "devspace/personal/bfirestone/agent-marketplace/claude-marketplace/plugins/arc",
+    REPO_ROOT.parents[1].parent / "agent-nexus/claude-marketplace/plugins/arc",
+    Path.home() / "devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/arc",
+)
+DEFAULT_SRC = next((path.resolve() for path in DEFAULT_SOURCE_CANDIDATES if path.exists()), DEFAULT_SOURCE_CANDIDATES[0].resolve())
 PI_LOCAL_SKILL_DIRS = set()
 
 
@@ -57,6 +63,8 @@ ARGS = parse_args()
 SRC = resolve_source_path(ARGS)
 validate_source(SRC)
 
+ARC_ROOT = Path(tempfile.mkdtemp(prefix=".pi-arc-migration-", dir=REPO_ROOT.parent))
+atexit.register(shutil.rmtree, ARC_ROOT, ignore_errors=True)
 ARC_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Clean generated Arc resource directories only. Keep package.json, README,
@@ -102,12 +110,15 @@ skill_map = {
     "finish": "arc-finish",
     "plan": "arc-plan",
     "review": "arc-review",
+    "summarize": "arc-summarize",
     "verify": "arc-verify",
 }
 
 def transform_text(text: str) -> str:
     # Slash command references.
     text = re.sub(r"/arc:([a-zA-Z0-9_-]+)", lambda m: f"/arc-{m.group(1)}", text)
+    text = re.sub(r"`arc:([a-zA-Z0-9_-]+)`", lambda m: f"`/arc-{m.group(1)}`", text)
+    text = text.replace("→ arc:", "→ /arc-")
     for old, new in skill_map.items():
         if old != "arc":
             text = text.replace(f"/skill:{old}", f"/skill:{new}")
@@ -115,6 +126,14 @@ def transform_text(text: str) -> str:
     # Harness naming and Claude-specific tool names.
     text = text.replace("Claude Code", "Pi")
     text = text.replace("Claude", "Pi")
+    text = text.replace("SessionStart/PreCompact hooks", "Pi extension session-start and before-compaction handlers")
+    text = text.replace("SessionStart and PreCompact hooks", "Pi extension session-start and before-compaction handlers")
+    text = text.replace("via the Task tool", "through the auto-materialized `arc-issue-manager` pi-subagent when available, or the bundled `arc_agent` fallback")
+    text = text.replace("implement skill", "build skill")
+    text = text.replace("using the Write tool", "using the `write` tool")
+    text = text.replace("with the Write tool", "with the `write` tool")
+    text = text.replace("Grep / Read / symbol search", "`grep` / `read` / symbol search")
+    text = text.replace("arc plan create", "arc plan create --no-frontmatter")
     text = re.sub(r"TaskCreate/TaskUpdate tracks workflow progress in the CLI", "the bundled `todo` checklist tracks in-session workflow progress in the CLI", text, flags=re.IGNORECASE)
     text = re.sub(r"Create a TodoWrite checklist", "Create a checklist using the bundled `todo` tool (or `/todos`)", text, flags=re.IGNORECASE)
     text = re.sub(r"`TaskCreate`", "the bundled `todo` checklist (via `todo` tool / `/todos`)", text, flags=re.IGNORECASE)
@@ -150,6 +169,7 @@ def transform_text(text: str) -> str:
     text = text.replace("../build/", "../arc-build/")
     text = text.replace("../review/", "../arc-review/")
     text = text.replace("skills/brainstorm/SKILL.md", "skills/arc-brainstorm/SKILL.md")
+    text = text.replace("skills/build/", "skills/arc-build/")
     text = text.replace("skills/plan/SKILL.md", "skills/arc-plan/SKILL.md")
     return text
 
@@ -213,8 +233,8 @@ patch_file("prompts/arc-team.md", [
 
 patch_file("skills/arc/SKILL.md", [
     (
-        "After `plan`, choose:\n- **Single-agent + subagents**: Invoke `implement`. Main agent orchestrates, subagents do TDD. Best for sequential tasks.\n- **Agentic team**: Add `teammate:*` labels, invoke `arc team-deploy`. Best for parallel multi-role work.",
-        "After `plan`, choose:\n- **Single-agent + subagents**: Invoke `implement`. Main agent orchestrates, subagents do TDD. Best for sequential tasks.\n- **Parallel Arc build**: For independent task batches, `implement` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+        "- **Agentic team**: Add `teammate:*` labels, invoke `/arc-team-dispatch`. Best for parallel multi-role work.",
+        "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
     ),
 ])
 
@@ -257,12 +277,8 @@ patch_file("skills/arc-build/SKILL.md", [
         "By default, use sequential dispatch. For independent batches with `pi-subagents` available, see [Parallel Patch Protocol](#parallel-patch-protocol) below.",
     ),
     (
-        "Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`haiku`) is correct — omit `model:` unless the docs task is unusually complex.\n\n**Otherwise** — spawn an `builder` subagent:\n\nUse the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.",
-        "Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`haiku`) is correct — omit `model:` unless the docs task is unusually complex.\n\nDispatch preference:\n- If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: \"arc-doc-writer\", task: \"<filled prompt>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"doc-writer\", task=\"<filled prompt>\")`\n\n**Otherwise** — spawn an `builder` subagent:\n\nUse the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.\n\nDispatch preference:\n- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: \"arc-builder\", task: \"<filled prompt>\", model: \"<tier-if-needed>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"builder\", task=\"<filled prompt>\", model=\"<tier-if-needed>\")`",
-    ),
-    (
         "Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the agent default is appropriate; omit `model:` unless the spec is unusually large or ambiguous.",
-        "Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.\n\nDispatch preference:\n- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: \"arc-spec-reviewer\", task: \"<filled prompt>\", model: \"openai-codex/gpt-5.3-codex\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"spec-reviewer\", task=\"<filled prompt>\")`\n\nDo **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled `arc_agent` fallback.",
+        "Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.\n\nDispatch preference:\n- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: \"arc-spec-reviewer\", task: \"<filled prompt>\", context: \"fresh\" })`\n- If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: \"list\" })`, then retry.\n- Otherwise: `arc_agent(agent=\"spec-reviewer\", task=\"<filled prompt>\")`\n\nDo **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled `arc_agent` fallback.",
     ),
     (
         "When dispatched, use `isolation: \"worktree\"` and the existing `evaluator` agent. The evaluator can run **in parallel with Step 6** (code quality review) since they examine orthogonal concerns:",
@@ -328,6 +344,7 @@ arc show <task-id>
 ```
 
 Confirm:
+- No task has a `devops` label or any live-system mutation scope; those tasks are always sequential
 - No `blocks`/`blockedBy` relationships between tasks in this batch
 - No overlapping file paths in task descriptions
 - Each task has a clearly scoped, non-ambiguous specification
@@ -342,9 +359,9 @@ Dispatch all parallel tasks in one `subagent` tool call so they branch from the 
 ```ts
 subagent({
   tasks: [
-    { agent: \"arc-builder\", task: \"<filled builder prompt for task 1>\", model: \"openai-codex/gpt-5.3-codex\" },
-    { agent: \"arc-builder\", task: \"<filled builder prompt for task 2>\", model: \"openai-codex/gpt-5.3-codex\" },
-    { agent: \"arc-doc-writer\", task: \"<filled doc-writer prompt for task 3>\", model: \"openai-codex/gpt-5.4-mini\" }
+    { agent: \"arc-builder\", task: \"<filled builder prompt for task 1>\" },
+    { agent: \"arc-builder\", task: \"<filled builder prompt for task 2>\" },
+    { agent: \"arc-doc-writer\", task: \"<filled doc-writer prompt for task 3>\" }
   ],
   worktree: true,
   concurrency: 3,
@@ -413,14 +430,14 @@ replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dis
 
 Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
-`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults are:
+`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults map the GPT-5.6 family by role: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.4-mini` | Bulk CLI issue creation and other low-reasoning issue-manager work |
-| `small` | `openai-codex/gpt-5.4-mini` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.3-codex` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.5` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
+| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
+| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
+| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
 
 Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
 
@@ -428,10 +445,10 @@ Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/s
 {
   "arc": {
     "modelTiers": {
-      "nano": "openai-codex/gpt-5.4-mini",
-      "small": "openai-codex/gpt-5.4-mini",
-      "standard": "openai-codex/gpt-5.3-codex",
-      "large": "openai-codex/gpt-5.5"
+      "nano": "openai-codex/gpt-5.6-luna",
+      "small": "openai-codex/gpt-5.6-luna",
+      "standard": "openai-codex/gpt-5.6-terra",
+      "large": "openai-codex/gpt-5.6-sol"
     }
   }
 }
@@ -461,9 +478,9 @@ arc_agent(agent="builder", task="...")                      # standard default
 arc_agent(agent="builder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -513,7 +530,7 @@ replace_section("skills/arc-build/SKILL.md", "Dispatch `spec-reviewer`:\n\n", "\
 Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.
 
 Dispatch preference:
-- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: run `/arc-subagents-sync`, verify with `subagent({ action: "list" })`, then retry.
 - Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
 
@@ -527,7 +544,7 @@ replace_section("skills/arc-build/SKILL.md", "When `pi-subagents` is available, 
 ```ts
 subagent({
   tasks: [
-    { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5" }
+    { agent: "arc-evaluator", task: "<filled evaluator prompt>" }
   ],
   worktree: true,
   concurrency: 1,
@@ -537,13 +554,13 @@ subagent({
 })
 ```
 
-If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", model="large", task="<filled evaluator prompt>")` and ensure the evaluator does not leave uncommitted artifacts in the main worktree.
+If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", task="<filled evaluator prompt>")`. The configured `evaluator` profile remains authoritative and the agent's `large` frontmatter is the fallback. Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify `git status --short` matches its pre-evaluation baseline before returning.
 
 ```bash
 PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
 ```
 
-Use the template at `./evaluator-prompt.md`. Fill placeholder `{TASK_ID}`. Because evaluation is adversarial verification on high-risk tasks, escalate one tier from the agent default (typically to `large`) — set `model: "large"` on `arc_agent` dispatches unless the task is narrow. For `pi-subagents`, pass the concrete configured large model.
+Use the template at `./evaluator-prompt.md`. Fill `{TASK_ID}` and `{DESIGN_EXCERPT}` from the parent epic fetched above; use `none` only when there is no parent design. Because evaluation is adversarial verification on high-risk tasks, use the `evaluator` model profile when configured or the `large` tier fallback.
 
 When you plan to run the evaluator, set the code quality reviewer's `## Evaluator Status` to `active`; otherwise set it to `not dispatched`.
 """)
@@ -559,7 +576,7 @@ patch_file("skills/arc-build/SKILL.md", [
     ),
     (
         "Follow Model Selection above for the dispatch `model:` — sonnet default is appropriate for most reviews.",
-        "Follow Model Selection above for the dispatch `model:` — `standard` default is appropriate for most reviews.",
+        "Follow Model Selection above for the dispatch `model:` — the configured `codeReviewer` profile is authoritative and `large` frontmatter is the fallback.",
     ),
 ])
 
@@ -575,10 +592,6 @@ patch_file("skills/arc-plan/SKILL.md", [
         "**Model tier:** `issue-manager` defaults to `haiku` — the right tier for CLI formatting and bulk issue creation. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.",
         "**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.",
     ),
-    (
-        "The share keyring entries have `{id, kind, url, key_b64url, plan_file, created_at}` — edit tokens are intentionally redacted. Then dispatch the manifest:\n\n```\nUse the arc_agent tool with agent=\"issue-manager\":\n\nCreate the following epic and tasks.",
-        "The share keyring entries have `{id, kind, url, key_b64url, plan_file, created_at}` — edit tokens are intentionally redacted. Then dispatch the manifest. Prefer true `pi-subagents` so long issue-creation runs are visible in `/subagents-status`:\n\nDispatch preference (use **async** so long-running issue creation appears in `/subagents-status`):\n- Primary: `subagent({ agent: \"arc-issue-manager\", task: \"<manifest below>\", context: \"fresh\", async: true, clarify: false })`\n- After launching async, **wait for terminal status** by polling `subagent({ action: \"status\", id: \"<run-id>\" })` until status is `completed` or `failed`\n- Users can monitor progress via `/subagents-status` during the async run\n- If `subagent({ action: \"list\" })` shows `arc-issue-manager`, do **not** use the slower `arc_agent(agent=\"issue-manager\")` fallback for bulk issue creation\n- If `subagent` unavailable or `arc-issue-manager` missing: run `/arc-subagents-sync`, then `subagent({ action: \"list\" })` to verify, then retry primary\n- Fallback only if `pi-subagents` is not installed or cannot load after sync: `arc_agent(agent=\"issue-manager\", task=\"<manifest below>\")`\n\nUse this task payload for whichever dispatcher you choose:\n\n```markdown\nCreate the following epic and tasks.",
-    ),
 ])
 
 replace_section("skills/arc-review/SKILL.md", "### 3. Dispatch Reviewer\n\n", "\n### 4. Triage Feedback", """### 3. Dispatch Reviewer
@@ -592,9 +605,48 @@ Dispatch preference (use **async** so longer reviews appear in `/subagents-statu
 - If `subagent` unavailable or `arc-code-reviewer` missing: run `/arc-subagents-sync`, then `subagent({ action: "list" })` to verify, then retry primary
 - Fallback only if `pi-subagents` is not installed: `arc_agent(agent="code-reviewer", task="<filled prompt>")`
 
-**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. For most reviews, omit `model:` (use the agent's `standard` default). Escalate to `large` when the diff is large (10+ files), crosses multiple architectural layers, or involves security-sensitive changes. For `pi-subagents`, pass the configured concrete large model only when escalating.
+**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. For most reviews, omit `model:` so the configured `codeReviewer` profile wins; the agent's `large` frontmatter is the fallback. Escalate only by changing the configured/explicit model when the diff is large, cross-layer, or security-sensitive.
 """)
 
+
+patch_file("skills/arc-summarize/SKILL.md", [
+    (
+        "**Determine which connected tool can write to the named tracker.** This is not a hardcoded list; reason over what the user has connected.\n\n- **Jira / Atlassian** → Look for a connected **Atlassian MCP server** (authenticate via `/mcp`). Requires cloud instance + API token.\n- **Linear** → Look for a connected **Linear MCP server** (authenticate via `/mcp`). Requires API key.\n- **GitHub / GitHub Issues** → Look for a connected **`gh` CLI** (`gh auth login`). The `gh` CLI is often pre-installed; verify with `gh auth status`.\n- **Other trackers** (Azure DevOps, YouTrack, Plane, etc.) → If an MCP server or CLI wrapper exists and is connected, use it. Otherwise, stop.\n\n**A tracker may expose more than one provider.** The same tracker can be served by different connected sources with different tool namespaces — e.g. Atlassian may appear as a claude.ai connector (`mcp__claude_ai_Atlassian__*`) *and/or* a plugin MCP server (`mcp__plugin_atlassian_atlassian__*`). Reason over the actual tool names available; don't match a single hardcoded server name. **An installed-but-unauthenticated provider is not a usable capability** — if a provider only exposes `authenticate` / `complete_authentication` tools, treat it as unauthenticated and prefer an authenticated provider; if none is authenticated, that is the stop-and-guide case below.",
+        "**Determine which connected capability can write to the named tracker.** Do not hardcode an MCP namespace. Use Pi's `mcp` gateway to inspect server status and search available tools by tracker/action, then call the selected tool through the same gateway.\n\n- **Jira / Atlassian** → Search connected MCP tools for Atlassian/Jira issue creation.\n- **Linear** → Search connected MCP tools for Linear issue creation.\n- **GitHub / GitHub Issues** → Prefer an authenticated GitHub MCP tool when present; otherwise verify `gh auth status` and use `gh`.\n- **Other trackers** → Use a connected MCP write tool or authenticated CLI wrapper; otherwise stop.\n\nA server that is installed but unauthenticated is not usable. Prefer an authenticated provider when several exist. If authentication is required, use Pi's MCP authentication flow or tell the user to open `/mcp`; never guess a raw `mcp__...` tool namespace.",
+    ),
+    (
+        "   ```\n   `ask_user_question`:\n   - title: \"What issue type?\"\n   - options: [\"Story\", \"Bug\", \"Task\", \"Other\"]\n   ```",
+        "   ```json\n   {\n     \"questions\": [\n       {\n         \"header\": \"Issue type\",\n         \"question\": \"What issue type should be created?\",\n         \"options\": [\n           { \"label\": \"Story (Recommended)\", \"description\": \"Use the tracker's feature-oriented issue type.\" },\n           { \"label\": \"Bug\", \"description\": \"Use the tracker's defect issue type.\" },\n           { \"label\": \"Task\", \"description\": \"Use the tracker's general work-item type.\" }\n         ]\n       }\n     ]\n   }\n   ```",
+    ),
+    (
+        "   ```\n   `ask_user_question`:\n   - title: \"Which project/board?\"\n   - options: [\n       { label: \"BT (Bactrack)\", recommended: true },  # recommended = last_project from cache\n       { label: \"ARCH (Arc)\" },\n       { label: \"Other\" }\n     ]\n   ```",
+        "   ```json\n   {\n     \"questions\": [\n       {\n         \"header\": \"Project\",\n         \"question\": \"Which discovered project or board should receive the issue?\",\n         \"options\": [\n           { \"label\": \"BT (Recommended)\", \"description\": \"Use the previously selected Bactrack project.\" },\n           { \"label\": \"ARCH\", \"description\": \"Use the discovered Arc project.\" }\n         ]\n       }\n     ]\n   }\n   ```",
+    ),
+    (
+        "  ```\n  `ask_user_question`:\n  - title: \"Which sprint?\"\n  - options: [\"Sprint 47 (May 20–Jun 2)\", \"Sprint 48 (Jun 3–Jun 16)\", \"Other\"]\n  ```",
+        "  ```json\n  {\n    \"questions\": [\n      {\n        \"header\": \"Sprint\",\n        \"question\": \"Which live sprint should receive the issue?\",\n        \"options\": [\n          { \"label\": \"Sprint 47 (Recommended)\", \"description\": \"Use the current active sprint discovered from the tracker.\" },\n          { \"label\": \"Sprint 48\", \"description\": \"Use the next open sprint discovered from the tracker.\" }\n        ]\n      }\n    ]\n  }\n  ```",
+    ),
+    (
+        "**Example — Jira via MCP:**\n```bash\n# Pseudocode; MCP server translates to Jira API\njira_create(\n  project: \"BT\",\n  type: \"Story\",\n  summary: \"OpenCode CLI: Installation Guide\",\n  description: \"<summarized markdown>\",\n  sprint: <resolved_sprint_id>,\n  assignee: <resolved_account_id>,\n  customfield_10014: [\"doc\", \"cli\"]  # labels\n)\n# Returns: { key: \"BT-3014\", id: \"12345\" }\n```",
+        "**Example — Jira via Pi's MCP gateway:**\n```text\nmcp({ search: \"Jira create issue\" })\nmcp({\n  tool: \"<discovered-create-tool>\",\n  args: '{\"project\":\"BT\",\"type\":\"Story\",\"summary\":\"OpenCode CLI: Installation Guide\",\"description\":\"<summarized markdown>\",\"sprint\":\"<resolved-sprint-id>\",\"assignee\":\"<resolved-account-id>\",\"labels\":[\"doc\",\"cli\"]}'\n})\n```\n\nUse the exact schema returned by `mcp({ describe: \"<discovered-create-tool>\" })`; the fields above are illustrative, not a raw function call.",
+    ),
+    (
+        "### 6. Map Fields\n\nResolve the tracker fields you need. This requires user input for ambiguous cases — never guess.",
+        "### 6. Map Fields\n\nFor ambiguous structured decisions, use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool with the package `questions[]` schema and 2-4 authored options. Do not author sentinel labels such as `Type something.`, `Chat about this`, `Other`, or `Next`; the package supplies escape hatches. Put the recommended option first and append `(Recommended)` when one is clear.\n\nResolve the tracker fields you need. This requires user input for ambiguous cases — never guess.",
+    ),
+    (
+        "**Origin:** arc issue agentmarke-0qex.04hl1w (https://arc.bactrack.com/browse/agentmarke-0qex.04hl1w)",
+        "**Origin:** arc issue agentmarke-0qex.04hl1w\n\nInclude an Arc URL only when `arc show` or project configuration provides a canonical base URL; never fabricate a host.",
+    ),
+    (
+        "### 10. Verify — Non-Negotiable\n\n**Re-read the created issue from the tracker.** Confirm that sprint, labels, and assignee actually landed.",
+        "### 10. Verify — Non-Negotiable\n\n**Re-read both records.** Fetch the updated Arc issue and confirm its complete prior body plus the new tracker backlink remain present. Then re-read the created external issue and confirm its Arc origin plus sprint, labels, and assignee landed.",
+    ),
+    (
+        "The full current description was already captured in Step 2 (`arc show <id> --json`). To safely backlink, re-supply that **complete existing body** with the tracker link appended, using `--stdin` to avoid shell-escaping or clobbering:\n\n```bash\narc update <arc-id> --stdin <<'EOF'\n<full existing description, unchanged from arc show>\n\n---\n**Tracker:** [BT-3014](https://bactrack.atlassian.net/browse/BT-3014)\nEOF\n```",
+        "Preserve the current Arc description mechanically: write it to a temporary file, append only the backlink, then pipe the file back through `--stdin`. Never retype the existing body through the model:\n\n```bash\nTMP=$(mktemp)\narc show <arc-id> --json | jq -j .description > \"$TMP\"\ncat >> \"$TMP\" <<'EOF'\n\n---\n**Tracker:** [BT-3014](https://bactrack.atlassian.net/browse/BT-3014)\nEOF\narc update <arc-id> --stdin < \"$TMP\"\nrm -f \"$TMP\"\n```",
+    ),
+])
 
 # Copy agents as bundled prompts for arc_agent.
 for f in sorted((SRC / "agents").glob("*.md")):
@@ -608,6 +660,8 @@ for f in sorted((SRC / "agents").glob("*.md")):
     text = re.sub(r"(?m)^model:\s*haiku\s*$", "model: small", text)
     text = re.sub(r"(?m)^model:\s*sonnet\s*$", "model: standard", text)
     text = re.sub(r"(?m)^model:\s*opus\s*$", "model: large", text)
+    if f.name in {"code-reviewer.md", "devops-builder.md", "evaluator.md", "spec-reviewer.md"}:
+        text = re.sub(r"(?m)^model:\s*standard\s*$", "model: large", text)
     if f.name == "issue-manager.md":
         text = re.sub(r"(?m)^model:\s*small\s*$", "model: nano", text)
         if "## Timing / Progress Instrumentation" not in text:
@@ -646,8 +700,8 @@ patch_file("skills/arc/_branch-check.md", [
 
 patch_file("skills/arc/SKILL.md", [
     (
-        "- **Parallel Arc build**: For independent task batches, `implement` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
-        "- **Parallel Arc build**: For independent task batches, `implement` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+        "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+        "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
     ),
 ])
 
@@ -661,8 +715,8 @@ patch_file("skills/arc-brainstorm/SKILL.md", [
         "**Example `ask_user_question` usage:**\n```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Session\",\n      \"question\": \"How should we handle session persistence?\",\n      \"options\": [\n        {\n          \"label\": \"SQLite (Recommended)\",\n          \"description\": \"Persistent, single-node, matches existing storage, and avoids new infrastructure.\"\n        },\n        {\n          \"label\": \"In-memory only\",\n          \"description\": \"Simplest option, but sessions are lost on restart.\"\n        },\n        {\n          \"label\": \"Redis\",\n          \"description\": \"Supports distributed deployments, but adds an infrastructure dependency.\"\n        }\n      ]\n    }\n  ]\n}\n```",
     ),
     (
-        "**Example `ask_user_question` usage:**\n```\nQuestion: \"Which approach should we go with?\"\nOptions:\n  - \"Approach A: ...\" (recommended — trade-offs...)\n  - \"Approach B: ...\" (trade-offs...)\n  - \"Approach C: ...\" (trade-offs...)\n```",
-        "**Example `ask_user_question` usage:**\n```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Approach\",\n      \"question\": \"Which approach should we go with?\",\n      \"options\": [\n        {\n          \"label\": \"Approach A (Recommended)\",\n          \"description\": \"Best balance of scope, risk, and implementation speed for the current constraints.\"\n        },\n        {\n          \"label\": \"Approach B\",\n          \"description\": \"Lower short-term code churn, but leaves more long-term maintenance risk.\"\n        },\n        {\n          \"label\": \"Approach C\",\n          \"description\": \"Most flexible, but likely needs larger-model implementation and more review cycles.\"\n        }\n      ]\n    }\n  ]\n}\n```",
+        "**Example — full approach write-ups as text, then:**\n```\nQuestion: \"Which approach should we go with?\"\nOptions:\n  - \"A: <short name>\" (recommended — <one-line reason>)\n  - \"B: <short name>\" (<one-line trade-off>)\n  - \"C: <short name>\" (<one-line trade-off>)\n```",
+        "**Example — after presenting the full approach write-ups as text:**\n```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Approach\",\n      \"question\": \"Which approach should we go with?\",\n      \"options\": [\n        {\n          \"label\": \"Approach A (Recommended)\",\n          \"description\": \"Recommended for the reasons analyzed above.\"\n        },\n        {\n          \"label\": \"Approach B\",\n          \"description\": \"Choose the second approach analyzed above.\"\n        },\n        {\n          \"label\": \"Approach C\",\n          \"description\": \"Choose the third approach analyzed above.\"\n        }\n      ]\n    }\n  ]\n}\n```",
     ),
     (
         "If the design will produce multiple implementation tasks that could run in parallel, explicitly identify the **shared contracts** — types, interfaces, config keys, constants, and function signatures that multiple tasks will reference.\n\nContracts fall into two tiers:",
@@ -673,29 +727,33 @@ patch_file("skills/arc-brainstorm/SKILL.md", [
         "```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Grill\",\n      \"question\": \"Stress-test the design before publishing?\",\n      \"options\": [\n        {\n          \"label\": \"Yes, grill me (Recommended)\",\n          \"description\": \"Interrogate decisions one at a time until the design converges; recommended for medium/large work or when clarifying questions were skipped.\"\n        },\n        {\n          \"label\": \"No, proceed\",\n          \"description\": \"Skip the stress-test and register the saved design for review now.\"\n        }\n      ]\n    }\n  ]\n}\n```",
     ),
     (
-        "```\nQuestion: \"How would you like to review this design?\"\nOptions:\n  - \"Legacy planner (solo, plain HTTP, simplest)\" —\n      `arc plan` surface at /planner/<id>. No encryption, no accept-resolve;\n      just a comment thread on a markdown render. Best when you want quick\n      review notes without setting up the share UI.\n  - \"Encrypted local share (solo, but want annotations/accept-resolve)\" —\n      `arc share` on this machine. Plan content + comments are encrypted at\n      rest in ~/.arc/data.db. Reviewer URL only works from this machine.\n  - \"Encrypted remote share (multiple reviewers)\" —\n      `arc share` on the configured remote server (default arcplanner.sentiolabs.io).\n      Reviewers on other machines can open the link.\n  - \"Save for later\" — keep the saved file (from step 5.5) and stop. No\n      server registration; resume in a new session. **Terminates the\n      skill — skip steps 7 and 8.**\n```",
-        "```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Review\",\n      \"question\": \"How would you like to review this design?\",\n      \"options\": [\n        {\n          \"label\": \"Legacy planner\",\n          \"description\": \"Solo plain-HTTP review at /planner/<id>; simplest, with no encryption or accept/resolve UI.\"\n        },\n        {\n          \"label\": \"Encrypted local\",\n          \"description\": \"Solo encrypted review with annotations and accept/resolve UI on this machine only.\"\n        },\n        {\n          \"label\": \"Encrypted remote\",\n          \"description\": \"Multiple reviewers can open the remote encrypted share; the author URL must stay private.\"\n        },\n        {\n          \"label\": \"Save for later\",\n          \"description\": \"Keep the saved design file and stop without server registration; resume in a new session.\"\n        }\n      ]\n    }\n  ]\n}\n```",
+        "```\nQuestion: \"Register this design on the planner for review?\"\nOptions:\n  - \"Register on the planner\" — comment thread at /planner/<id>\n  - \"Save for later\" — keep the local file (from step 5.5) and stop\n```",
+        "```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Review\",\n      \"question\": \"Register this design on the planner for review?\",\n      \"options\": [\n        {\n          \"label\": \"Register (Recommended)\",\n          \"description\": \"Create a local planner comment thread at /planner/<id>.\"\n        },\n        {\n          \"label\": \"Save for later\",\n          \"description\": \"Keep the local design file and stop without registering it.\"\n        }\n      ]\n    }\n  ]\n}\n```",
     ),
     (
-        "```\nQuestion: \"Design ready for review at <url> — how would you like to proceed?\"\nOptions:\n  - \"Approve\" — mark the design approved and proceed to step 8\n      routing analysis\n  - \"I've finished review (pull comments now)\" — fetch reviewer feedback,\n      apply edits, re-share if needed, repeat\n  - \"Pause review\" — design is saved; resume in a new session\n```",
-        "```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Review\",\n      \"question\": \"Design ready for review at <url> — how would you like to proceed?\",\n      \"options\": [\n        {\n          \"label\": \"Approve\",\n          \"description\": \"Mark the design approved and continue to routing analysis.\"\n        },\n        {\n          \"label\": \"I've finished review (pull comments now)\",\n          \"description\": \"Fetch accepted reviewer feedback, apply edits, update the review surface if needed, and repeat review.\"\n        },\n        {\n          \"label\": \"Pause review\",\n          \"description\": \"Leave the design saved in docs/plans and resume in a future session.\"\n        }\n      ]\n    }\n  ]\n}\n```",
+        "```\nQuestion: \"Design ready for review at <url> — how would you like to proceed?\"\nOptions:\n  - \"Approve\" — proceed to step 8 routing analysis\n  - \"Pull review comments\" — fetch feedback, apply edits, repeat\n  - \"Pause review\" — design is saved; resume in a new session\n```",
+        "```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Review\",\n      \"question\": \"Design ready for review at <url> — how would you like to proceed?\",\n      \"options\": [\n        {\n          \"label\": \"Approve\",\n          \"description\": \"Approve the design and continue to routing analysis.\"\n        },\n        {\n          \"label\": \"Pull comments\",\n          \"description\": \"Read planner feedback, apply edits, re-register if needed, and repeat review.\"\n        },\n        {\n          \"label\": \"Pause review\",\n          \"description\": \"Leave the design saved in docs/plans and resume later.\"\n        }\n      ]\n    }\n  ]\n}\n```",
     ),
     (
         "```\nQuestion: \"Design approved! What's next?\"\nOptions:\n  - \"Break into tasks with /arc-plan\" (recommended — <brief reason from analysis>)\n  - \"Implement directly with /arc-build\" (for small, single-task work)\n  - \"Done for now\" (design is saved — continue in a new session)\n```",
         "```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Next\",\n      \"question\": \"Design approved! What's next?\",\n      \"options\": [\n        {\n          \"label\": \"Break into tasks (Recommended)\",\n          \"description\": \"Recommended when the design has multiple work items, shared contracts, multiple layers, migrations, breaking changes, or medium/large scale.\"\n        },\n        {\n          \"label\": \"Implement directly\",\n          \"description\": \"Use only for small designs with one work item, one layer, no shared contracts, and no risk areas.\"\n        },\n        {\n          \"label\": \"Done for now\",\n          \"description\": \"The design is approved and saved; continue with /arc-plan in a future session.\"\n        }\n      ]\n    }\n  ]\n}\n```",
     ),
+    (
+        "First create a single self-contained task capturing the approved design by piping the design doc directly: `arc create \"<title>\" -t task --stdin < docs/plans/<file>.md` (file redirection keeps the description byte-exact — never retype or summarize it, and don't route long content through a subagent prompt).",
+        "First canonicalize the approved design to match Arc's outer-whitespace normalization, then create one self-contained task without passing the body through the model: `TMP=$(mktemp); python3 -c 'from pathlib import Path; import sys; Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().strip())' docs/plans/<file>.md \"$TMP\"; arc create \"<title>\" -t task --stdin < \"$TMP\"; rm -f \"$TMP\"`.",
+    ),
 ])
 
 replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dispatch Modes", """## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
+Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. GPT-5.6 maps naturally onto Arc's roles: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning. The dedicated `devopsBuilder` profile uses Sol because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.4-mini` | Bulk CLI issue creation and other low-reasoning issue-manager work |
-| `small` | `openai-codex/gpt-5.4-mini` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.3-codex` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.5` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
+| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
+| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
+| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
 
 ```markdown
 Arc model selection resolves in this order:
@@ -714,10 +772,10 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
 {
   "arc": {
     "modelTiers": {
-      "nano": "openai-codex/gpt-5.4-mini",
-      "small": "openai-codex/gpt-5.4-mini",
-      "standard": "openai-codex/gpt-5.3-codex",
-      "large": "openai-codex/gpt-5.5"
+      "nano": "openai-codex/gpt-5.6-luna",
+      "small": "openai-codex/gpt-5.6-luna",
+      "standard": "openai-codex/gpt-5.6-terra",
+      "large": "openai-codex/gpt-5.6-sol"
     }
   }
 }
@@ -747,9 +805,9 @@ arc_agent(agent="builder", task="...")                      # standard default
 arc_agent(agent="builder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -785,7 +843,7 @@ Parallel worktree dispatch is available **only** through an installed `pi-subage
 
 `pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.
 
-**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
+**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
 
 ## Orchestration Loop
 
@@ -800,9 +858,11 @@ Inspect the plan's `Parallel Batch Manifest` first. If it yields a ready batch a
 - `completed` when the task is closed in arc
 
 ```bash
-# Get the list of tasks to implement
-arc list --parent=<epic-id> --status=open --json
+# Get every unfinished child, including resumed/blocked/deferred work
+arc list --parent=<epic-id> --json | jq '.[] | select(.status != "closed")'
 ```
+
+If you were handed an epic ID, use its children. If you were handed one standalone task ID from the brainstorm-direct path, use `arc ready` / `arc show <task-id>` and run the loop once. If no Arc task exists, stop and route the user to `/arc-plan`; build dispatches existing tasks and does not invent them.
 
 Create a `todo` checklist entry for each, then work through this loop:
 """)
@@ -815,33 +875,39 @@ Record the current HEAD before dispatching — needed for review if escalated:
 PRE_TASK_SHA=$(git rev-parse HEAD)
 ```
 
-Check whether the task has a `docs-only` label:
+Fetch the design excerpt once for the implementer, evaluator, and code reviewer:
+
+```bash
+PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
+[ -n "$PARENT" ] && arc show "$PARENT"
+```
+
+Extract the sections relevant to this task into `{DESIGN_EXCERPT}`. If the task has no parent epic, use `none`.
+
+Check task labels with precedence `docs-only` → `devops` → `builder`:
 
 ```bash
 arc show <task-id> --json | jq -e '.labels[] | select(. == "docs-only")' > /dev/null 2>&1
+arc show <task-id> --json | jq -e '.labels[] | select(. == "devops")' > /dev/null 2>&1
 ```
 
-**If `docs-only`** (exit code 0) — spawn a `doc-writer` subagent:
+**If `docs-only`** — use `./doc-writer-prompt.md` and dispatch:
+- Preferred: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
+- Fallback: `arc_agent(agent="doc-writer", task="<filled prompt>")`
 
-Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
+**Else if `devops`** — use `./devops-builder-prompt.md`, filling `{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`, and `{MODEL_TIER_NOTE}`. The `devopsBuilder` model profile is recommended at the `large` tier because operations work has live blast radius and partial-failure modes. Dispatch:
+- Preferred: `subagent({ agent: "arc-devops-builder", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
+- Fallback: `arc_agent(agent="devops-builder", task="<filled prompt>")` (the configured `devopsBuilder` profile is authoritative; `large` frontmatter is the fallback)
 
-Dispatch preference:
-- If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="doc-writer", task="<filled prompt>")`
+The devops builder follows PLAN → SAFEGUARD → APPLY → VERIFY → GATE. Never route `devops` tasks through the normal TDD builder, and never include live-system operations tasks in a parallel patch batch.
 
-For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+**Otherwise** — use `./builder-prompt.md`, filling `{TASK_ID}`, `{PRE_TASK_SHA}`, and `{DESIGN_EXCERPT}`. Dispatch:
+- Preferred: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
+- Fallback: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
 
-**Otherwise** — spawn a `builder` subagent:
+Arc specialists should already be auto-materialized. If a required specialist is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 
-Use the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
-
-Dispatch preference:
-- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
-
-For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+For async `pi-subagents` dispatches, capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, and read the final output before validation.
 """)
 
 replace_section("skills/arc-build/SKILL.md", "Dispatch `spec-reviewer`:\n\n", "\nHandle results:", """Dispatch `spec-reviewer`:
@@ -849,7 +915,7 @@ replace_section("skills/arc-build/SKILL.md", "Dispatch `spec-reviewer`:\n\n", "\
 Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.
 
 Dispatch preference:
-- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
 
@@ -858,34 +924,130 @@ For async `pi-subagents` dispatches, immediately capture the returned run ID, po
 Do **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled sequential `arc_agent` fallback.
 """)
 
-patch_file("skills/arc-plan/SKILL.md", [
+patch_file("skills/arc-build/SKILL.md", [
     (
-        "**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.",
-        "**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. Model profile: issue creation uses the issueManager profile when configured via `/arc-models`; otherwise it falls back to the legacy tier/frontmatter behavior. This work is mostly CLI formatting, so the recommended profile uses gpt-5.4-mini with thinking off. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.",
+        "Every `builder` and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:",
+        "Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:",
     ),
     (
-        "The share keyring entries have `{id, kind, url, key_b64url, plan_file, created_at}` — edit tokens are intentionally redacted. Then dispatch the manifest. Prefer true `pi-subagents` so long issue-creation runs are visible in `/subagents-status`:",
-        "The share keyring entries have `{id, kind, url, key_b64url, plan_file, created_at}` — edit tokens are intentionally redacted.\n\nIssue creation must be phased:\n\n1. Create the epic first and capture the epic ID.\n2. Create all child tasks with the epic as parent before applying dependencies.\n3. Capture the complete task-name-to-ID table.\n4. Apply dependencies only after all child IDs exist.\n5. Apply labels after dependencies, or in the same post-creation phase.\n6. Return the final ID table, dependency summary, and a `## Timing` section with phase-level `elapsed_ms` values when available.\n\nThen dispatch the manifest. Prefer true `pi-subagents` so long issue-creation runs are visible in `/subagents-status`:",
+        "Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.",
+        "The configured `specReviewer` profile is authoritative; the agent's `large` frontmatter is the fallback.",
     ),
     (
-        "- If `subagent` unavailable or `arc-issue-manager` missing: run `/arc-subagents-sync`, then `subagent({ action: \"list\" })` to verify, then retry primary\n- Fallback only if `pi-subagents` is not installed or cannot load after sync: `arc_agent(agent=\"issue-manager\", task=\"<manifest below>\")`",
-        "- Arc issue-manager should be auto-materialized; if it is missing, first run `subagent({ action: \"doctor\" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: \"list\" })`\n- Fallback only if `pi-subagents` is not installed or cannot load after deprecated repair: `arc_agent(agent=\"issue-manager\", task=\"<manifest below>\")`",
+        "# or for a specific epic:\narc list --parent=<epic-id> --status=open",
+        "# or for a specific epic, include resumed/blocked/deferred children:\narc list --parent=<epic-id> --json | jq '.[] | select(.status != \"closed\")'",
     ),
     (
-        "Return a summary table mapping task names to arc IDs.",
-        "Return a summary table mapping task names to arc IDs, plus a `## Timing` section with phase-level `elapsed_ms` values when available.",
+        "### 10. Epic Completion Gate\n\nClosing the last task is not the same as the epic being done.",
+        "### 10. Completion Gate\n\nFor a standalone task, verify its task-specific command (or live `## Verification` for DevOps), confirm it is closed, skip all epic-only commands, and hand off to `finish`.\n\nFor an epic, closing the last selected task is not the same as the epic being done.",
     ),
     (
-        "| Epic | ...    | ...   |\n| T1   | ...    | ...   |\n```\n\n**IMPORTANT**: The epic description MUST contain the complete approved design.",
-        "| Epic | ...    | ...   |\n| T1   | ...    | ...   |\n\n## Timing\n| Phase | elapsed_ms |\n|-------|------------|\n| epic | ... |\n| child_tasks | ... |\n| dependencies | ... |\n| labels | ... |\n```\n\nThe `## Timing` section is required for bulk issue creation; use `unknown` for a phase only if the issue-manager could not capture a timestamp.\n\n**IMPORTANT**: The epic description MUST contain the complete approved design.",
-    ),
-    (
-        "**Use the `ask_user_question` tool** to let the user choose:\n\n```\nQuestion: \"Epic and tasks created. How should we proceed with implementation?\"\nOptions:\n  - \"Start implementing now\" (invoke /arc-build in this session — subagents handle TDD per task)\n  - \"Implement in a new session\" (provides the exact prompt to use)\n  - \"Done for now\" (tasks are tracked in arc — implement manually or later)\n```",
-        "**Use the `ask_user_question` tool** with the package's `questions[]` schema to let the user choose:\n\n```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Next\",\n      \"question\": \"Epic and tasks created. How should we proceed with implementation?\",\n      \"options\": [\n        {\n          \"label\": \"Start now (Recommended)\",\n          \"description\": \"Recommended when you want this session to continue directly into /arc-build with subagents handling TDD per task.\"\n        },\n        {\n          \"label\": \"New session\",\n          \"description\": \"Prints the exact /arc-build <epic-id> command to run in a fresh Pi session.\"\n        },\n        {\n          \"label\": \"Done for now\",\n          \"description\": \"Leaves the tasks tracked in arc for manual or future implementation.\"\n        }\n      ]\n    }\n  ]\n}\n```",
+        "1. **All tasks closed:** `arc list --parent=<epic-id> --status=open` returns nothing.\n2. **Full suite green:** run the project's full test command (not a per-task subset) and confirm exit 0.",
+        "1. **All tasks closed:** `arc list --parent=<epic-id> --json | jq '[.[] | select(.status != \"closed\")] | length'` returns `0`. Any `open`, `in_progress`, `blocked`, or `deferred` child keeps the epic open.\n2. **Epic-wide verification:** for code/docs epics, run the project's full test command and confirm exit 0. For DevOps-only epics, re-run each task's live `## Verification` and confirm rollback evidence; for mixed epics, run both.",
     ),
 ])
 
-insert_before_if_missing("skills/arc-plan/SKILL.md", "## Task Description Format", """## Parallel Readiness
+patch_file("skills/arc-plan/SKILL.md", [
+    (
+        "**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.",
+        "**Model tier:** `issue-manager` defaults to `nano` — the right tier for low-reasoning CLI formatting and bulk issue creation. Model profile: issue creation uses the issueManager profile when configured via `/arc-models`; otherwise it falls back to the legacy tier/frontmatter behavior. This work is mostly CLI formatting, so the recommended profile uses gpt-5.6-luna with thinking off. For this dispatch, omit `model:`. See the Model Selection table in `../arc-build/SKILL.md` for the full guidance.",
+    ),
+    (
+        "Then dispatch the manifest — titles, metadata, and file paths only, no description bodies:\n\n```\nUse the arc_agent tool with agent=\"issue-manager\":\n\nCreate the following epic and tasks using the arc CLI.",
+        "Before persistence, self-review the canonical description files against the approved design:\n\n1. **Spec coverage:** Every design requirement maps to a task.\n2. **Success-criteria coverage:** Every `## Success Criteria` item maps to at least one task's `## Expected Outcome`.\n3. **T0 contract coverage:** Shared contract blocks match the T0 definitions exactly.\n4. **Type consistency:** Names and signatures agree across tasks.\n5. **Placeholder scan:** No TBD/TODO/vague implementation placeholders remain.\n6. **Step completeness:** Every code or command step includes concrete content.\n\nFix the canonical files now, then repeat this review. Do not create any Arc issue until it passes.\n\nIssue creation must be phased:\n\n1. Create the epic first and capture the epic ID.\n2. Create all child tasks with the epic as parent before applying dependencies.\n3. Capture the complete task-name-to-ID table.\n4. Apply dependencies only after all child IDs exist.\n5. Apply labels after dependencies with `arc update <id> --label-add=<label>`.\n6. Verify descriptions and return the final ID table, dependency summary, and a `## Timing` section with phase-level `elapsed_ms` values.\n\nThen dispatch the manifest — titles, metadata, and file paths only, no description bodies. Prefer true `pi-subagents` so long issue-creation runs are visible in `/subagents-status`:\n\nDispatch preference:\n- Primary: `subagent({ agent: \"arc-issue-manager\", task: \"<manifest below>\", context: \"fresh\", async: true, clarify: false })`\n- Wait for terminal status by polling `subagent({ action: \"status\", id: \"<run-id>\" })` until `completed` or `failed`\n- Users can monitor progress via `/subagents-status`\n- If `subagent({ action: \"list\" })` shows `arc-issue-manager`, do **not** use the slower `arc_agent(agent=\"issue-manager\")` fallback\n- If it is missing, run `subagent({ action: \"doctor\" })` and inspect Arc's materialization warning; use `/arc-subagents-sync` only as a deprecated repair command\n- Fallback only when `pi-subagents` is unavailable after repair: `arc_agent(agent=\"issue-manager\", task=\"<manifest below>\")`\n\nUse this task payload for whichever dispatcher you choose:\n\n```markdown\nCreate the following epic and tasks using the arc CLI.",
+    ),
+    (
+        "- Create every issue with its description piped from the listed file:\n  arc create \"<title>\" --type=<type> [--parent=<id>] [--label=<label>] --stdin < \"<description file>\"",
+        "- Create the epic first, then create every child with its description piped from the listed file:\n  arc create \"<title>\" --type=<type> [--parent=<id>] --stdin < \"<description file>\"\n- Create all children and capture every ID before applying dependencies.\n- Apply dependencies only after all child IDs exist.\n- Apply manifest labels only after dependencies with `arc update <id> --label-add=<label>`.",
+    ),
+    (
+        "| Epic | ...    | ...   | ...        | ...       |\n| T1   | ...    | ...   | ...        | ...       |\n```",
+        "| Epic | ...    | ...   | ...        | ...       |\n| T1   | ...    | ...   | ...        | ...       |\n\n## Timing\n| Phase | elapsed_ms |\n|-------|------------|\n| epic | ... |\n| child_tasks | ... |\n| dependencies | ... |\n| labels | ... |\n| verification | ... |\n```\n\nThe `## Timing` section is required for bulk issue creation; use `unknown` only when a phase timestamp could not be captured.",
+    ),
+    (
+        "Labels are applied at creation time via the repeatable `--label` flag — never as a separate follow-up pass that can be skipped.",
+        "Keep `Labels:` in the manifest, but apply labels only after dependencies with `arc update <id> --label-add=<label>` so the phased creation contract remains observable and recoverable.",
+    ),
+    (
+        "Counts must match (±1 for a trailing newline). For tasks with code blocks (T0 especially), also compare code-fence counts — ``grep -c '^```' <file>`` vs the same grep over `arc show <id> --json | jq -r .description`. A summarized description is a plan failure — detail dropped here is detail the implementer never sees.",
+        "First compare byte hashes: `sha256sum < \"<description file>\"` must equal `arc show <id> --json | jq -j .description | sha256sum`. Line counts and, for T0, code-fence counts are diagnostics only. Any hash mismatch is a plan failure — repair with file redirection and re-check before continuing.",
+    ),
+    (
+        "**Never put description content in the agent prompt — descriptions travel as files.** Any content that passes through the subagent's prompt or output gets re-emitted token-by-token, and smaller models compress long content when re-emitting it, *even when explicitly told not to*. The defense is mechanical, not instructional: write each description to a file, and the agent pipes it into arc with shell redirection (`--stdin < file`) so the bytes never flow through the model.",
+        "**Never put description content in the agent prompt — descriptions travel as canonical files.** Arc normalizes leading/trailing whitespace from `--stdin`, so canonicalize each file with outer whitespace removed before dispatch. The issue-manager then transfers those canonical bytes with shell redirection; description bodies never pass through the model.",
+    ),
+    (
+        "1. Create a manifest directory: `mkdir -p /tmp/arc-manifest-<epic-slug>`\n2. Write each task's full self-contained description to its own file with the `write` tool: `/tmp/arc-manifest-<epic-slug>/T0.md`, `T1.md`, … You authored these descriptions, so writing them yourself is verbatim by construction.\n3. The **epic's** description file is the plan file itself. You typically already have its path from the brainstorm hand-off; if you only have the ID, `arc plan show` prints it in its metadata header:\n\n```bash\narc plan show <id> | grep -oE '^File: \\S+' | awk '{print $2}'\n```",
+        "1. Create a manifest directory: `mkdir -p /tmp/arc-manifest-<epic-slug>`.\n2. Write every task's full self-contained draft to `/tmp/arc-manifest-<epic-slug>/T0.md`, `T1.md`, and so on with the `write` tool.\n3. Copy the approved plan to `/tmp/arc-manifest-<epic-slug>/epic.md`. If only the plan ID is known, recover the source path with `arc plan show <id> | grep -oE '^File: \\S+' | awk '{print $2}'`.\n4. Canonicalize only outer whitespace so the files match Arc's `--stdin` normalization while preserving every internal byte:\n   ```bash\n   python3 - /tmp/arc-manifest-<epic-slug> <<'PY'\n   from pathlib import Path\n   import sys\n   for path in Path(sys.argv[1]).glob('*.md'):\n       path.write_text(path.read_text().strip())\n   PY\n   ```\n5. From this point onward, hash, dispatch, repair, and verify only these canonical files.",
+    ),
+    (
+        "Description file: <absolute path to the plan markdown file>",
+        "Description file: /tmp/arc-manifest-<epic-slug>/epic.md",
+    ),
+    (
+        "- After each create, verify the description landed verbatim:\n  arc show <id> --json | jq -r .description | wc -l\n  must match `wc -l < \"<description file>\"` (±1 for a trailing newline).\n  Report any mismatch in your summary — do not silently continue.",
+        "- After each create, verify the stored description equals the canonical file:\n  `sha256sum < \"<description file>\"` must equal\n  `arc show <id> --json | jq -j .description | sha256sum`.\n  Treat any mismatch as a failed verification phase; repair from the canonical file and re-check.",
+    ),
+    (
+        "| Task | Arc ID | Title | File lines | Arc lines |\n|------|--------|-------|------------|-----------|",
+        "| Task | Arc ID | Title | File SHA-256 | Arc SHA-256 |\n|------|--------|-------|-------------|------------|",
+    ),
+    (
+        "**Use the `ask_user_question` tool** to let the user choose:\n\n```\nQuestion: \"Epic and tasks created. How should we proceed with implementation?\"\nOptions:\n  - \"Start implementing now\" (invoke /arc-build in this session — subagents handle TDD per task)\n  - \"Implement in a new session\" (provides the exact prompt to use)\n  - \"Done for now\" (tasks are tracked in arc — implement manually or later)\n```",
+        "**Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool** with the package `questions[]` schema to let the user choose. Do not manually author package sentinel labels (`Type something.`, `Chat about this`, `Other`, `Next`):\n\n```json\n{\n  \"questions\": [\n    {\n      \"header\": \"Next\",\n      \"question\": \"Epic and tasks created. How should we proceed with implementation?\",\n      \"options\": [\n        {\n          \"label\": \"Start now (Recommended)\",\n          \"description\": \"Continue directly into /arc-build in this session.\"\n        },\n        {\n          \"label\": \"New session\",\n          \"description\": \"Print the exact /arc-build <epic-id> command for a fresh Pi session.\"\n        },\n        {\n          \"label\": \"Done for now\",\n          \"description\": \"Leave the tasks tracked in arc for future implementation.\"\n        }\n      ]\n    }\n  ]\n}\n```",
+    ),
+])
+
+replace_section(
+    "skills/arc-plan/SKILL.md",
+    "### 6.5. Self-Review\n\n",
+    "\n### 7. Choose Execution Path",
+    "",
+)
+
+replace_section(
+    "skills/arc-plan/SKILL.md",
+    "Example skeleton:\n\n",
+    "\n## Rules",
+    """Example skeleton:
+
+```markdown
+## Summary
+Upgrade the staging `payments` Helm release with a staged, reversible rollout.
+
+## Target
+Cluster context: `arn:aws:eks:us-east-1:123456789012:cluster/staging-eks`; namespace: `payments`; release: `payments`.
+
+## Files
+- Modify: `deploy/values-staging.yaml`
+
+## Safeguards
+- `kubectl config current-context` must equal the target context above.
+- `PREV_REV=$(helm history payments -n payments -o json | jq -r 'map(.revision) | max')`
+- `helm get values payments -n payments -o yaml > /tmp/payments-values-before.yaml`
+
+## Steps
+1. Preview: `helm diff upgrade payments ./deploy/payments -n payments -f deploy/values-staging.yaml` and confirm only the intended image/config changes appear.
+2. Apply with rollback-on-failure: `helm upgrade payments ./deploy/payments -n payments -f deploy/values-staging.yaml --atomic --timeout 10m`.
+3. Observe: `kubectl rollout status deployment/payments -n payments --timeout=10m`.
+
+## Verification
+- `helm diff upgrade payments ./deploy/payments -n payments -f deploy/values-staging.yaml` → empty diff.
+- `kubectl get deployment payments -n payments -o jsonpath='{.status.readyReplicas}/{.status.replicas}'` → equal counts.
+- `kubectl get pods -n payments` → no `CrashLoopBackOff` or `ImagePullBackOff`.
+
+## Rollback
+`helm rollback payments "$PREV_REV" -n payments --wait --timeout 10m`; verify rollout and pod health again.
+
+## Expected Outcome
+The staging release converges to the intended chart values, all replicas are Ready, the post-apply diff is empty, and the recorded prior revision remains available for rollback.
+```
+
+The task must contain concrete target values and executable commands like this example. If the provider has no preview/change-set mechanism or the recovery path cannot be verified, stop for explicit authorization rather than weakening the dry-run/rollback law.
+""",
+)
+
+insert_before_if_missing("skills/arc-plan/SKILL.md", "\n## Task Description Format\n", """## Parallel Readiness
 
 When a design can split into parallel implementation batches, document the readiness proof before handing off tasks.
 
@@ -902,7 +1064,7 @@ Do not mark any task parallelizable until this matrix is complete and every file
 
 ### Parallel Batch Manifest
 
-Group only disjoint tasks into parallel batches after file ownership is settled.
+Group only disjoint tasks into parallel batches after file ownership is settled. Never place a `devops` task or other live-system mutation in a parallel batch; those tasks must remain sequential.
 
 | Batch | Prerequisites | Tasks | Independence proof | Validation |
 |---|---|---|---|---|
@@ -927,7 +1089,7 @@ Dispatch preference (use **async** so longer reviews appear in `/subagents-statu
 - Arc code-reviewer should be auto-materialized; if it is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`
 - Fallback only if `pi-subagents` is not installed or cannot load after deprecated repair: `arc_agent(agent="code-reviewer", task="<filled prompt>")`
 
-**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. Model profile: reviews use the `codeReviewer` profile when configured via `/arc-models`; otherwise they fall back to existing tier/frontmatter behavior. Escalate only for large, cross-layer, or security-sensitive diffs. For most reviews, omit `model:` (use the agent's `standard` default). For `pi-subagents`, pass the configured concrete large model only when escalating.
+**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. Reviews use the `codeReviewer` profile when configured via `/arc-models`; otherwise the agent's `large` frontmatter is the fallback. Omit `model:` so the configured profile remains authoritative. Use an explicit override only for deliberate escalation beyond the configured profile.
 """)
 
 insert_before_if_missing(
@@ -947,9 +1109,64 @@ patch_file("skills/arc-review/code-reviewer-prompt.md", [
     ),
 ])
 
+patch_file("skills/arc-build/references/devops-patterns.md", [
+    (
+        "| GATE (idempotency) | re-run `--dry-run` → expect no changes |",
+        "| GATE (idempotency) | run `helm diff upgrade <release> <chart> -f values.yaml` and expect an empty diff; if the plugin is unavailable, compare `helm template` output with `helm get manifest` |",
+    ),
+    (
+        "For raw CLI mutations with no dry-run, describe the current state first so you have a before/after.",
+        "If a raw CLI mutation has no provider-supported preview or change set, STOP and require explicit authorization plus a verified recovery procedure; describing current state alone is not a safe preview.",
+    ),
+])
+
+patch_file("skills/arc-build/devops-builder-prompt.md", [
+    (
+        "For tool-specific dry-run / verify / rollback command idioms, Read:",
+        "For tool-specific dry-run / verify / rollback command idioms, use `read` on:",
+    ),
+])
+
+patch_file("agents/devops-builder.md", [
+    (
+        "if its path was provided in your dispatch prompt, e.g. `Read` `skills/arc-build/references/devops-patterns.md`.",
+        "if its path was provided in your dispatch prompt, using `read` on `skills/arc-build/references/devops-patterns.md`.",
+    ),
+])
+
+replace_section("agents/evaluator.md", "## Sandbox Model\n\n", "\n## Information Asymmetry", """## Sandbox Model
+
+The preferred `pi-subagents` dispatch runs in a disposable git worktree. In that mode you may write acceptance tests, add temporary test dependencies, and modify build configuration; do not commit.
+
+The bundled `arc_agent` fallback runs in the main checkout. In fallback mode:
+
+1. Record `git status --short` before touching files. If it is not clean, report `BLOCKED` instead of risking unrelated work.
+2. Track every file you create or modify.
+3. Run the evaluation.
+4. Restore modified tracked files and remove only the temporary files you created.
+5. Verify `git status --short` exactly matches the clean baseline before returning.
+
+Never claim cleanup is unnecessary unless runtime instructions explicitly confirm a disposable worktree. Never commit evaluation artifacts.
+""")
+
+patch_file("agents/evaluator.md", [
+    (
+        "Report your findings to the dispatching agent. Do NOT commit or clean up — the worktree is discarded automatically.",
+        "Report your findings to the dispatching agent. Do not commit. In a disposable worktree, runtime cleanup handles artifacts; in the `arc_agent` fallback, complete the tracked-file restoration and temporary-file cleanup from the Sandbox Model before reporting.",
+    ),
+])
+
+patch_file("agents/code-reviewer.md", [
+    (
+        "Read the project's CLAUDE.md if it exists.",
+        "Read the project's AGENTS.md (or legacy CLAUDE.md) if it exists.",
+    ),
+])
+
 SUPERVISOR_SECTIONS = {
     "agents/builder.md": ("## When Tests Can't Run", "implementation plan"),
     "agents/code-reviewer.md": ("## Rules", "review plan"),
+    "agents/devops-builder.md": ("## When Verification Can't Run", "operations plan"),
     "agents/doc-writer.md": ("## Quality Checklist", "documentation plan"),
     "agents/evaluator.md": ("## Rationalizations You Must Reject", "evaluation plan"),
     "agents/issue-manager.md": ("## Output Format", "issue plan"),
@@ -957,7 +1174,7 @@ SUPERVISOR_SECTIONS = {
 }
 for rel, (marker, plan_phrase) in SUPERVISOR_SECTIONS.items():
     extra = "Preserve adversarial/read-only expectations and" if rel == "agents/evaluator.md" else "Preserve read-only behavior and" if rel in {"agents/code-reviewer.md", "agents/spec-reviewer.md"} else ""
-    if rel in {"agents/builder.md", "agents/doc-writer.md", "agents/issue-manager.md"}:
+    if rel in {"agents/builder.md", "agents/devops-builder.md", "agents/doc-writer.md", "agents/issue-manager.md"}:
         routine = "Do not send routine completion handoffs through intercom; return your final task result normally."
     else:
         routine = f"{extra} do not send routine completion handoffs through intercom; return your final {'evaluation result' if rel == 'agents/evaluator.md' else 'review result'} normally."
@@ -984,42 +1201,55 @@ Never invent an intercom target. If bridge instructions are absent, report `BLOC
 
 replace_section("agents/issue-manager.md", "## Processing Task Manifests\n\n", "\n## Bulk Operations", """## Processing Task Manifests
 
-When receiving a structured manifest from the `plan` or `brainstorm` skills, parse the `## Epic` and `## Tasks` sections to assemble the manifest, then process it in phases:
+When receiving a manifest from the `plan` or `brainstorm` skills, parse titles, metadata, labels, dependencies, and canonical description-file paths. Arc normalizes outer whitespace from `--stdin`; the planner has already canonicalized these files to match. Never summarize, trim, paraphrase, or retype their content. Transfer canonical bytes only with shell redirection.
+
+Process every manifest in these phases:
 
 1. **Create the epic first** and capture the epic ID.
-2. **Create all child tasks** with the epic as parent before applying dependencies.
    ```bash
-   arc create "Task title" --type=task --parent=<epic-id> --stdin <<'EOF'
-   Full multi-line description here.
-   EOF
+   arc create "Epic title" --type=epic --stdin < "/path/to/plan.md"
    ```
-3. **Capture the complete task-name-to-ID table**.
+2. **Create all child tasks** with the epic as parent before applying dependencies. Create them in manifest order; do not claim concurrent Arc writes are safe.
+   ```bash
+   arc create "Task title" --type=task --parent=<epic-id> --stdin < "/path/to/T1.md"
+   ```
+3. **Capture the complete task-name-to-ID table** before any dependency command.
 4. **Apply dependencies only after all child IDs exist**.
    ```bash
    arc dep add <real-later-id> <real-earlier-id> --type=blocks
    ```
-5. **Apply labels after dependencies**, or in the same post-creation phase.
+5. **Apply labels after dependencies** using the CLI's repeatable update flag.
    ```bash
-   # Labels are managed via the REST API (no CLI command exists)
-   # Use arc update to add label context in the description, or
-   # note the labels in the summary for the dispatcher to handle
+   arc update <id> --label-add=docs-only
+   arc update <id> --label-add=devops
    ```
-6. **Return the final ID table, dependency summary, and `## Timing` summary**.
+6. **Verify every stored description equals its canonical file** and return the final ID table, dependency summary, label summary, and `## Timing` section.
+   ```bash
+   wc -l < "/path/to/T1.md"
+   arc show <id> --json | jq -r .description | wc -l
+   ```
+   Compare `sha256sum < "/path/to/T1.md"` with `arc show <id> --json | jq -j .description | sha256sum`; the hashes must match. Line counts are diagnostic only. On mismatch, repair mechanically with `arc update <id> --stdin < "/path/to/T1.md"` and re-check.
 
-Print `[arc-issue-manager] phase=<name> status=start|done elapsed_ms=<n>` progress lines around each phase (`epic`, `child_tasks`, `dependencies`, `labels`, and optional `verification`) so long-running issue creation is observable.
-
-**Concurrency note:** Concurrent child-task creation is future work pending Arc CLI/server concurrency verification. Do not claim true parallel CLI issue creation is safe today.
+Print `[arc-issue-manager] phase=<name> status=start|done elapsed_ms=<n>` around `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include all phase values in `## Timing`; use `unknown` only when a timestamp cannot be captured.
 
 **Handling partial failures**: If a task creation fails mid-manifest:
 - Continue creating the remaining tasks in order — do not abort the manifest
 - Report partial results clearly: "Created 4/5 tasks. T3 failed: `<error message>`"
-- Include the ID mapping for all successfully created tasks so the dispatcher can act on what exists
-- Do not attempt to clean up already-created tasks — the dispatcher will decide
+- Include the ID mapping for all successfully created tasks
+- Do not clean up already-created tasks; the dispatcher decides recovery
 
 This is the primary interface used by the `plan` and `brainstorm` skills for bulk issue creation.
 """)
 
 patch_file("agents/issue-manager.md", [
+    (
+        "# With description from a file (preferred for long content — byte-exact):",
+        "# With a canonical description file (preferred for long content and lossless internal content):",
+    ),
+    (
+        "# Replace description from a file (preferred for long content — byte-exact):",
+        "# Replace description from a canonical file (preserves all internal content):",
+    ),
     (
         "- Summarize any errors encountered\n- Provide next steps if applicable",
         "- Summarize any errors encountered\n- Include a `## Timing` section with phase-level elapsed times for bulk operations when available\n- Provide next steps if applicable",
@@ -1027,8 +1257,38 @@ patch_file("agents/issue-manager.md", [
 ])
 
 
+def install_generated_resources() -> None:
+    backup_root = Path(tempfile.mkdtemp(prefix=".pi-arc-backup-", dir=REPO_ROOT.parent))
+    moved_old: list[str] = []
+    installed: list[str] = []
+    try:
+        for name in ("prompts", "skills", "agents"):
+            target = REPO_ROOT / name
+            backup = backup_root / name
+            staged = ARC_ROOT / name
+            if target.exists():
+                target.rename(backup)
+                moved_old.append(name)
+            staged.rename(target)
+            installed.append(name)
+    except Exception:
+        for name in reversed(installed):
+            target = REPO_ROOT / name
+            if target.exists():
+                shutil.rmtree(target)
+        for name in reversed(moved_old):
+            backup = backup_root / name
+            if backup.exists():
+                backup.rename(REPO_ROOT / name)
+        raise
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+install_generated_resources()
+
 print(f"Migrated arc plugin resources from {SRC}")
-print(f"Package root: {ARC_ROOT}")
-print(f"Prompts: {len(list((ARC_ROOT / 'prompts').glob('*.md')))}")
-print(f"Skills: {len(list((ARC_ROOT / 'skills').glob('*/SKILL.md')))}")
-print(f"Agents: {len(list((ARC_ROOT / 'agents').glob('*.md')))}")
+print(f"Package root: {REPO_ROOT}")
+print(f"Prompts: {len(list((REPO_ROOT / 'prompts').glob('*.md')))}")
+print(f"Skills: {len(list((REPO_ROOT / 'skills').glob('*/SKILL.md')))}")
+print(f"Agents: {len(list((REPO_ROOT / 'agents').glob('*.md')))}")

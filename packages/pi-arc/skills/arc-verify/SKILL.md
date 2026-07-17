@@ -71,7 +71,7 @@ arc close <id> -r "Verified: <evidence summary>"
 ```
 
 If verification **fails**, do NOT close the issue. Instead:
-- Return to `implement` to fix the failure
+- Return to `build` to fix the failure
 - Or invoke `debug` if the failure is unexpected
 
 ## Rules
@@ -79,5 +79,5 @@ If verification **fails**, do NOT close the issue. Instead:
 - Never close an arc issue without fresh verification evidence
 - Never claim completion without running the proof command
 - Never trust cached or remembered results — run it fresh
-- After verification, proceed to `finish` (session end) or back to `implement` (next task)
+- After verification, proceed to `finish` (session end) or back to `build` (next task)
 - Format all arc content (descriptions, plans, comments) per `skills/arc/_formatting.md`

@@ -19,14 +19,14 @@ This catches the case where build was invoked without going through `brainstorm`
 
 ## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
+Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. GPT-5.6 maps naturally onto Arc's roles: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning. The dedicated `devopsBuilder` profile uses Sol because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.4-mini` | Bulk CLI issue creation and other low-reasoning issue-manager work |
-| `small` | `openai-codex/gpt-5.4-mini` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.3-codex` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.5` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
+| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
+| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
+| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
 
 ```markdown
 Arc model selection resolves in this order:
@@ -45,10 +45,10 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
 {
   "arc": {
     "modelTiers": {
-      "nano": "openai-codex/gpt-5.4-mini",
-      "small": "openai-codex/gpt-5.4-mini",
-      "standard": "openai-codex/gpt-5.3-codex",
-      "large": "openai-codex/gpt-5.5"
+      "nano": "openai-codex/gpt-5.6-luna",
+      "small": "openai-codex/gpt-5.6-luna",
+      "standard": "openai-codex/gpt-5.6-terra",
+      "large": "openai-codex/gpt-5.6-sol"
     }
   }
 }
@@ -78,9 +78,9 @@ arc_agent(agent="builder", task="...")                      # standard default
 arc_agent(agent="builder", model="large", task="...")       # complex
 
 # Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.4-mini", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.5", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -115,7 +115,7 @@ Parallel worktree dispatch is available **only** through an installed `pi-subage
 
 `pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.
 
-**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
+**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
 
 ## Orchestration Loop
 
@@ -130,9 +130,11 @@ Inspect the plan's `Parallel Batch Manifest` first. If it yields a ready batch a
 - `completed` when the task is closed in arc
 
 ```bash
-# Get the list of tasks to implement
-arc list --parent=<epic-id> --status=open --json
+# Get every unfinished child, including resumed/blocked/deferred work
+arc list --parent=<epic-id> --json | jq '.[] | select(.status != "closed")'
 ```
+
+If you were handed an epic ID, use its children. If you were handed one standalone task ID from the brainstorm-direct path, use `arc ready` / `arc show <task-id>` and run the loop once. If no Arc task exists, stop and route the user to `/arc-plan`; build dispatches existing tasks and does not invent them.
 
 Create a `todo` checklist entry for each, then work through this loop:
 
@@ -140,8 +142,8 @@ Create a `todo` checklist entry for each, then work through this loop:
 
 ```bash
 arc ready
-# or for a specific epic:
-arc list --parent=<epic-id> --status=open
+# or for a specific epic, include resumed/blocked/deferred children:
+arc list --parent=<epic-id> --json | jq '.[] | select(.status != "closed")'
 ```
 
 ### 2. Claim Task
@@ -158,37 +160,45 @@ Record the current HEAD before dispatching — needed for review if escalated:
 PRE_TASK_SHA=$(git rev-parse HEAD)
 ```
 
-Check whether the task has a `docs-only` label:
+Fetch the design excerpt once for the implementer, evaluator, and code reviewer:
+
+```bash
+PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
+[ -n "$PARENT" ] && arc show "$PARENT"
+```
+
+Extract the sections relevant to this task into `{DESIGN_EXCERPT}`. If the task has no parent epic, use `none`.
+
+Check task labels with precedence `docs-only` → `devops` → `builder`:
 
 ```bash
 arc show <task-id> --json | jq -e '.labels[] | select(. == "docs-only")' > /dev/null 2>&1
+arc show <task-id> --json | jq -e '.labels[] | select(. == "devops")' > /dev/null 2>&1
 ```
 
-**If `docs-only`** (exit code 0) — spawn a `doc-writer` subagent:
+**If `docs-only`** — use `./doc-writer-prompt.md` and dispatch:
+- Preferred: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
+- Fallback: `arc_agent(agent="doc-writer", task="<filled prompt>")`
 
-Use the template at `./doc-writer-prompt.md`. Fill placeholder `{TASK_ID}`. For docs-only work, the agent default (`small`) is correct — omit `model:` unless the docs task is unusually complex.
+**Else if `devops`** — use `./devops-builder-prompt.md`, filling `{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`, and `{MODEL_TIER_NOTE}`. The `devopsBuilder` model profile is recommended at the `large` tier because operations work has live blast radius and partial-failure modes. Dispatch:
+- Preferred: `subagent({ agent: "arc-devops-builder", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
+- Fallback: `arc_agent(agent="devops-builder", task="<filled prompt>")` (the configured `devopsBuilder` profile is authoritative; `large` frontmatter is the fallback)
 
-Dispatch preference:
-- If `subagent` is available and `arc-doc-writer` is installed: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="doc-writer", task="<filled prompt>")`
+The devops builder follows PLAN → SAFEGUARD → APPLY → VERIFY → GATE. Never route `devops` tasks through the normal TDD builder, and never include live-system operations tasks in a parallel patch batch.
 
-For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+**Otherwise** — use `./builder-prompt.md`, filling `{TASK_ID}`, `{PRE_TASK_SHA}`, and `{DESIGN_EXCERPT}`. Dispatch:
+- Preferred: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
+- Fallback: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
 
-**Otherwise** — spawn a `builder` subagent:
+Arc specialists should already be auto-materialized. If a required specialist is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 
-Use the template at `./builder-prompt.md`. Fill placeholders (`{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`) and apply Model Selection guidance (see `## Model Selection` above) for the dispatch `model:`.
-
-Dispatch preference:
-- If `subagent` is available and `arc-builder` is installed: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
-
-For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before evaluating the report or moving to validation.
+For async `pi-subagents` dispatches, capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, and read the final output before validation.
 
 ### 4. Evaluate Result
 
 When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
+
+> **DevOps tasks** (from `devops-builder`): there may be no project test command — the artifact is the live system's state. Verify by re-running the task's `## Verification` commands yourself and confirming each asserts the desired state, then confirm the report's **Rollback path** names a backup/revision that actually exists. Treat a missing or unverifiable rollback path the same as a failing test: do not proceed to review until it's resolved.
 
 **On `DONE`:**
 - Run the project tests. If they pass → proceed to step 5 (Spec Compliance Review).
@@ -228,10 +238,10 @@ BASE_SHA=$PRE_TASK_SHA
 
 Dispatch `spec-reviewer`:
 
-Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). Spec review is a focused comparison task — the Arc `standard` tier is appropriate unless the spec is unusually large or ambiguous.
+Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). The configured `specReviewer` profile is authoritative; the agent's `large` frontmatter is the fallback.
 
 Dispatch preference:
-- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", model: "openai-codex/gpt-5.3-codex", context: "fresh", async: true, clarify: false })`
+- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
 - If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
 - Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
 
@@ -248,6 +258,8 @@ Handle results:
 
 > **Docs-only tasks**: Skip this step. The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For docs-only tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
 
+> **DevOps tasks**: If the task committed IaC/config/manifests (non-empty `$PRE_TASK_SHA..HEAD` diff), dispatch the `spec-reviewer` as normal — it compares the committed diff to the spec. If the change was **imperative-only** (empty diff), there's nothing for a diff-based reviewer to read; instead the orchestrator verifies spec compliance directly: for each step in `## Steps` and each assertion in `## Verification`, confirm the report's verification evidence shows it was done against the live system. Flag any spec step with no corresponding evidence as a gap and re-dispatch.
+
 ### 6. Code Quality Review
 
 Only dispatched after spec compliance passes. Use the `review` skill or dispatch `code-reviewer` directly:
@@ -256,7 +268,7 @@ Only dispatched after spec compliance passes. Use the `review` skill or dispatch
 HEAD_SHA=$(git rev-parse HEAD)
 ```
 
-Use the template at `../arc-review/reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or "none", `{EVALUATOR_STATUS}` = "active" if evaluator was dispatched, else "not dispatched"). Follow Model Selection above for the dispatch `model:` — `standard` default is appropriate for most reviews.
+Use the template at `../arc-review/code-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or "none" — fetch it per step 3's design-context block, `{EVALUATOR_STATUS}` = "active" if evaluator was dispatched, else "not dispatched"). Follow Model Selection above for the dispatch `model:` — the configured `codeReviewer` profile is authoritative and `large` frontmatter is the fallback.
 
 **On `{EVALUATOR_STATUS}`:** Decide whether to dispatch the evaluator (step 6.5) BEFORE filling this placeholder. If you plan to run step 6.5 in parallel with step 6, set `{EVALUATOR_STATUS}="active"`. Otherwise set `"not dispatched"`. Step 6.5 has the decision criteria for when to dispatch the evaluator.
 
@@ -273,6 +285,8 @@ Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.
 
 > **Docs-only tasks**: Skip code quality review. For substantial documentation changes (developer-facing API docs, architecture docs), optionally dispatch `code-reviewer` for a quality check.
 
+> **DevOps tasks**: When the task committed IaC/config/manifests, dispatch `code-reviewer` — review it through an ops lens: no hardcoded secrets or credentials, least-privilege (IAM/RBAC), pinned versions/digests, idempotency, and resource limits where applicable. When the change was imperative-only (no diff), skip `code-reviewer` and instead confirm the `devops-builder`'s gate evidence directly: idempotency (a clean second dry-run), no leftover debris (uncordoned nodes, no debug pods/port-forwards), and a reachable rollback path.
+
 ### 6.5. High-Risk Evaluation (Optional)
 
 The evaluator is **not dispatched by default**. Dispatch only when:
@@ -284,7 +298,7 @@ When `pi-subagents` is available, dispatch the evaluator through a one-task work
 ```ts
 subagent({
   tasks: [
-    { agent: "arc-evaluator", task: "<filled evaluator prompt>", model: "openai-codex/gpt-5.5" }
+    { agent: "arc-evaluator", task: "<filled evaluator prompt>" }
   ],
   worktree: true,
   concurrency: 1,
@@ -294,13 +308,13 @@ subagent({
 })
 ```
 
-If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", model="large", task="<filled evaluator prompt>")` and ensure the evaluator does not leave uncommitted artifacts in the main worktree.
+If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", task="<filled evaluator prompt>")`. The configured `evaluator` profile remains authoritative and the agent's `large` frontmatter is the fallback. Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify `git status --short` matches its pre-evaluation baseline before returning.
 
 ```bash
 PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
 ```
 
-Use the template at `./evaluator-prompt.md`. Fill placeholder `{TASK_ID}`. Because evaluation is adversarial verification on high-risk tasks, escalate one tier from the agent default (typically to `large`) — set `model: "large"` on `arc_agent` dispatches unless the task is narrow. For `pi-subagents`, pass the concrete configured large model.
+Use the template at `./evaluator-prompt.md`. Fill `{TASK_ID}` and `{DESIGN_EXCERPT}` from the parent epic fetched above; use `none` only when there is no parent design. Because evaluation is adversarial verification on high-risk tasks, use the `evaluator` model profile when configured or the `large` tier fallback.
 
 When you plan to run the evaluator, set the code quality reviewer's `## Evaluator Status` to `active`; otherwise set it to `not dispatched`.
 
@@ -324,10 +338,10 @@ arc close <task-id> -r "Implemented: <summary>"
 
 ### 8. Integration Checkpoint
 
-After closing 2-3 related tasks, or before switching to a new epic phase, run the full integration test suite:
+After closing 2-3 related tasks, or before switching to a new epic phase, run the full integration test suite. Use the project's integration test command — check the design's `## Test Command`, the project `CLAUDE.md`/`AGENTS.md`, or the `Makefile`/`package.json` for the real target (e.g., `make test-integration`, `npm run test:integration`, `go test -tags=integration ./...`):
 
 ```bash
-make test-integration
+make test-integration   # example — substitute the project's actual command
 ```
 
 This catches cross-task regressions that individual implementer gate checks won't — each implementer only validates its own task's scope. Do not wait until all tasks are complete to discover integration failures.
@@ -341,9 +355,21 @@ If integration tests fail:
 
 Go to step 1 for the next task. Continue until all tasks in the epic are closed.
 
+### 10. Completion Gate
+
+For a standalone task, verify its task-specific command (or live `## Verification` for DevOps), confirm it is closed, skip all epic-only commands, and hand off to `finish`.
+
+For an epic, closing the last selected task is not the same as the epic being done. Before declaring the build complete, verify the epic as a whole — per-task gates only validate each task's own scope:
+
+1. **All tasks closed:** `arc list --parent=<epic-id> --json | jq '[.[] | select(.status != "closed")] | length'` returns `0`. Any `open`, `in_progress`, `blocked`, or `deferred` child keeps the epic open.
+2. **Epic-wide verification:** for code/docs epics, run the project's full test command and confirm exit 0. For DevOps-only epics, re-run each task's live `## Verification` and confirm rollback evidence; for mixed epics, run both.
+3. **Success criteria met:** re-read the epic description's `## Success Criteria` section (carried from the design). Confirm each criterion is satisfied by the closed tasks. If a criterion has no implementing task, that's a planning gap — surface it to the user rather than closing the epic.
+4. **Close the epic** with a summary: `arc close <epic-id> -r "Implemented: <one-line summary of what shipped>"`.
+5. **Hand off to `finish`:** the build skill does not commit/push the final state or run the session-close protocol. Invoke the `finish` skill to capture remaining work, run quality gates, and push. Work is not done until `git push` succeeds.
+
 ## Handle Implementer Status
 
-Every `builder` and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
+Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
 
 | Status | Orchestrator action |
 |---|---|
@@ -388,6 +414,7 @@ arc show <task-id>
 ```
 
 Confirm:
+- No task has a `devops` label or any live-system mutation scope; those tasks are always sequential
 - No `blocks`/`blockedBy` relationships between tasks in this batch
 - No overlapping file paths in task descriptions
 - Each task has a clearly scoped, non-ambiguous specification
@@ -402,9 +429,9 @@ Dispatch all parallel tasks in one `subagent` tool call so they branch from the 
 ```ts
 subagent({
   tasks: [
-    { agent: "arc-builder", task: "<filled builder prompt for task 1>", model: "openai-codex/gpt-5.3-codex" },
-    { agent: "arc-builder", task: "<filled builder prompt for task 2>", model: "openai-codex/gpt-5.3-codex" },
-    { agent: "arc-doc-writer", task: "<filled doc-writer prompt for task 3>", model: "openai-codex/gpt-5.4-mini" }
+    { agent: "arc-builder", task: "<filled builder prompt for task 1>" },
+    { agent: "arc-builder", task: "<filled builder prompt for task 2>" },
+    { agent: "arc-doc-writer", task: "<filled doc-writer prompt for task 3>" }
   ],
   worktree: true,
   concurrency: 3,
