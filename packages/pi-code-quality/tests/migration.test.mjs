@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -400,7 +400,53 @@ test("prompt heading drift fails before installing generated resources", () => {
   }
 });
 
-test("generated deep-review delivery requires gh availability and auth before PR posting", () => {
+test("staged installation restores both live roots when the second swap fails", () => {
+  const packageCopy = createTemporaryPackage();
+  const generated = mkdtempSync(path.join(os.tmpdir(), "pi-code-quality-generated-"));
+  writeFixtureFile(packageCopy.root, "prompts/live.txt", "live prompts\n");
+  writeFixtureFile(packageCopy.root, "skills/live.txt", "live skills\n");
+  writeFixtureFile(generated, "prompts/new.txt", "new prompts\n");
+  writeFixtureFile(generated, "skills/new.txt", "new skills\n");
+  const probe = [
+    "import importlib.util, sys",
+    "from pathlib import Path",
+    "from unittest.mock import patch",
+    "script, package_root, generated = map(Path, sys.argv[1:])",
+    "spec = importlib.util.spec_from_file_location('migration', script)",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "original_rename = Path.rename",
+    "def fail_second_swap(self, target):",
+    "    if self.name.startswith('.skills.staging-') and Path(target) == package_root / 'skills':",
+    "        raise OSError('simulated skills swap failure')",
+    "    return original_rename(self, target)",
+    "try:",
+    "    with patch.object(Path, 'rename', fail_second_swap):",
+    "        module.install_generated_tree(generated, package_root)",
+    "except OSError:",
+    "    leftovers = [path.name for path in package_root.iterdir() if '.staging-' in path.name or '.backup-' in path.name]",
+    "    if leftovers:",
+    "        raise AssertionError(f'rollback leftovers: {leftovers}')",
+    "    raise",
+  ].join("\n");
+
+  try {
+    const result = spawnSync("python3", ["-c", probe, packageCopy.script, packageCopy.root, generated], {
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /simulated skills swap failure/);
+    assert.equal(readFileSync(path.join(packageCopy.root, "prompts/live.txt"), "utf8"), "live prompts\n");
+    assert.equal(readFileSync(path.join(packageCopy.root, "skills/live.txt"), "utf8"), "live skills\n");
+    assert.equal(existsSync(path.join(packageCopy.root, "prompts/new.txt")), false);
+    assert.equal(existsSync(path.join(packageCopy.root, "skills/new.txt")), false);
+  } finally {
+    rmSync(generated, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("generated deep- and size-review delivery requires gh availability and auth before PR posting", () => {
   const source = createSourceFixture();
   const packageCopy = createTemporaryPackage();
 
@@ -416,6 +462,7 @@ test("generated deep-review delivery requires gh availability and auth before PR
       path.join(packageCopy.root, "skills/deep-review/references/output-actions.md"),
       "utf8",
     );
+    const sizeReview = readFileSync(path.join(packageCopy.root, "skills/size-review/SKILL.md"), "utf8");
 
     for (const content of [skill, outputActions]) {
       assert.match(content, /command -v gh/);
@@ -423,10 +470,22 @@ test("generated deep-review delivery requires gh availability and auth before PR
       assert.match(content, /unavailable or unauthenticated/);
       assert.match(content, /DEEP_REVIEW\.md/);
     }
+    assert.match(sizeReview, /command -v gh/);
+    assert.match(sizeReview, /gh auth status/);
+    assert.match(sizeReview, /unavailable or unauthenticated/);
+    assert.match(sizeReview, /SIZE_REVIEW\.md/);
     assert.match(outputActions, /Do not offer the PR-post option/);
     assert.match(outputActions, /write `DEEP_REVIEW\.md`, print the one-line summary/);
     assert.match(outputActions, /actual `gh pr comment` post fails/);
     assert.match(outputActions, /exit non-zero/);
+
+    assert.match(sizeReview, /With a PR but `gh` unavailable or\s+unauthenticated/);
+    assert.match(sizeReview, /do not offer the PR-post option/);
+    assert.match(sizeReview, /write `SIZE_REVIEW\.md`, print the one-line summary/);
+    assert.match(sizeReview, /PR\s+delivery is unavailable/);
+    assert.match(sizeReview, /preflight passes\s+but the actual `gh pr comment` post fails/);
+    assert.doesNotMatch(sizeReview, /PR in scope →\s*post the report as a PR comment automatically/);
+    assert.doesNotMatch(sizeReview, /In interactive mode, use `ask_user_question` with the package `questions\[\]`/);
   } finally {
     rmSync(source, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });

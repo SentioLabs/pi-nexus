@@ -752,45 +752,33 @@ def transform_size_review(text: str) -> str:
         "`GITHUB_ACTIONS`, `GITLAB_CI`, or `BUILDKITE` equals `true`, or the user\n"
         "explicitly asked for headless/CI/auto-post mode. Do **not** infer CI from\n"
         "subprocess stdin being non-TTY; Pi tools may run with non-TTY stdin during\n"
-        "interactive sessions. In non-interactive mode never prompt: PR in scope →\n"
-        "post the report as a PR comment automatically when `gh` is available\n"
-        "(`gh pr comment <num> --body-file <report.md>`), and exit non-zero if the\n"
-        "post fails; no PR → write `SIZE_REVIEW.md` and print a one-line\n"
-        "`size-review: <verdict> · <recommendation>` summary line.\n\n"
-        "In interactive mode, use `ask_user_question` with the package `questions[]`\n"
-        "JSON shape and 2-4 concise options:\n\n"
-        "```json\n"
-        "{\n"
-        "  \"questions\": [\n"
-        "    {\n"
-        "      \"id\": \"delivery\",\n"
-        "      \"question\": \"How would you like to surface this size review?\",\n"
-        "      \"header\": \"Output\",\n"
-        "      \"options\": [\n"
-        "        {\n"
-        "          \"label\": \"Post comment to PR #<N> (Recommended)\",\n"
-        "          \"description\": \"Post the rendered report as a top-level PR comment when a PR is in scope.\"\n"
-        "        },\n"
-        "        {\n"
-        "          \"label\": \"Write SIZE_REVIEW.md\",\n"
-        "          \"description\": \"Write the markdown report to SIZE_REVIEW.md at the repo root without committing.\"\n"
-        "        },\n"
-        "        {\n"
-        "          \"label\": \"Return inline\",\n"
-        "          \"description\": \"Return the markdown in chat for ad-hoc reviews.\"\n"
-        "        }\n"
-        "      ]\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
+        "interactive sessions.\n\n"
+        "Before offering or executing GitHub PR delivery, require both preflight commands:\n\n"
+        "```bash\n"
+        "command -v gh >/dev/null 2>&1\n"
+        "gh auth status >/dev/null 2>&1\n"
         "```\n\n"
-        "The package provides the `Type something.` and `Chat about this` escape\n"
-        "hatches; do not add manual pseudo-options for those choices. If a stack plan\n"
-        "was produced and the user wants to act on it, offer a handoff only to tools or\n"
-        "skills that are actually available. GitHub and git-spice delivery are\n"
-        "conditional on those tools being installed and authenticated; otherwise keep\n"
-        "the stack plan in `SIZE_REVIEW.md` or the chat output. Use `SIZE_REVIEW.md`,\n"
-        "never a `CLAUDE_*` report filename.\n",
+        "Only a PR plus successful preflight permits `gh pr comment`. If preflight passes\n"
+        "but the actual `gh pr comment` post fails, exit non-zero loudly; do not silently\n"
+        "fall back.\n\n"
+        "In non-interactive mode never prompt. With a PR and successful preflight, post the\n"
+        "report as a PR comment automatically. With a PR but `gh` unavailable or\n"
+        "unauthenticated, write `SIZE_REVIEW.md`, print the one-line summary, and state PR\n"
+        "delivery is unavailable; do not invoke `gh`. With no PR, write `SIZE_REVIEW.md`\n"
+        "and print `size-review: <verdict> · <recommendation>` to stdout.\n\n"
+        "In interactive mode with a PR and successful preflight, use `ask_user_question`\n"
+        "with the package `questions[]` JSON shape and 2-4 concise options, including a\n"
+        "`Post comment to PR #<N> (Recommended)` option. When a PR exists but `gh` is\n"
+        "unavailable or unauthenticated, do not offer the PR-post option: offer\n"
+        "`Write SIZE_REVIEW.md`, `Return inline`, or package free-form output and state PR\n"
+        "delivery is unavailable. With no PR, offer only available local or inline delivery.\n"
+        "The package provides the `Type something.` and `Chat about this` free-form guidance;\n"
+        "do not add manual pseudo-options.\n\n"
+        "If a stack plan was produced and the user wants to act on it, offer a handoff only to\n"
+        "tools or skills that are actually available. GitHub and git-spice delivery are\n"
+        "conditional on those tools being installed and authenticated; otherwise keep the\n"
+        "stack plan in `SIZE_REVIEW.md` or chat output. Use `SIZE_REVIEW.md`, never a\n"
+        "`CLAUDE_*` report filename.\n",
         context,
     )
     text = text.replace("/code-quality:size", "/code-quality-size")
@@ -872,11 +860,40 @@ def validate_generated_tree(temporary_root: Path) -> None:
 
 
 def install_generated_tree(temporary_root: Path, package_root: Path) -> None:
-    for name in ("prompts", "skills"):
-        target = package_root / name
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(temporary_root / name, target)
+    names = ("prompts", "skills")
+    staging = {}
+    backups = {}
+    installed = set()
+
+    try:
+        for name in names:
+            stage = Path(tempfile.mkdtemp(prefix=f".{name}.staging-", dir=package_root))
+            stage.rmdir()
+            shutil.copytree(temporary_root / name, stage)
+            staging[name] = stage
+
+        for name in names:
+            target = package_root / name
+            if target.exists():
+                backup = Path(tempfile.mkdtemp(prefix=f".{name}.backup-", dir=package_root))
+                backup.rmdir()
+                target.rename(backup)
+                backups[name] = backup
+
+        for name in names:
+            staging[name].rename(package_root / name)
+            installed.add(name)
+    except Exception:
+        for name in installed:
+            shutil.rmtree(package_root / name, ignore_errors=True)
+        for name, backup in backups.items():
+            backup.rename(package_root / name)
+        for stage in staging.values():
+            shutil.rmtree(stage, ignore_errors=True)
+        raise
+    else:
+        for backup in backups.values():
+            shutil.rmtree(backup)
 
 
 def main() -> None:
