@@ -478,6 +478,8 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(outputActions, /write `DEEP_REVIEW\.md`, print the one-line summary/);
     assert.match(outputActions, /actual `gh pr comment` post fails/);
     assert.match(outputActions, /exit non-zero/);
+    assert.match(outputActions, /tool subprocess stdin may be non-TTY during an interactive session/i);
+    assert.match(sizeReview, /tool subprocess stdin may be non-TTY during an interactive session/i);
 
     assert.match(sizeReview, /With a PR but `gh` unavailable or\s+unauthenticated/);
     assert.match(
