@@ -426,7 +426,7 @@ test("generated deep-review delivery requires gh availability and auth before PR
     assert.match(outputActions, /Do not offer the PR-post option/);
     assert.match(outputActions, /write `DEEP_REVIEW\.md`, print the one-line summary/);
     assert.match(outputActions, /actual `gh pr comment` post fails/);
-    assert.match(outputActions, /exit\s+non-zero/);
+    assert.match(outputActions, /exit non-zero/);
   } finally {
     rmSync(source, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });
