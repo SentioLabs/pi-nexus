@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -18,6 +20,12 @@ test('migration script validates source before rewriting resources', () => {
   const source = read('scripts/migrate-arc-plugin.py');
   assert.match(source, /import argparse/);
   assert.match(source, /expanduser\(\)\.resolve\(\)/);
+  assert.match(source, /DEFAULT_SOURCE_CANDIDATES/);
+  assert.match(source, /bfirestone\/agent-marketplace\/claude-marketplace\/plugins\/arc/);
+  assert.match(source, /tempfile\.mkdtemp/);
+  assert.match(source, /install_generated_resources/);
+  assert.match(source, /REPO_ROOT\.parents\[1\]\.parent \/ "agent-nexus\/claude-marketplace\/plugins\/arc"/);
+  assert.match(source, /Path\.home\(\) \/ "devspace\/personal\/sentiolabs\/agent-nexus\/claude-marketplace\/plugins\/arc"/);
   assert.match(source, /def validate_source/);
   assert.match(source, /"commands"/);
   assert.match(source, /"skills"/);
@@ -49,6 +57,23 @@ test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
   assert.match(source, /auto-materialized Arc `pi-subagents` specialists/);
   assert.match(source, /git push/);
   assert.match(source, /Do not tell the user "ready to push"/);
+});
+
+test('failed regeneration leaves installed resources untouched', () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-invalid-source-'));
+  const protectedPath = 'skills/arc/SKILL.md';
+  const before = read(protectedPath);
+  try {
+    for (const directory of ['commands', 'skills', 'agents', '.claude-plugin']) {
+      mkdirSync(path.join(fixture, directory), { recursive: true });
+    }
+    writeFileSync(path.join(fixture, '.claude-plugin', 'plugin.json'), '{}\n');
+
+    assert.throws(() => execFileSync('python3', ['scripts/migrate-arc-plugin.py', fixture], { encoding: 'utf8', stdio: 'pipe' }));
+    assert.equal(read(protectedPath), before);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test('migration script excludes upstream eval fixtures without preserving package-local maintainer skills', () => {
@@ -87,9 +112,10 @@ test('README documents repo-local maintainer source sync', () => {
   assert.match(source, /python3 scripts\/migrate-arc-plugin\.py --source ~\/foo\/bar\/arc/);
 });
 
-test('README documents arc share review surfaces', () => {
+test('README documents the planner-only review surface', () => {
   const source = read('README.md');
-  assert.match(source, /Plan review surfaces/);
-  assert.match(source, /arc share create <file> --remote/);
-  assert.match(source, /arc-review: kind=share-remote id=<id>/);
+  assert.match(source, /Plan review surface/);
+  assert.match(source, /arc plan create --no-frontmatter <file>/);
+  assert.match(source, /arc-review: id=<id>/);
+  assert.doesNotMatch(source, /arc share create|share-local|share-remote|kind=legacy/);
 });

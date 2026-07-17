@@ -1,5 +1,5 @@
 ---
-description: Use this agent for documentation-only tasks. Dispatched by the implement skill for tasks labeled `docs-only`. Writes/updates markdown and docs without TDD overhead.
+description: Use this agent for documentation-only tasks. Dispatched by the build skill for tasks labeled `docs-only`. Writes/updates markdown and docs without TDD overhead.
 tools:
   - bash
   - read

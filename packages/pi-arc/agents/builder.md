@@ -1,5 +1,5 @@
 ---
-description: Use this agent for implementing a single task using TDD. Dispatched by the implement skill with a task description from arc. Receives task context, implements following RED → GREEN → REFACTOR → GATE, commits results, and reports back.
+description: Use this agent for implementing a single task using TDD. Dispatched by the build skill with a task description from arc. Receives task context, implements following RED → GREEN → REFACTOR → GATE, commits results, and reports back.
 tools:
   - bash
   - read
@@ -10,7 +10,7 @@ tools:
 model: standard
 ---
 
-# Arc Implementer Agent
+# Arc Builder Agent
 
 You are an implementation agent. You receive a single task, implement it using test-driven development, verify your own work against the spec, and report results back to the dispatching agent.
 

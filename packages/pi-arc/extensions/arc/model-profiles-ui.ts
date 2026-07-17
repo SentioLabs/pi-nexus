@@ -55,6 +55,7 @@ const PROFILE_LABELS: Record<ArcModelProfileKey, string> = {
   plan: "Plan",
   issueManager: "Issue Manager",
   builder: "Builder",
+  devopsBuilder: "DevOps Builder",
   codeReviewer: "Code Reviewer",
   docWriter: "Doc Writer",
   specReviewer: "Spec Reviewer",
@@ -64,14 +65,15 @@ const PROFILE_LABELS: Record<ArcModelProfileKey, string> = {
 const RECOMMENDED_MODEL_PROVIDER = "openai-codex";
 
 const PROFILE_RECOMMENDATIONS: Record<ArcModelProfileKey, ProfileRecommendation> = {
-  brainstorm: { modelId: "gpt-5.5", thinking: "high", reason: "design exploration and architecture judgment" },
-  plan: { modelId: "gpt-5.5", thinking: "high", reason: "task breakdown and sequencing" },
-  issueManager: { modelId: "gpt-5.4-mini", thinking: "off", reason: "Arc CLI formatting and issue updates" },
-  builder: { modelId: "gpt-5.3-codex", thinking: "medium", reason: "implementation and code navigation" },
-  codeReviewer: { modelId: "gpt-5.5", thinking: "high", reason: "review judgment and risk detection" },
-  docWriter: { modelId: "gpt-5.4-mini", thinking: "low", reason: "documentation prose and light reasoning" },
-  specReviewer: { modelId: "gpt-5.5", thinking: "high", reason: "spec compliance and ambiguity detection" },
-  evaluator: { modelId: "gpt-5.5", thinking: "high", reason: "adversarial validation" },
+  brainstorm: { modelId: "gpt-5.6-sol", thinking: "high", reason: "design exploration and architecture judgment" },
+  plan: { modelId: "gpt-5.6-sol", thinking: "high", reason: "task breakdown and sequencing" },
+  issueManager: { modelId: "gpt-5.6-luna", thinking: "off", reason: "Arc CLI formatting and issue updates" },
+  builder: { modelId: "gpt-5.6-terra", thinking: "medium", reason: "implementation and code navigation" },
+  devopsBuilder: { modelId: "gpt-5.6-sol", thinking: "high", reason: "live-system operations and blast-radius judgment" },
+  codeReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "review judgment and risk detection" },
+  docWriter: { modelId: "gpt-5.6-luna", thinking: "low", reason: "documentation prose and light reasoning" },
+  specReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "spec compliance and ambiguity detection" },
+  evaluator: { modelId: "gpt-5.6-sol", thinking: "high", reason: "adversarial validation" },
 };
 
 const THINKING_DESCRIPTIONS: Record<ArcThinkingLevel, string> = {

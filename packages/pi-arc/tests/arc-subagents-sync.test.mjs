@@ -28,6 +28,7 @@ test('arc extension sync map includes all Arc specialists', () => {
   const source = read('extensions/arc.ts');
   for (const name of [
     'arc-builder',
+    'arc-devops-builder',
     'arc-doc-writer',
     'arc-spec-reviewer',
     'arc-code-reviewer',
@@ -42,7 +43,7 @@ test('arc extension sync map includes all Arc specialists', () => {
 test('arc extension model tiers include nano', () => {
   const source = read('extensions/arc.ts');
   assert.match(source, /type ArcModelTier = "nano" \| "small" \| "standard" \| "large"/);
-  assert.match(source, /nano: "openai-codex\/gpt-5\.4-mini"/);
+  assert.match(source, /nano: "openai-codex\/gpt-5\.6-luna"/);
   assert.match(source, /nano for bulk CLI issue creation/);
 });
 
@@ -59,6 +60,8 @@ test('arc-build skill references arc-subagents-sync and async pi-subagents worke
   const source = read('skills/arc-build/SKILL.md');
   assert.match(source, /\/arc-subagents-sync/);
   assert.match(source, /arc-builder/);
+  assert.match(source, /arc-devops-builder/);
+  assert.match(source, /devopsBuilder/);
   assert.match(source, /async: true/);
   assert.match(source, /clarify: false/);
   assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);

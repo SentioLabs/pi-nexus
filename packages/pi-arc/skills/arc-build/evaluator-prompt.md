@@ -4,12 +4,17 @@ Use this template when dispatching `evaluator` for adversarial verification of a
 
 **Placeholders:**
 - `{TASK_ID}` — arc issue ID
+- `{DESIGN_EXCERPT}` — relevant design section from the parent epic, or "none" if no parent design applies
 
 ````text
 You are the adversarial evaluator for arc task {TASK_ID}.
 
 ## Task Spec
 <paste output of: arc show {TASK_ID}>
+
+## Design Context
+{DESIGN_EXCERPT}
+(The approved design — your source of spec *intent*. If "none", omit this section and derive intent from the task spec alone.)
 
 ## Your Job
 

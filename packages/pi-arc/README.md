@@ -24,6 +24,7 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
   - `/skill:arc-build`
   - `/skill:arc-debug`
   - `/skill:arc-review`
+  - `/skill:arc-summarize` — mirror an Arc issue into a connected external tracker
   - `/skill:arc-verify`
   - `/skill:arc-finish`
 - **Extension commands**:
@@ -51,8 +52,8 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
   - When Arc recommends an option, list it first, append `(Recommended)` to the label, and explain why in the description.
 - **`arc_agent` tool**:
   - Runs bundled Arc specialist prompts from `agents/*.md` in fresh Pi subprocesses.
-  - Supports `builder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`.
-  - Resolves Arc model tiers (`small`, `standard`, `large`) to concrete Pi models so orchestrators can right-size subagent dispatches.
+  - Supports `builder`, `devops-builder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`.
+  - Resolves Arc model tiers (`nano`, `small`, `standard`, `large`) to concrete Pi models so orchestrators can right-size subagent dispatches.
   - Current limitation: `isolation: "worktree"` is recognized but not implemented yet.
 - **Optional `pi-subagents` companion support**:
   - `@sentiolabs/pi-arc` auto-materializes Arc specialist definitions for any installed `pi-subagents` provider, but does not bundle or load the `subagent` tool itself.
@@ -156,42 +157,42 @@ You can also invoke skills directly:
 
 ## Arc vs `todo` boundary
 
-Use Arc for persistent, auditable issue tracking across sessions (`arc create`, `arc update`, dependencies, plan shares, and closure history). Use bundled `rpiv-todo` (`todo` tool + `/todos` + overlay) for visible, in-session checklists while you execute the current workflow.
+Use Arc for persistent, auditable issue tracking across sessions (`arc create`, `arc update`, dependencies, planner reviews, and closure history). Use bundled `rpiv-todo` (`todo` tool + `/todos` + overlay) for visible, in-session checklists while you execute the current workflow.
 
-## Plan review surfaces
+## Plan review surface
 
-`/skill:arc-brainstorm` writes design docs under `docs/plans/` and asks how to register them for review:
+`/skill:arc-brainstorm` writes design docs under `docs/plans/` and can register them on the local Arc planner with `arc plan create --no-frontmatter <file>`. Arc uses `--no-frontmatter` because the Pi workflow owns the first-line HTML review marker and must not mix it with Arc-generated YAML frontmatter. The planner provides a plain-HTTP markdown view and comment thread at `/planner/<id>`.
 
-- Legacy local planner: `arc plan create <file>` for a simple local-only comment thread.
-- Encrypted local share: `arc share create <file>` for encrypted local review with annotations.
-- Encrypted remote share: `arc share create <file> --remote` for reviewers on other machines.
-
-The brainstorm skill writes a first-line marker like `<!-- arc-review: kind=share-remote id=<id> -->`; `/skill:arc-plan` reads that marker to choose the matching `arc plan` or `arc share` commands.
+The brainstorm skill writes a first-line marker like `<!-- arc-review: id=<id> -->`; `/skill:arc-plan` reads that ID for `arc plan show`, `arc plan comments`, and `arc plan approve`. Designs can also be saved locally without registration for later work.
 
 ## Arc model profiles
 
 Use `/arc-models` to configure Arc's recommended Pi model and thinking level per workflow role. Arc stores profile preferences at `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`, with top-level `modelProfiles`.
 
-Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `builder`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
+Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `builder`, `devopsBuilder`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
 
 ```json
 {
   "version": 1,
   "modelProfiles": {
     "brainstorm": {
-      "model": "openai-codex/gpt-5.5",
+      "model": "openai-codex/gpt-5.6-sol",
       "thinking": "high"
     },
     "issueManager": {
-      "model": "openai-codex/gpt-5.4-mini",
+      "model": "openai-codex/gpt-5.6-luna",
       "thinking": "off"
     },
     "builder": {
-      "model": "openai-codex/gpt-5.3-codex",
+      "model": "openai-codex/gpt-5.6-terra",
       "thinking": "medium"
     },
+    "devopsBuilder": {
+      "model": "openai-codex/gpt-5.6-sol",
+      "thinking": "high"
+    },
     "codeReviewer": {
-      "model": "openai-codex/gpt-5.5",
+      "model": "openai-codex/gpt-5.6-sol",
       "thinking": "high"
     }
   }
@@ -200,7 +201,7 @@ Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueMan
 
 `/arc-models` lists only models returned by Pi's active model registry. If a configured model is unavailable, it prompts you to choose a replacement before saving.
 
-The same `modelProfiles` shape works for `plan`, `docWriter`, `specReviewer`, and `evaluator` profiles.
+The same `modelProfiles` shape works for `plan`, `devopsBuilder`, `docWriter`, `specReviewer`, and `evaluator` profiles. Based on [OpenAI's GPT-5.6 preview](https://openai.com/index/previewing-gpt-5-6-sol/), the family maps naturally onto Arc's tiers: Luna for fast/affordable `nano` and `small` work, Terra for balanced `standard` implementation, and Sol for `large` design, operations, review, and adversarial evaluation. `devopsBuilder` defaults high because live-system operations require blast-radius and rollback judgment.
 
 Legacy `arc.modelTiers` settings in `~/.pi/agent/settings.json` or project `.pi/settings.json` remain supported as a compatibility fallback, but new configuration should use `/arc-models` and `modelProfiles`.
 
@@ -214,6 +215,7 @@ Arc writes generated specialists to `~/.agents/` by default. Legacy user scope `
 Generated specialists include:
 
 - `arc-builder`
+- `arc-devops-builder`
 - `arc-doc-writer`
 - `arc-spec-reviewer`
 - `arc-code-reviewer`
@@ -230,7 +232,7 @@ Existing standalone installs under `~/.pi/agent/extensions/subagent` also work. 
 
 For repair/backcompat only, `/arc-subagents-sync project` can explicitly refresh legacy project-scope generated files under `<cwd>/.pi/agents/`; normal activation writes user-scope files automatically.
 
-The `issue-manager` agent uses the issueManager profile (recommended gpt-5.4-mini with thinking off) and stays phased: create the epic first, then child tasks next, then dependencies/labels after all IDs exist. It prints phase-level timing/progress lines for bulk issue creation. This is sequencing only; true parallel issue creation is not enabled yet.
+The `issue-manager` agent uses the issueManager profile (recommended gpt-5.6-luna with thinking off) and stays phased: create the epic first, then child tasks next, then dependencies/labels after all IDs exist. It prints phase-level timing/progress lines for bulk issue creation. This is sequencing only; true parallel issue creation is not enabled yet.
 
 Generated files include a marker comment so reruns can safely update Arc-managed files while preserving manual edits in user-authored files.
 
@@ -281,7 +283,8 @@ Implemented:
 - Bundled `@juicesharp/rpiv-ask-user-question` package for interactive workflow decisions
 - Pi-native `arc_agent` custom tool for sequential subagent execution
 - Auto-materialized Arc specialists in pi-subagents user scope; `/arc-subagents-sync` is deprecated repair/backcompat only
-- Optional `pi-subagents` integration for worktree-isolated evaluator runs, independent parallel builder batches, and phased issue-manager creation
+- Optional `pi-subagents` integration for worktree-isolated evaluator runs, independent parallel builder batches, phased issue-manager creation, and a dedicated sequential DevOps builder
+- External-tracker mirroring through `/arc-summarize` using connected MCP tools or authenticated CLIs
 
 Not yet implemented:
 
