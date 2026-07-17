@@ -42,6 +42,26 @@ test("release-please tracks pi-arc as an independent package", () => {
   assertReleaseManifestTracksPackage("packages/pi-arc");
 });
 
+test("release-please tracks pi-code-quality as an independent package", () => {
+  const config = readJson("release-please-config.json");
+  const codeQuality = config.packages["packages/pi-code-quality"];
+
+  assert.ok(codeQuality);
+  assert.equal(codeQuality.component, "pi-code-quality");
+  assert.equal(codeQuality["package-name"], "@sentiolabs/pi-code-quality");
+  assert.equal(codeQuality["release-type"], "node");
+  assert.equal(codeQuality["initial-version"], "0.1.0");
+  assert.equal(codeQuality["changelog-path"], "CHANGELOG.md");
+  assert.deepEqual(codeQuality["extra-files"], [
+    {
+      type: "json",
+      path: "/package-lock.json",
+      jsonpath: "$.packages['packages/pi-code-quality'].version",
+    },
+  ]);
+  assertReleaseManifestTracksPackage("packages/pi-code-quality");
+});
+
 test("pi-arc package metadata points at the workspace package", () => {
   const pkg = readJson("packages/pi-arc/package.json");
 
@@ -56,6 +76,19 @@ test("pi-arc package metadata points at the workspace package", () => {
   assert.ok(pkg.bundledDependencies.includes("@juicesharp/rpiv-todo"));
   assert.ok(pkg.bundledDependencies.includes("@juicesharp/rpiv-ask-user-question"));
   assert.ok(!pkg.bundledDependencies.includes("pi-subagents"));
+});
+
+test("pi-code-quality package metadata points at the workspace package", () => {
+  const pkg = readJson("packages/pi-code-quality/package.json");
+
+  assert.equal(pkg.name, "@sentiolabs/pi-code-quality");
+  assertReleaseManifestTracksPackage("packages/pi-code-quality");
+  assert.equal(pkg.repository.directory, "packages/pi-code-quality");
+  assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
+  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-code-quality#readme");
+  assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
+  assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.equal(pkg.publishConfig.access, "public");
 });
 
 test("release-please tracks pi-frontend-design as an independent package", () => {
@@ -104,6 +137,7 @@ test("release workflow uses idempotent npm publishing helper", () => {
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-arc/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
+  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-code-quality/);
   assert.doesNotMatch(workflow, /npm publish --workspace/);
   assert.doesNotMatch(workflow, /release_created/);
 });
