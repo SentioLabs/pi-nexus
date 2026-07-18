@@ -1,8 +1,23 @@
 ---
-description: Run a PR or branch size review to decide whether the change should be split, stacked, cleaned up, or shipped as-is
+description: Run a PR/branch size review to decide if the change should be split into multiple PRs
 argument-hint: "[scope]"
 ---
 
-Use the `size-review` skill for this code quality size request.
+# Size Review
 
-If no scope is provided, review the current branch against its merge-base with trunk. Treat `$ARGUMENTS` as the requested scope when present; it may be a PR number, PR URL, branch name, or explicit branch/base scope.
+Use the `size-review` skill against the specified target.
+
+## Usage
+
+- `/code-quality-size` -- review the current branch against its base
+- `/code-quality-size PR` or `/code-quality-size #123` -- review a pull request
+- `/code-quality-size <branch-name>` -- review a specific local branch
+
+## Instructions
+
+Invoke the `size-review` skill with the user's specified scope. If no scope
+is given, default to the current branch against its merge-base with the
+trunk (`origin/main` or whatever the project's trunk is). Pass any arguments
+the user provided as the scope for the review.
+
+Use `$ARGUMENTS` as the requested scope when present.
