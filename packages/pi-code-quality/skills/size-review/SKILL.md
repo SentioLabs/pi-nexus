@@ -498,7 +498,7 @@ If the recommendation involves drive-by extraction, list those as
 Use these commands only when git-spice is available. Otherwise, keep the same
 stack plan and translate it to the repository's available branch and PR workflow.
 
-```bash
+\`\`\`bash
 # If the PR has heavy fixup noise, squash by section first:
 git rebase -i <base-ref>
 # squash fix/lint/CI-debug commits into their parent feature commits
@@ -510,7 +510,7 @@ gs branch create refactor-foo-rename --target main
 gs branch create feat-bar-add-endpoint --target refactor-foo-rename
 # ...
 gs stack submit
-```
+\`\`\`
 
 Do not require git-spice or any optional Pi package; use available tools.
 ```

@@ -328,6 +328,26 @@ If `DEEP_REVIEW.md` already exists:
 These are fallbacks — only use when the user explicitly asks via the
 "Other" free-form input.
 
+### GitHub-backed alternate delivery preflight
+
+Before every GitHub-backed alternate delivery — creating GitHub issues,
+posting inline review comments with `gh api`, or a combined action that
+includes either — both preflight commands must pass:
+
+```bash
+command -v gh >/dev/null 2>&1
+gh auth status >/dev/null 2>&1
+```
+
+Run this preflight before each GitHub-backed action, including the
+actionable part of a combined delivery. If either command fails because
+`gh` is unavailable or unauthenticated, do not invoke `gh`. Instead
+retain/report the findings via `DEEP_REVIEW.md` or inline output and state
+GitHub delivery is unavailable.
+
+If preflight passed but an actual `gh issue create` or `gh api` post/create
+fails, let the failure remain loud and non-zero; do not silently fall back.
+
 **Review branch with markdown report.** Best for full-codebase audits and
 archival. Create a new branch `<user>/deep-review`, write to
 `DEEP_REVIEW.md` at the repo root, commit, and push. Tell the user

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const readText = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const readJson = (path) => JSON.parse(readText(path));
 
@@ -134,4 +137,35 @@ test("deep-review and size-review references are bundled", () => {
   assert.match(exclusions, /^# Universal default exclusions for size-review/m);
   assert.match(exclusions, /go\.sum/);
   assert.match(exclusions, /package-lock\.json/);
+});
+
+test("npm pack bundles canonical review resources without maintainer or legacy files", () => {
+  const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: packageRoot,
+    encoding: "utf8",
+  }));
+  assert.equal(packed.length, 1);
+  const paths = new Set(packed[0].files.map(({ path }) => path));
+
+  for (const path of [
+    "prompts/code-quality-review.md",
+    "prompts/code-quality-size.md",
+    "skills/deep-review/SKILL.md",
+    "skills/deep-review/references/go.md",
+    "skills/deep-review/references/output-actions.md",
+    "skills/deep-review/references/python.md",
+    "skills/deep-review/references/rust.md",
+    "skills/deep-review/references/svelte-ts.md",
+    "skills/size-review/SKILL.md",
+    "skills/size-review/references/default-exclusions.md",
+  ]) {
+    assert.equal(paths.has(path), true, `${path} should be in the package tarball`);
+  }
+
+  assert.equal(paths.has("scripts/migrate-code-quality-plugin.py"), false);
+  assert.equal(
+    [...paths].some((path) => path.startsWith("scripts/") || path.startsWith("tests/") || path.startsWith(".pi/")),
+    false,
+  );
+  assert.equal([...paths].some((path) => path.includes("slop-review") || path.includes("code-quality-slop")), false);
 });
