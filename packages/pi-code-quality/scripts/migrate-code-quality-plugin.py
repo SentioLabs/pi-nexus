@@ -627,6 +627,31 @@ def transform_output_actions(text: str) -> str:
     )
     text = require_replace(
         text,
+        "## 7. Other delivery shapes (when the user picks \"Other\")\n\n"
+        "These are fallbacks — only use when the user explicitly asks via the\n"
+        "\"Other\" free-form input.\n\n",
+        "## 7. Other delivery shapes (when the user picks \"Other\")\n\n"
+        "These are fallbacks — only use when the user explicitly asks via the\n"
+        "\"Other\" free-form input.\n\n"
+        "### GitHub-backed alternate delivery preflight\n\n"
+        "Before every GitHub-backed alternate delivery — creating GitHub issues,\n"
+        "posting inline review comments with `gh api`, or a combined action that\n"
+        "includes either — both preflight commands must pass:\n\n"
+        "```bash\n"
+        "command -v gh >/dev/null 2>&1\n"
+        "gh auth status >/dev/null 2>&1\n"
+        "```\n\n"
+        "Run this preflight before each GitHub-backed action, including the\n"
+        "actionable part of a combined delivery. If either command fails because\n"
+        "`gh` is unavailable or unauthenticated, do not invoke `gh`. Instead\n"
+        "retain/report the findings via `DEEP_REVIEW.md` or inline output and state\n"
+        "GitHub delivery is unavailable.\n\n"
+        "If preflight passed but an actual `gh issue create` or `gh api` post/create\n"
+        "fails, let the failure remain loud and non-zero; do not silently fall back.\n\n",
+        context,
+    )
+    text = require_replace(
+        text,
         "**Review branch with markdown report.** Best for full-codebase audits and\n"
         "archival. Create a new branch `<user>/deep-review`, write to\n"
         "`CLAUDE_DEEP_REVIEW.md` at the repo root, commit, and push. Tell the user\n"
@@ -712,7 +737,7 @@ def transform_size_review(text: str) -> str:
         "### Optional git-spice-style flow when available\n\n"
         "Use these commands only when git-spice is available. Otherwise, keep the same\n"
         "stack plan and translate it to the repository's available branch and PR workflow.\n\n"
-        "```bash\n"
+        "\\`\\`\\`bash\n"
         "# If the PR has heavy fixup noise, squash by section first:\n"
         "git rebase -i <base-ref>\n"
         "# squash fix/lint/CI-debug commits into their parent feature commits\n\n"
@@ -723,7 +748,7 @@ def transform_size_review(text: str) -> str:
         "gs branch create feat-bar-add-endpoint --target refactor-foo-rename\n"
         "# ...\n"
         "gs stack submit\n"
-        "```\n\n"
+        "\\`\\`\\`\n\n"
         "Do not require git-spice or any optional Pi package; use available tools.",
         context,
     )

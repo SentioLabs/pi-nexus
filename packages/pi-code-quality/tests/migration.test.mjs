@@ -216,10 +216,41 @@ const outputActionsSource = () => [
   "",
   "## 7. Other delivery shapes (when the user picks \"Other\")",
   "",
+  "These are fallbacks — only use when the user explicitly asks via the",
+  "\"Other\" free-form input.",
+  "",
   "**Review branch with markdown report.** Best for full-codebase audits and",
   "archival. Create a new branch `<user>/deep-review`, write to",
   "`CLAUDE_DEEP_REVIEW.md` at the repo root, commit, and push. Tell the user",
   "the branch is ready and they can open a PR for team discussion.",
+  "",
+  "**GitHub issues.** Best for tech-debt tracking. For each confirmed finding",
+  "(or group of related findings), create a GitHub issue with: descriptive",
+  "title, SHA-pinned permalink(s) to the offending code, signal category and",
+  "severity, suggested fix, and appropriate labels (`ai-slop`, severity",
+  "labels). Group related findings into single issues where it makes sense",
+  "(\"4 instances of bare except Exception: pass\" is one issue, not four).",
+  "Ask whether to create a milestone (e.g., \"AI Slop Cleanup\") before opening",
+  "issues.",
+  "",
+  "**Inline PR review comments.** Best when findings map to specific changed",
+  "lines and the team prefers per-line review. For each confirmed finding,",
+  "post an inline review comment at the exact file and line using",
+  "`gh api repos/{owner}/{repo}/pulls/{pr}/reviews`:",
+  "",
+  "```bash",
+  "gh api repos/{owner}/{repo}/pulls/{pr}/reviews -f event=COMMENT \\",
+  "  -f body=\"Deep Review: found N issues\" \\",
+  "  -f 'comments[][path]=...' -f 'comments[][line]=...' \\",
+  "  -f 'comments[][body]=...'",
+  "```",
+  "",
+  "Group related findings into a single review submission.",
+  "",
+  "**Combined.** The user may want both an archival markdown AND actionable",
+  "items. If so, do the markdown delivery first, then the actionable",
+  "delivery. Update issue/comment bodies to reference the markdown only if",
+  "that file has been committed and pushed (otherwise the link 404s).",
 ].join("\n") + "\n";
 
 const sizeReviewSkillSource = () => [
@@ -246,6 +277,15 @@ const sizeReviewSkillSource = () => [
   "- The author can use `gs stack submit` to push the whole stack at once",
   "  and get review on the bottom while writing the top",
   "",
+  "## Output Format",
+  "",
+  "For PRs over threshold:",
+  "",
+  "```markdown",
+  "## Size Review: <PR#X — title> or <branch-name>",
+  "",
+  "### Stack Plan",
+  "",
   "### Suggested git-spice flow",
   "",
   "\\`\\`\\`bash",
@@ -264,6 +304,9 @@ const sizeReviewSkillSource = () => [
   "",
   "If the author already has git-spice loaded, point them at the",
   "`git-spice:stacking-workflow` skill for the full workflow.",
+  "```",
+  "",
+  "For PRs under threshold:",
   "",
   "## Output Actions",
   "",
@@ -493,6 +536,32 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(sizeReview, /preflight passes\s+but the actual `gh pr comment` post fails/);
     assert.doesNotMatch(sizeReview, /PR in scope →\s*post the report as a PR comment automatically/);
     assert.doesNotMatch(sizeReview, /In interactive mode, use `ask_user_question` with the package `questions\[\]`/);
+
+    const sizeReviewTemplate = sizeReview.match(
+      /```markdown\n([\s\S]*?)\n```\n\nFor PRs under threshold:/,
+    )?.[1];
+    assert.ok(sizeReviewTemplate, "the over-threshold output template should remain fenced as markdown");
+    const optionalGitSpiceFlow = sizeReviewTemplate.match(
+      /### Optional git-spice-style flow when available[\s\S]*?Do not require git-spice or any optional Pi package; use available tools\./,
+    )?.[0];
+    assert.ok(optionalGitSpiceFlow, "the optional git-spice flow should remain in the output template");
+    assert.match(optionalGitSpiceFlow, /\\`\\`\\`bash/);
+    assert.match(optionalGitSpiceFlow, /gs stack submit\n\\`\\`\\`/);
+    assert.doesNotMatch(optionalGitSpiceFlow, /\n```(?:bash)?\n/);
+
+    const alternateDelivery = outputActions.match(/## 7\. Other delivery shapes[\s\S]*/)?.[0];
+    assert.ok(alternateDelivery, "alternate delivery instructions should be generated");
+    assert.match(alternateDelivery, /Before every GitHub-backed alternate delivery/);
+    assert.match(alternateDelivery, /GitHub issues/);
+    assert.match(alternateDelivery, /inline review comments/);
+    assert.match(alternateDelivery, /combined action/i);
+    assert.match(alternateDelivery, /command -v gh/);
+    assert.match(alternateDelivery, /gh auth status/);
+    assert.match(alternateDelivery, /do not invoke `gh`/i);
+    assert.match(alternateDelivery, /DEEP_REVIEW\.md`?\s+or inline output/);
+    assert.match(alternateDelivery, /GitHub delivery is unavailable/);
+    assert.match(alternateDelivery, /preflight passed[\s\S]*remain loud and non-zero/i);
+    assert.match(alternateDelivery, /do not silently fall back/i);
   } finally {
     rmSync(source, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });
