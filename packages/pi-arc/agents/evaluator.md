@@ -23,13 +23,13 @@ The preferred `pi-subagents` dispatch runs in a disposable git worktree. In that
 
 The bundled `arc_agent` fallback runs in the main checkout. In fallback mode:
 
-1. Record `git status --short` before touching files. If it is not clean, report `BLOCKED` instead of risking unrelated work.
+1. Determine the VCS using `skills/arc/_vcs.md`, then record its status before touching files: `git status --short` for Git or `jj st` for jj. If the selected VCS status is not clean, report `BLOCKED` instead of risking unrelated work.
 2. Track every file you create or modify.
 3. Run the evaluation.
 4. Restore modified tracked files and remove only the temporary files you created.
-5. Verify `git status --short` exactly matches the clean baseline before returning.
+5. Verify the selected VCS status exactly matches the clean baseline before returning.
 
-Never claim cleanup is unnecessary unless runtime instructions explicitly confirm a disposable worktree. Never commit evaluation artifacts.
+Never claim cleanup is unnecessary unless runtime instructions explicitly confirm a disposable Git worktree. Never commit evaluation artifacts.
 
 ## Information Asymmetry — Your Advantage
 

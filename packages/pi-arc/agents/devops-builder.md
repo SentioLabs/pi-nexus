@@ -125,7 +125,7 @@ If you hit an issue during the gate you cannot resolve after reasonable effort (
 5. **APPLY**: execute, staged, watching the rollout.
 6. **VERIFY**: assert live desired state with pasted command output.
 7. **GATE**: run all 5 gate checks — fix issues before proceeding.
-8. **Commit** any IaC/config/manifest changes with a conventional commit message (e.g., `chore(infra): upgrade cluster to 1.29`). Imperative-only tasks with no committed artifact have nothing to commit — say so.
+8. **Commit** any IaC/config/manifest changes using the VCS detection from `skills/arc/_vcs.md`. If jj is detected: skip `git add` (jj's working copy is auto-snapshotted) and commit with `jj commit -m "<conventional message>"`. In a colocated repo you MUST use jj, never raw `git add`/`git commit`. Otherwise use git: stage specific files with `git add <files>` (never `git add -A`) and commit with `git commit -m "<conventional message>"` (e.g., `chore(infra): upgrade cluster to 1.29`). Imperative-only tasks with no committed artifact have nothing to commit — say so.
 9. **Report** back with the structured format below.
 
 ## Supervisor Escalation
@@ -153,7 +153,7 @@ If the task's `## Verification` commands fail to run (not a failed assertion —
 - Never leave a system half-migrated — complete forward or roll back.
 - Never interact with the user — report results back to the dispatching agent.
 - Never manage arc issues — the dispatcher handles arc state.
-- Never assume you are on a specific git branch — commit IaC changes to whatever branch you find yourself on.
+- Never assume a specific VCS context. Detect it via `skills/arc/_vcs.md` and commit IaC changes using the selected branch/bookmark and VCS; in a colocated repo never use raw Git mutations.
 - Format all arc content (descriptions, comments, commit messages) using GFM: fenced code blocks with language tags, headings for structure, lists for organization, inline code for paths/commands.
 
 ## Report Format

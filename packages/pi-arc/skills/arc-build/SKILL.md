@@ -89,7 +89,7 @@ subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol",
 
 ## Dispatch Modes
 
-Choose the manifest-driven parallel path first; if the batch is not ready, fall back to sequential dispatch.
+Determine the repository VCS first using `skills/arc/_vcs.md`. Pi's managed `pi-subagents` patch isolation currently requires Git worktrees. If VCS detection selects jj (including colocated repositories), use sequential dispatch and jj mutations; do not invoke `worktree: true`. For Git, choose the manifest-driven parallel path first and fall back to sequential dispatch when the batch is not ready.
 
 ### Parallel (plan-driven)
 
@@ -105,7 +105,8 @@ Tasks are dispatched one at a time through the orchestration loop below. Use thi
 
 ### Parallel
 
-Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:
+Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`, and only when `skills/arc/_vcs.md` selects Git. Use it only when ALL of these are true:
+- VCS detection selects Git, not jj (including colocated repositories)
 - `pi-subagents` loaded and the `subagent` tool is available
 - Arc agent definitions such as `arc-builder` / `arc-doc-writer` are auto-materialized for `pi-subagents`
 - 3+ independent tasks remain, or one high-risk evaluator needs a disposable worktree
@@ -115,7 +116,7 @@ Parallel worktree dispatch is available **only** through an installed `pi-subage
 
 `pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.
 
-**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
+**When NOT to use parallel**: VCS detection selects jj, missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
 
 ## Orchestration Loop
 
@@ -293,7 +294,7 @@ The evaluator is **not dispatched by default**. Dispatch only when:
 - Task has a `high-risk` label
 - The orchestrator judges the task warrants independent verification (e.g., complex spec with multiple valid interpretations, security-sensitive code, tasks that modify shared contracts)
 
-When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run. This gives it a disposable repository copy so it can write acceptance tests and add temporary dependencies without dirtying the main worktree:
+When `pi-subagents` is available and `skills/arc/_vcs.md` selects Git, dispatch the evaluator through a one-task worktree-isolated parallel run. This gives it a disposable repository copy so it can write acceptance tests and add temporary dependencies without dirtying the main worktree:
 
 ```ts
 subagent({
@@ -308,7 +309,7 @@ subagent({
 })
 ```
 
-If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", task="<filled evaluator prompt>")`. The configured `evaluator` profile remains authoritative and the agent's `large` frontmatter is the fallback. Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify `git status --short` matches its pre-evaluation baseline before returning.
+If VCS detection selects jj, or if `pi-subagents` / `arc-evaluator` is unavailable, fall back to sequential `arc_agent(agent="evaluator", task="<filled evaluator prompt>")`. The configured `evaluator` profile remains authoritative and the agent's `large` frontmatter is the fallback. Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify the selected VCS status (`git status --short` or `jj st`) matches its pre-evaluation baseline before returning.
 
 ```bash
 PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
@@ -365,7 +366,7 @@ For an epic, closing the last selected task is not the same as the epic being do
 2. **Epic-wide verification:** for code/docs epics, run the project's full test command and confirm exit 0. For DevOps-only epics, re-run each task's live `## Verification` and confirm rollback evidence; for mixed epics, run both.
 3. **Success criteria met:** re-read the epic description's `## Success Criteria` section (carried from the design). Confirm each criterion is satisfied by the closed tasks. If a criterion has no implementing task, that's a planning gap — surface it to the user rather than closing the epic.
 4. **Close the epic** with a summary: `arc close <epic-id> -r "Implemented: <one-line summary of what shipped>"`.
-5. **Hand off to `finish`:** the build skill does not commit/push the final state or run the session-close protocol. Invoke the `finish` skill to capture remaining work, run quality gates, and push. Work is not done until `git push` succeeds.
+5. **Hand off to `finish`:** the build skill does not commit/push the final state or run the session-close protocol. Invoke the `finish` skill to capture remaining work, run quality gates, and push. Work is not done until the selected VCS push succeeds.
 
 ## Handle Implementer Status
 
@@ -382,7 +383,7 @@ Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four
 
 ## Parallel Patch Protocol
 
-Use this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_agent(isolation="worktree")`; `arc_agent` intentionally remains sequential-only.
+Use this protocol only when `skills/arc/_vcs.md` selects Git and `pi-subagents` managed worktree mode is available. The managed handoff is Git-specific: if VCS detection selects jj, use the sequential path instead of recreating upstream's Claude-only manual jj-workspace dispatch. Do **not** use `arc_agent(isolation="worktree")`; `arc_agent` intentionally remains sequential-only.
 
 ### P1. Commit Checkpoint
 

@@ -40,6 +40,10 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
 - **Session context injection**:
   - On session start, the extension runs `arc prime` and injects its output into the system prompt as `<arc-context>`.
   - Before compaction, the extension refreshes `arc prime`.
+- **VCS-aware Git and Jujutsu guidance**:
+  - Arc workflow resources use `arc which --json` and prefer jj in colocated Git/jj repositories.
+  - Sequential builders and `/arc-finish` use jj-safe commit, bookmark, push, status, and workspace guidance when jj is selected.
+  - Managed `pi-subagents` patch isolation remains Git-worktree-only; jj repositories use sequential Arc dispatch rather than raw Git mutations.
 - **Bundled `@juicesharp/rpiv-todo` integration** (auto-installed + auto-loaded):
   - `todo` tool for managing in-session checklist items.
   - `/todos` command for a quick checklist view/workflow.
@@ -253,8 +257,8 @@ For Arc gates (especially spec compliance), use Arc specialists (`arc-spec-revie
 
 ## Execution lanes
 
-- Sequential Arc build: use when tasks overlap, dependencies are linear, or `pi-subagents` is unavailable.
-- Parallel Arc batch: use when `/arc-plan` provides a T0 foundation, file ownership matrix, parallel batch manifest, and validation matrix.
+- Sequential Arc build: use when tasks overlap, dependencies are linear, `pi-subagents` is unavailable, or VCS detection selects jj.
+- Parallel Arc batch (Git only): use when `/arc-plan` provides a T0 foundation, file ownership matrix, parallel batch manifest, and validation matrix. Pi's managed patch handoff currently depends on Git worktrees.
 - Ant Colony: future/optional lane for large exploratory work; not a replacement for Arc gates in this iteration.
 
 ## Naming differences from the Claude plugin
@@ -294,6 +298,7 @@ Not yet implemented:
 Intentionally not ported:
 
 - Claude-style team deployment. Pi does not provide Claude's persistent team/task primitives.
+- The Claude marketplace's `STACKING.md` playbook, which depends on separately shipped `git-spice` and `jj-spice` plugins. Pi Arc points users to a compatible Pi-native stacking workflow when one is installed instead of shipping broken cross-plugin links.
 
 ## Development
 

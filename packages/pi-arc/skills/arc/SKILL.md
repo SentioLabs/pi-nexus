@@ -66,8 +66,8 @@ brainstorm → plan → build (per task) → review → finish
 
 After `plan`, choose:
 - **Single-agent + subagents**: Invoke `build`. Main agent orchestrates, subagents do TDD. Best for sequential tasks.
-- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.
-- **Stacked PRs (arc + git-spice)**: When the epic is 3+ tasks with linear dependencies and each task is independently reviewable, ship as a stack of PRs instead of one. See [`STACKING.md`](../../STACKING.md) for the integration playbook (concept mapping, per-task loop, review iteration).
+- **Parallel Arc build**: For independent task batches in Git repositories, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.
+- **Stacked change requests**: For 3+ linearly dependent, independently reviewable tasks, use a compatible Pi-native stacking workflow if one is installed. This package does not bundle the Claude marketplace's `git-spice` or `jj-spice` plugins; otherwise use the normal sequential `build` path.
 
 ## Quick Start
 
@@ -179,7 +179,7 @@ arc onboard  # Get context, recover project if needed
 ```
 
 **Before ending any session:**
-Invoke the `finish` skill — it handles capturing remaining work, quality gates, arc updates, commit, and push. Work is NOT done until `git push` succeeds.
+Invoke the `finish` skill — it handles capturing remaining work, quality gates, arc updates, commit, and push. Work is NOT done until the selected VCS push succeeds.
 
 **Writing notes for resumability:**
 ```bash

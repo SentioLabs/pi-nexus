@@ -87,6 +87,10 @@ for child in list(skills_root.iterdir()):
 
 # Release metadata is managed by this npm package and Release Please.
 # Do not copy the source Claude plugin changelog or legacy version.txt.
+# The source root STACKING.md is also intentionally omitted: it depends on the
+# separately shipped Claude git-spice/jj-spice plugins. The generated Arc
+# reference is patched below to point users at an installed Pi-native stacking
+# workflow instead of shipping a broken cross-plugin playbook.
 
 for f in sorted((SRC / "commands").glob("*.md")):
     dest_name = f"arc-{f.name}"
@@ -171,6 +175,9 @@ def transform_text(text: str) -> str:
     text = text.replace("skills/brainstorm/SKILL.md", "skills/arc-brainstorm/SKILL.md")
     text = text.replace("skills/build/", "skills/arc-build/")
     text = text.replace("skills/plan/SKILL.md", "skills/arc-plan/SKILL.md")
+    # Keep generated Markdown compatible with `git diff --check` even when the
+    # source plugin contains whitespace-only separators.
+    text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
     return text
 
 for src_dir in sorted((SRC / "skills").iterdir()):
@@ -253,6 +260,30 @@ patch_file("skills/arc-review/SKILL.md", [
 ])
 
 patch_file("skills/arc-finish/SKILL.md", [
+    (
+        "**Work is NOT done until `git push` succeeds. No exceptions.**",
+        "**Work is NOT done until the selected VCS push succeeds. No exceptions.**",
+    ),
+    (
+        "Uncommitted code doesn't exist. Unpushed commits are local fiction. The remote is the source of truth.",
+        "Local-only work is not complete. The remote is the source of truth.",
+    ),
+    (
+        "    **jj:** `jj git push --bookmark <feature-bookmark>` or `jj git push -c @` to auto-create and push the current change's bookmark.",
+        "    **jj:** After `jj commit`, the completed change is `@-`. Move its feature bookmark with `jj bookmark move <feature-bookmark> --to @-`, then push it with `jj git push --bookmark <feature-bookmark>`. Do not use `jj git push -c @` here because `@` is the new empty working-copy change.",
+    ),
+    (
+        "    **jj:** Confirm the pushed bookmark equals its remote-tracking state: run `jj log -r '<bm>@origin' --no-graph` and verify it resolves and matches your local `<bm>`. The remote must be in sync with your local state.",
+        "    **jj:** Compare exact commit IDs and require equality: `LOCAL=$(jj log -r '<bm>' -T commit_id --no-graph); REMOTE=$(jj log -r '<bm>@origin' -T commit_id --no-graph); test \"$LOCAL\" = \"$REMOTE\"`. The remote must be in sync with the local bookmark.",
+    ),
+    (
+        "18. Confirm the commit:\n    ```bash\n    git log -1    # Verify latest commit is visible\n    ```",
+        "18. Confirm the commit:\n    ```bash\n    git log -1    # Verify latest commit is visible\n    ```\n    **jj:** `jj log -r @- --no-graph` verifies the completed change immediately below the new empty working-copy change.",
+    ),
+    (
+        "- Never commit with `git add -A` — stage specific files\n- Never leave unpushed commits",
+        "- When Git is selected, never commit with `git add -A` — stage specific files\n- Never leave completed work local-only; push it with the selected VCS",
+    ),
     (
         "| Session Type | Behavior |\n|-------------|----------|\n| **Single-agent** | Full protocol above |\n| **Team lead** | Verify teammate work → close arc issues → team cleanup → commit → push |\n| **Teammate** | Commit → push (team lead handles arc close and coordination) |",
         "| Session Type | Behavior |\n|-------------|----------|\n| **Single-agent** | Full protocol above |\n| **Parallel subagent patches** | Apply/review accepted patches → verify → close arc issues → commit → push |",
@@ -662,6 +693,16 @@ for f in sorted((SRC / "agents").glob("*.md")):
     text = re.sub(r"(?m)^model:\s*opus\s*$", "model: large", text)
     if f.name in {"code-reviewer.md", "devops-builder.md", "evaluator.md", "spec-reviewer.md"}:
         text = re.sub(r"(?m)^model:\s*standard\s*$", "model: large", text)
+    if f.name == "doc-writer.md":
+        text = text.replace(
+            "5. **Commit** with a conventional commit message (e.g., `docs(module): update README`)",
+            "5. **Commit** using the VCS detection from `skills/arc/_vcs.md`. If jj is detected, use `jj commit -m \"docs(module): update README\"`; in a colocated repo never use raw Git mutations. Otherwise stage only the documentation files from the task scope with `git add <files>` and run `git commit -m \"docs(module): update README\"`.",
+        )
+    if f.name == "devops-builder.md":
+        text = text.replace(
+            "- Never assume you are on a specific git branch — commit IaC changes to whatever branch you find yourself on.",
+            "- Never assume a specific VCS context. Detect it via `skills/arc/_vcs.md` and commit IaC changes using the selected branch/bookmark and VCS; in a colocated repo never use raw Git mutations.",
+        )
     if f.name == "issue-manager.md":
         text = re.sub(r"(?m)^model:\s*small\s*$", "model: nano", text)
         if "## Timing / Progress Instrumentation" not in text:
@@ -698,10 +739,60 @@ patch_file("skills/arc/_branch-check.md", [
     ),
 ])
 
+replace_section("skills/arc/_branch-check.md", "## jj repos\n\n", "\n## Why no env-var or CLI flag opt-out", """## jj repos
+
+If `skills/arc/_vcs.md` selects **jj**, inspect the working-copy change and bookmark placement before deciding whether the protected condition applies:
+
+```bash
+jj st
+jj log -r 'trunk() | @ | @-' --no-graph
+jj bookmark list
+```
+
+The protected condition applies when the session's intended change is based on trunk but is not named by a non-protected feature bookmark. If a non-protected bookmark already names the intended change, proceed. If the protected trunk bookmark itself points at a change containing session edits, do not move it automatically; choose Cancel and ask the user to recover the bookmark explicitly.
+
+For the **Switch to a feature branch** choice, preserve existing work instead of blindly starting a new change:
+
+- If the intended edits are in the current working-copy change `@`, run `jj bookmark create <name> -r @`.
+- If `@` is the fresh empty change created by `jj commit` and the completed session work is `@-`, run `jj bookmark create <name> -r @-` (or `jj bookmark move <name> --to @-` when that feature bookmark already exists).
+- If `jj st` shows unrelated changes or the correct target is ambiguous, stop and ask the user rather than guessing.
+
+Do **not** use `jj new <trunk>` as a blanket switch remedy after work exists: that creates a new child but leaves the existing edited change where it was. Do **not** move a protected bookmark backward automatically.
+
+The `ask_user_question` choice shape remains Switch / Stay / Cancel. Update its wording to say "your work is based on the `<trunk>` bookmark without a feature bookmark" rather than "you're on `<branch>`":
+
+- **Switch** → create or move only the feature bookmark as described above, then continue.
+- **Stay** → continue knowingly without a feature bookmark.
+- **Cancel** → stop the skill without committing, dispatching, or writing additional files.
+""")
+
+patch_file("skills/arc/_vcs.md", [
+    (
+        "| Push | `git push` | `jj git push --bookmark feat/x` (or `jj git push -c @` to auto-create a bookmark for the current change) |",
+        "| Push completed work | `git push` | after `jj commit`, run `jj bookmark move feat/x --to @-`, then `jj git push --bookmark feat/x` |",
+    ),
+    (
+        "| \"Up to date with origin\" gate | `git status` reports up-to-date | the bookmark equals `feat/x@origin` in `jj log` (compare local vs. remote-tracking) |",
+        "| \"Up to date with origin\" gate | `git status` reports up-to-date | compare `jj log -r feat/x -T commit_id --no-graph` with `jj log -r feat/x@origin -T commit_id --no-graph`; IDs must match |",
+    ),
+    (
+        "- `@` (the working-copy commit) *is* a commit; \"uncommitted work\" is already a change. `jj commit` finalizes it and starts a new empty `@`.",
+        "- `@` (the working-copy commit) *is* a commit; \"uncommitted work\" is already a change. `jj commit` finalizes it as `@-` and starts a new empty `@`. Move the feature bookmark to `@-` before pushing; do not auto-create a push bookmark on the new empty `@`.",
+    ),
+])
+
 patch_file("skills/arc/SKILL.md", [
     (
         "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
-        "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+        "- **Parallel Arc build**: For independent task batches in Git repositories, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+    ),
+    (
+        "- **Stacked PRs (arc + git-spice)**: When the epic is 3+ tasks with linear dependencies and each task is independently reviewable, ship as a stack of PRs instead of one. See [`STACKING.md`](../../STACKING.md) for the integration playbook (concept mapping, per-task loop, review iteration).",
+        "- **Stacked change requests**: For 3+ linearly dependent, independently reviewable tasks, use a compatible Pi-native stacking workflow if one is installed. This package does not bundle the Claude marketplace's `git-spice` or `jj-spice` plugins; otherwise use the normal sequential `build` path.",
+    ),
+    (
+        "Work is NOT done until `git push` succeeds.",
+        "Work is NOT done until the selected VCS push succeeds.",
     ),
 ])
 
@@ -945,6 +1036,38 @@ patch_file("skills/arc-build/SKILL.md", [
         "1. **All tasks closed:** `arc list --parent=<epic-id> --status=open` returns nothing.\n2. **Full suite green:** run the project's full test command (not a per-task subset) and confirm exit 0.",
         "1. **All tasks closed:** `arc list --parent=<epic-id> --json | jq '[.[] | select(.status != \"closed\")] | length'` returns `0`. Any `open`, `in_progress`, `blocked`, or `deferred` child keeps the epic open.\n2. **Epic-wide verification:** for code/docs epics, run the project's full test command and confirm exit 0. For DevOps-only epics, re-run each task's live `## Verification` and confirm rollback evidence; for mixed epics, run both.",
     ),
+    (
+        "Choose the manifest-driven parallel path first; if the batch is not ready, fall back to sequential dispatch.",
+        "Determine the repository VCS first using `skills/arc/_vcs.md`. Pi's managed `pi-subagents` patch isolation currently requires Git worktrees. If VCS detection selects jj (including colocated repositories), use sequential dispatch and jj mutations; do not invoke `worktree: true`. For Git, choose the manifest-driven parallel path first and fall back to sequential dispatch when the batch is not ready.",
+    ),
+    (
+        "Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`. Use it only when ALL of these are true:\n- `pi-subagents` loaded and the `subagent` tool is available",
+        "Parallel worktree dispatch is available **only** through an installed `pi-subagents` extension/tool, not through `arc_agent`, and only when `skills/arc/_vcs.md` selects Git. Use it only when ALL of these are true:\n- VCS detection selects Git, not jj (including colocated repositories)\n- `pi-subagents` loaded and the `subagent` tool is available",
+    ),
+    (
+        "**When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks.",
+        "**When NOT to use parallel**: VCS detection selects jj, missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks.",
+    ),
+    (
+        "Use this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_agent(isolation=\"worktree\")`; `arc_agent` intentionally remains sequential-only.",
+        "Use this protocol only when `skills/arc/_vcs.md` selects Git and `pi-subagents` managed worktree mode is available. The managed handoff is Git-specific: if VCS detection selects jj, use the sequential path instead of recreating upstream's Claude-only manual jj-workspace dispatch. Do **not** use `arc_agent(isolation=\"worktree\")`; `arc_agent` intentionally remains sequential-only.",
+    ),
+    (
+        "When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run.",
+        "When `pi-subagents` is available and `skills/arc/_vcs.md` selects Git, dispatch the evaluator through a one-task worktree-isolated parallel run.",
+    ),
+    (
+        "If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent=\"evaluator\", task=\"<filled evaluator prompt>\")`.",
+        "If VCS detection selects jj, or if `pi-subagents` / `arc-evaluator` is unavailable, fall back to sequential `arc_agent(agent=\"evaluator\", task=\"<filled evaluator prompt>\")`.",
+    ),
+    (
+        "Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify `git status --short` matches its pre-evaluation baseline before returning.",
+        "Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify the selected VCS status (`git status --short` or `jj st`) matches its pre-evaluation baseline before returning.",
+    ),
+    (
+        "Work is not done until `git push` succeeds.",
+        "Work is not done until the selected VCS push succeeds.",
+    ),
 ])
 
 patch_file("skills/arc-plan/SKILL.md", [
@@ -1140,13 +1263,13 @@ The preferred `pi-subagents` dispatch runs in a disposable git worktree. In that
 
 The bundled `arc_agent` fallback runs in the main checkout. In fallback mode:
 
-1. Record `git status --short` before touching files. If it is not clean, report `BLOCKED` instead of risking unrelated work.
+1. Determine the VCS using `skills/arc/_vcs.md`, then record its status before touching files: `git status --short` for Git or `jj st` for jj. If the selected VCS status is not clean, report `BLOCKED` instead of risking unrelated work.
 2. Track every file you create or modify.
 3. Run the evaluation.
 4. Restore modified tracked files and remove only the temporary files you created.
-5. Verify `git status --short` exactly matches the clean baseline before returning.
+5. Verify the selected VCS status exactly matches the clean baseline before returning.
 
-Never claim cleanup is unnecessary unless runtime instructions explicitly confirm a disposable worktree. Never commit evaluation artifacts.
+Never claim cleanup is unnecessary unless runtime instructions explicitly confirm a disposable Git worktree. Never commit evaluation artifacts.
 """)
 
 patch_file("agents/evaluator.md", [

@@ -168,7 +168,7 @@ If you discover issues during the gate and cannot resolve them after reasonable 
 4. **GREEN**: Write simplest code to pass → run it → confirm it passes
 5. **REFACTOR**: Clean up while tests stay green
 6. **GATE**: Run all 5 gate checks — fix issues before proceeding
-7. **Commit** with a conventional commit message (e.g., `feat(module): add X`)
+7. **Commit** using the VCS detection from `skills/arc/_vcs.md`. If jj is detected: skip `git add` (jj's working copy is auto-snapshotted) and commit with `jj commit -m "<conventional message>"`. In a colocated repo you MUST use jj, never raw `git add`/`git commit`. Otherwise use git: stage specific files with `git add <files>` (never `git add -A`) and commit with `git commit -m "<conventional message>"` (e.g., `feat(module): add X`).
 8. **Report** back with the structured format below
 
 ## Supervisor Escalation
