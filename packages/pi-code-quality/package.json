@@ -1,6 +1,6 @@
 {
   "name": "@sentiolabs/pi-code-quality",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi skills and prompts for AI slop review, PR/branch size review, and code reviewability analysis.",
   "type": "module",
   "keywords": [
@@ -51,7 +51,11 @@
     "access": "public"
   },
   "pi": {
-    "skills": ["./skills"],
-    "prompts": ["./prompts/*.md"]
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
+    ]
   }
 }
