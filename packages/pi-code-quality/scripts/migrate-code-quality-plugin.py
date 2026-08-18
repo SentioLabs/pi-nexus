@@ -123,14 +123,27 @@ def validate_source(source: Path) -> None:
         raise SystemExit(f"Invalid source plugin.json at {metadata_path}: {error}") from error
     if not isinstance(metadata, dict):
         raise SystemExit(f"Invalid source plugin.json at {metadata_path}: expected an object")
-    if metadata.get("name") != "code-quality":
-        raise SystemExit(
-            f"Source plugin.json name must be 'code-quality', got {metadata.get('name')!r}: {metadata_path}"
-        )
-    if metadata.get("license") != "MIT":
-        raise SystemExit(
-            f"Source plugin.json license must be 'MIT', got {metadata.get('license')!r}: {metadata_path}"
-        )
+    required = {"name", "version", "description", "author", "homepage", "repository", "license", "keywords"}
+    missing_fields = sorted(required - metadata.keys())
+    unknown_fields = sorted(metadata.keys() - required)
+    if missing_fields:
+        raise SystemExit(f"Source plugin.json missing required fields: {missing_fields!r}: {metadata_path}")
+    if unknown_fields:
+        raise SystemExit(f"Source plugin.json has unknown fields: {unknown_fields!r}: {metadata_path}")
+    for field in ("name", "version", "description", "homepage", "repository", "license"):
+        if not isinstance(metadata[field], str) or not metadata[field]:
+            raise SystemExit(f"Source plugin.json {field} must be a non-empty string: {metadata_path}")
+    if metadata["name"] != "code-quality":
+        raise SystemExit(f"Source plugin.json name must be 'code-quality', got {metadata['name']!r}: {metadata_path}")
+    if metadata["license"] != "MIT":
+        raise SystemExit(f"Source plugin.json license must be 'MIT', got {metadata['license']!r}: {metadata_path}")
+    author = metadata["author"]
+    if not isinstance(author, dict):
+        raise SystemExit(f"Source plugin.json author must be an object: {metadata_path}")
+    if set(author) != {"name", "url"} or not all(isinstance(author[key], str) and author[key] for key in author):
+        raise SystemExit(f"Source plugin.json author must have string name and url fields: {metadata_path}")
+    if not isinstance(metadata["keywords"], list) or not all(isinstance(keyword, str) for keyword in metadata["keywords"]):
+        raise SystemExit(f"Source plugin.json keywords must be a list of strings: {metadata_path}")
 
 
 def require_replace(text: str, old: str, new: str, context: str) -> str:
@@ -209,6 +222,35 @@ def parse_prompt_frontmatter(text: str, context: str) -> tuple[str, str]:
     return description, body
 
 
+def validate_skill_frontmatter(text: str, expected_name: str, context: str) -> str:
+    frontmatter, body = split_frontmatter(text, context)
+    entries = {}
+    active = None
+    for line in frontmatter.splitlines():
+        match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):(?:[ ](.*))?$", line)
+        if match:
+            key, value = match.groups()
+            if key in entries:
+                raise RuntimeError(f"Duplicate source skill frontmatter key while patching {context}: {key!r}")
+            if key not in {"name", "description", "license"}:
+                raise RuntimeError(f"Unsupported source skill frontmatter key while patching {context}: {key!r}")
+            entries[key] = value or ""
+            active = key
+        elif line.startswith((" ", "\t")) and active == "description" and entries[active] in {">", "|"}:
+            continue
+        else:
+            raise RuntimeError(f"Unsupported source skill frontmatter shape while patching {context}: {line!r}")
+    if entries.get("name") != expected_name:
+        raise RuntimeError(f"Source skill name must be {expected_name!r} while patching {context}")
+    if not entries.get("description"):
+        raise RuntimeError(f"Source skill description is required while patching {context}")
+    if "license" in entries and entries["license"] != "MIT":
+        raise RuntimeError(f"Source skill license must be 'MIT' while patching {context}")
+    if "license" not in entries:
+        return "---\n" + frontmatter.rstrip("\n") + "\nlicense: MIT\n---\n\n" + body
+    return text
+
+
 def add_license_frontmatter(text: str, context: str) -> str:
     if not text.startswith("---\n"):
         raise RuntimeError(f"Expected frontmatter while patching {context}")
@@ -273,7 +315,7 @@ def replace_reference_roots(text: str, context: str) -> str:
 
 def transform_deep_review(text: str) -> str:
     context = "deep-review skill"
-    text = add_license_frontmatter(text, context)
+    text = validate_skill_frontmatter(text, "deep-review", context)
     text = replace_all(
         text,
         "${CLAUDE_PLUGIN_ROOT}/skills/deep-review/references/",
@@ -542,13 +584,14 @@ def transform_deep_review(text: str) -> str:
         "3. **Interactive + PR found:** `AskUserQuestion` — post PR comment (recommended)\n"
         "   or write `DEEP_REVIEW.md`. **Interactive + no PR:** write `DEEP_REVIEW.md`\n"
         "   directly, no menu.",
-        "3. **Interactive + PR found + `gh` available/authenticated:** `ask_user_question`\n"
-        "   may offer post PR comment (recommended) or write `DEEP_REVIEW.md`. Before\n"
-        "   offering the PR-post option, require `command -v gh` and successful\n"
-        "   `gh auth status` (or an equivalent explicit availability/auth check).\n"
-        "   **Interactive + PR found but `gh` unavailable or unauthenticated:** do not\n"
-        "   offer the PR-post option; write `DEEP_REVIEW.md` or allow inline/free-form\n"
-        "   output. **Interactive + no PR:** write `DEEP_REVIEW.md` directly, no menu.",
+        "3. **Interactive + PR found + `gh` available/authenticated:** use `ask_user_question`\n"
+        "   only when the tool is available to offer post PR comment (recommended) or write\n"
+        "   `DEEP_REVIEW.md`; otherwise ask the same delivery choice in plain chat. Before\n"
+        "   offering the PR-post option, require `command -v gh` and successful `gh auth status`\n"
+        "   (or an equivalent explicit availability/auth check). **Interactive + PR found but\n"
+        "   `gh` unavailable or unauthenticated:** do not offer the PR-post option; use the\n"
+        "   available question tool or plain chat for local/inline delivery. **Interactive +\n"
+        "   no PR:** write `DEEP_REVIEW.md` directly, no menu.",
         context,
     )
     text = require_replace(
@@ -571,6 +614,13 @@ def transform_deep_review(text: str) -> str:
 
 def transform_output_actions(text: str) -> str:
     context = "deep-review output actions"
+    text = replace_all(
+        text,
+        ".headRepository.owner.login + \"/\" + .headRepository.name",
+        ".baseRepository.owner.login + \"/\" + .baseRepository.name",
+        context,
+        require_match=False,
+    )
     text = require_replace(
         text,
         "## 1. Detect interactive vs. non-interactive (CI/CD) mode\n\n"
@@ -845,7 +895,7 @@ def transform_output_actions(text: str) -> str:
 
 def transform_size_review(text: str) -> str:
     context = "size-review skill"
-    text = add_license_frontmatter(text, context)
+    text = validate_skill_frontmatter(text, "size-review", context)
     text = replace_all(
         text,
         "${CLAUDE_PLUGIN_ROOT}/skills/size-review/references/",
@@ -1103,7 +1153,7 @@ def install_generated_tree(temporary_root: Path, package_root: Path, move=rename
         for name in names:
             move(staging[name], package_root / name)
             installed.add(name)
-    except Exception as install_error:
+    except BaseException as install_error:
         rollback_errors = []
         for name in reversed(names):
             target = package_root / name

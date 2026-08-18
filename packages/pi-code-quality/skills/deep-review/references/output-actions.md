@@ -72,7 +72,7 @@ Determine whether a pull request is in scope, in priority order:
 
    ```bash
    gh pr view --json number,url,headRepository,baseRepository \
-     --jq '{number, url, repo: (.headRepository.owner.login + "/" + .headRepository.name)}' \
+     --jq '{number, url, repo: (.baseRepository.owner.login + "/" + .baseRepository.name)}' \
      2>/dev/null
    ```
 

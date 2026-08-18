@@ -381,6 +381,18 @@ const sizeReviewSkillSource = () => [
   "skill, which can drive the actual split end-to-end.",
 ].join("\n") + "\n";
 
+const pluginMetadata = (overrides = {}) => ({
+  name: "code-quality",
+  version: "0.11.0",
+  description: "fixture code-quality plugin",
+  author: { name: "SentioLabs", url: "https://example.test" },
+  homepage: "https://example.test",
+  repository: "https://example.test/repository",
+  license: "MIT",
+  keywords: ["code-quality", "code-review"],
+  ...overrides,
+});
+
 // Focused overlay-contract fixture; the maintainer real-source smoke/determinism check remains authoritative.
 const createSourceFixture = (overrides = {}) => {
   const root = mkdtempSync(path.join(os.tmpdir(), "pi-code-quality-source-"));
@@ -403,7 +415,7 @@ const createSourceFixture = (overrides = {}) => {
     "skills/deep-review/references/output-actions.md": outputActionsSource(),
     "skills/size-review/SKILL.md": sizeReviewSkillSource(),
     "skills/size-review/references/default-exclusions.md": "# Exclusions\n${CLAUDE_PLUGIN_ROOT}/skills/size-review/references/shared.md\n",
-    ".claude-plugin/plugin.json": '{"name":"code-quality","license":"MIT"}\n',
+    ".claude-plugin/plugin.json": `${JSON.stringify(overrides.pluginMetadata ?? pluginMetadata())}\n`,
   };
 
   for (const [relativePath, content] of Object.entries(files)) {
@@ -659,8 +671,8 @@ test("migration preserves source prompt descriptions and rejects unsupported pro
 test("migration fails closed for unknown source files and invalid plugin metadata", () => {
   for (const [relativePath, content, expected] of [
     ["skills/deep-review/references/new.md", "# new\n", /Unclassified source file/],
-    [".claude-plugin/plugin.json", '{"name":"not-code-quality","license":"MIT"}\n', /plugin\.json name must be/],
-    [".claude-plugin/plugin.json", '{"name":"code-quality","license":"Apache-2.0"}\n', /plugin\.json license must be/],
+    [".claude-plugin/plugin.json", `${JSON.stringify(pluginMetadata({ name: "not-code-quality" }))}\n`, /plugin\.json name must be/],
+    [".claude-plugin/plugin.json", `${JSON.stringify(pluginMetadata({ license: "Apache-2.0" }))}\n`, /plugin\.json license must be/],
   ]) {
     const source = createSourceFixture();
     const packageCopy = createTemporaryPackage();
@@ -794,5 +806,35 @@ test("rollback reports a deletion failure after restoring original resource root
   } finally {
     rmSync(generated, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("source skill frontmatter and plugin metadata schema fail closed before installation", () => {
+  const cases = [
+    ["skills/deep-review/SKILL.md", (text) => text.replace("name: deep-review", "name: renamed-review"), /skill name must be/],
+    ["skills/size-review/SKILL.md", (text) => text.replace("name: size-review", "name: renamed-size"), /skill name must be/],
+    ["skills/deep-review/SKILL.md", (text) => text.replace("description: fixture deep review skill", "unknown: value\ndescription: fixture deep review skill"), /Unsupported source skill frontmatter key/],
+    ["skills/deep-review/SKILL.md", (text) => text.replace("name: deep-review", "name: deep-review\nname: duplicate"), /Duplicate source skill frontmatter key/],
+    ["skills/size-review/SKILL.md", (text) => text.replace("description: fixture size review skill", "license: Apache-2.0\ndescription: fixture size review skill"), /skill license must be/],
+  ];
+  for (const [relative, mutate, expected] of cases) {
+    const source = createSourceFixture(); const packageCopy = createTemporaryPackage();
+    writeFixtureFile(packageCopy.root, "prompts/code-quality-review.md", "unchanged\n");
+    try {
+      const target = path.join(source, relative); writeFileSync(target, mutate(readFileSync(target, "utf8")));
+      const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+      assert.notEqual(result.status, 0); assert.match(result.stderr, expected);
+      assert.equal(readFileSync(path.join(packageCopy.root, "prompts/code-quality-review.md"), "utf8"), "unchanged\n");
+    } finally { rmSync(source, { recursive: true, force: true }); rmSync(packageCopy.root, { recursive: true, force: true }); }
+  }
+  for (const [metadata, expected] of [
+    [((value) => { delete value.version; return value; })(pluginMetadata()), /missing required fields/],
+    [{ ...pluginMetadata(), extra: true }, /unknown fields/],
+    [{ ...pluginMetadata(), keywords: "code-quality" }, /keywords must be a list of strings/],
+    [{ ...pluginMetadata(), author: "SentioLabs" }, /author must be an object/],
+  ]) {
+    const source = createSourceFixture({ pluginMetadata: metadata }); const packageCopy = createTemporaryPackage();
+    try { const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" }); assert.notEqual(result.status, 0); assert.match(result.stderr, expected); }
+    finally { rmSync(source, { recursive: true, force: true }); rmSync(packageCopy.root, { recursive: true, force: true }); }
   }
 });

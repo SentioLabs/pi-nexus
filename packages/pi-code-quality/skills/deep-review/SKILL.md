@@ -1172,13 +1172,14 @@ and fallback delivery shapes). Summary of the flow:
 2. **Detect a PR**, in priority order: explicit PR number/URL in the request →
    GitHub Actions event payload (`GITHUB_EVENT_PATH`) → `gh pr view` for the
    current branch.
-3. **Interactive + PR found + `gh` available/authenticated:** `ask_user_question`
-   may offer post PR comment (recommended) or write `DEEP_REVIEW.md`. Before
-   offering the PR-post option, require `command -v gh` and successful
-   `gh auth status` (or an equivalent explicit availability/auth check).
-   **Interactive + PR found but `gh` unavailable or unauthenticated:** do not
-   offer the PR-post option; write `DEEP_REVIEW.md` or allow inline/free-form
-   output. **Interactive + no PR:** write `DEEP_REVIEW.md` directly, no menu.
+3. **Interactive + PR found + `gh` available/authenticated:** use `ask_user_question`
+   only when the tool is available to offer post PR comment (recommended) or write
+   `DEEP_REVIEW.md`; otherwise ask the same delivery choice in plain chat. Before
+   offering the PR-post option, require `command -v gh` and successful `gh auth status`
+   (or an equivalent explicit availability/auth check). **Interactive + PR found but
+   `gh` unavailable or unauthenticated:** do not offer the PR-post option; use the
+   available question tool or plain chat for local/inline delivery. **Interactive +
+   no PR:** write `DEEP_REVIEW.md` directly, no menu.
 4. **Non-interactive:** PR found + `gh` available/authenticated → auto-post
    the PR comment, no confirmation, after the same `command -v gh` /
    `gh auth status` preflight; PR found but `gh` unavailable or
