@@ -5,6 +5,16 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+const migrationScript = fileURLToPath(new URL("../scripts/migrate-code-quality-plugin.py", import.meta.url));
+const runtimeManifest = JSON.parse(execFileSync(
+  "python3",
+  [
+    "-c",
+    "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps([target for _, target in module.RUNTIME_MANIFEST]))",
+    migrationScript,
+  ],
+  { encoding: "utf8" },
+));
 const readText = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const readJson = (path) => JSON.parse(readText(path));
 
@@ -12,7 +22,7 @@ test("package exposes code-quality skills and prompts to Pi", () => {
   const pkg = readJson("package.json");
 
   assert.equal(pkg.name, "@sentiolabs/pi-code-quality");
-  assert.equal(pkg.version, "0.1.0");
+  assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.repository.directory, "packages/pi-code-quality");
   assert.deepEqual(pkg.pi.skills, ["./skills"]);
@@ -115,12 +125,14 @@ test("prompt aliases point at canonical review skills", () => {
   const reviewPrompt = readText("prompts/code-quality-review.md");
   const sizePrompt = readText("prompts/code-quality-size.md");
   assert.match(reviewPrompt, /^---\n/);
+  assert.match(reviewPrompt, /description: .*correctness, security, best practices, idiom, and architecture\/solution-fit, plus an advisory AI-slop assessment and driver-curation verdict/);
   assert.match(reviewPrompt, /argument-hint: "\[scope\]"/);
   assert.match(reviewPrompt, /Use the `deep-review` skill/);
   assert.match(reviewPrompt, /\$ARGUMENTS/);
   assert.match(reviewPrompt, /all changes|base branch/i);
   assert.doesNotMatch(reviewPrompt, /\/code-quality:/);
   assert.match(sizePrompt, /^---\n/);
+  assert.match(sizePrompt, /description: .*preferring git-spice stacked CRs.*effort rating.*concrete stack plan/);
   assert.match(sizePrompt, /argument-hint: "\[scope\]"/);
   assert.match(sizePrompt, /Use the `size-review` skill/);
   assert.match(sizePrompt, /\$ARGUMENTS/);
@@ -147,20 +159,14 @@ test("npm pack bundles canonical review resources without maintainer or legacy f
   assert.equal(packed.length, 1);
   const paths = new Set(packed[0].files.map(({ path }) => path));
 
-  for (const path of [
-    "prompts/code-quality-review.md",
-    "prompts/code-quality-size.md",
-    "skills/deep-review/SKILL.md",
-    "skills/deep-review/references/go.md",
-    "skills/deep-review/references/output-actions.md",
-    "skills/deep-review/references/python.md",
-    "skills/deep-review/references/rust.md",
-    "skills/deep-review/references/svelte-ts.md",
-    "skills/size-review/SKILL.md",
-    "skills/size-review/references/default-exclusions.md",
-  ]) {
+  for (const path of runtimeManifest) {
     assert.equal(paths.has(path), true, `${path} should be in the package tarball`);
   }
+  assert.deepEqual(
+    [...paths].filter((path) => path.startsWith("prompts/") || path.startsWith("skills/")).sort(),
+    runtimeManifest.sort(),
+    "the tarball runtime resources must exactly match the generated manifest",
+  );
 
   assert.equal(paths.has("scripts/migrate-code-quality-plugin.py"), false);
   assert.equal(

@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = path.join(packageRoot, "scripts/migrate-code-quality-plugin.py");
+const runtimeManifest = JSON.parse(execFileSync(
+  "python3",
+  [
+    "-c",
+    "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps([target for _, target in module.RUNTIME_MANIFEST]))",
+    migrationScript,
+  ],
+  { encoding: "utf8" },
+));
 
 const writeFixtureFile = (root, relativePath, content) => {
   const target = path.join(root, relativePath);
@@ -44,12 +53,17 @@ const deepReviewSkillSource = () => [
   "",
   "# Deep Review",
   "",
+  "Perform a comprehensive code review through a 5-lens parallel architecture.",
+  "",
   "Read ${CLAUDE_PLUGIN_ROOT}/skills/deep-review/references/go.md before scanning.",
   "",
   "Specialized agents scan in parallel for correctness and quality defects, security",
   "vulnerabilities, idiom violations, and solution-fit problems, while a calibration",
   "agent scores every finding, filters false positives, and catches what the scanners",
   "missed.",
+  "",
+  "After the parallel scan, a calibration agent scores every finding on a 0-100 scale,",
+  "cross-references across lenses, and produces a filtered, verdict-bearing report.",
   "",
   "## Model Assignment",
   "",
@@ -70,6 +84,13 @@ const deepReviewSkillSource = () => [
   "legacy `.code-quality/slop-acceptances.md` (still honored so existing repos don't break).",
   "If neither exists, Phase 2 grades normally with no acceptances applied.",
   "",
+  "### Phase 1: Parallel 5-lens scan",
+  "",
+  "Launch the applicable subagents in parallel. **Tailor each lens's context bundle** to",
+  "what that lens actually needs — broadcasting the full Step 0 context to every agent",
+  "multiplies input cost by 5× without adding signal. Each lens's prompt below specifies",
+  "which context elements to include.",
+  "",
   "**Important:** Always use `general-purpose` subagents (or omit the `subagent_type` parameter).",
   "Do NOT use specialized review agents (coderabbit, feature-dev, pr-review-toolkit, etc.) --",
   "this skill provides its own complete review methodology, and specialized agents will blend",
@@ -86,6 +107,11 @@ const deepReviewSkillSource = () => [
   "#### Phase 1c: Idiom & Best Practices (model: \"opus\")",
   "#### Phase 1d: Architecture and Solution-Fit Review (model: \"fable\" if available, else \"opus\")",
   "#### Phase 1e: AI Slop & Curation Evidence (model: \"sonnet\")",
+  "",
+  "> You are a senior staff engineer performing calibration review. Your job",
+  "> is to take findings from the parallel reviewers (Correctness & Quality, Security,",
+  "> Idiom & Best Practices, Architecture and Solution-Fit, AI Slop & Curation Evidence)",
+  "> and produce a unified, calibrated assessment.",
   "",
   "### Phase 2: Calibration review (model: \"fable\" if available, else \"opus\")",
   "",
@@ -212,7 +238,25 @@ const outputActionsSource = () => [
   "",
   "## 6. Writing DEEP_REVIEW.md",
   "",
-  "Write the full markdown report.",
+  "When the user selects \"Write DEEP_REVIEW.md\" (interactive) OR when running",
+  "non-interactively with no PR detected (CI), write the full markdown report",
+  "(per the **Output Format** section of SKILL.md) to `DEEP_REVIEW.md` at the",
+  "repo root. Do not commit, do not push.",
+  "",
+  "- **Interactive:** tell the user the file was written and that it is",
+  "  currently untracked.",
+  "- **Non-interactive (CI):** also print a single-line summary to stdout —",
+  "  `deep-review: <verdict> · grade <letter> · <final_score>/100 · wrote",
+  "  DEEP_REVIEW.md` — so the workflow log captures the result. If the CI is",
+  "  expected to upload `DEEP_REVIEW.md` as a workflow artifact, the path",
+  "  should remain at the repo root unless the workflow specifies otherwise.",
+  "",
+  "If `DEEP_REVIEW.md` already exists:",
+  "",
+  "- **Interactive:** ask whether to overwrite, append, or write to a",
+  "  date-stamped filename (e.g., `DEEP_REVIEW.<YYYY-MM-DD>.md`).",
+  "- **Non-interactive:** overwrite without prompting. CI runs are expected",
+  "  to be reproducible; appending across runs would corrupt artifacts.",
   "",
   "## 7. Other delivery shapes (when the user picks \"Other\")",
   "",
@@ -354,7 +398,7 @@ const createSourceFixture = (overrides = {}) => {
     "skills/deep-review/references/output-actions.md": outputActionsSource(),
     "skills/size-review/SKILL.md": sizeReviewSkillSource(),
     "skills/size-review/references/default-exclusions.md": "# Exclusions\n${CLAUDE_PLUGIN_ROOT}/skills/size-review/references/shared.md\n",
-    ".claude-plugin/plugin.json": "{}\n",
+    ".claude-plugin/plugin.json": '{"name":"code-quality","license":"MIT"}\n',
   };
 
   for (const [relativePath, content] of Object.entries(files)) {
@@ -409,7 +453,7 @@ test("semantic patch failures abort before installing generated resources", () =
       encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Expected source text not found|Expected section markers not found/);
+    assert.match(result.stderr, /Expected (?:source text not found|section markers not found|exactly one source text occurrence)/);
     assert.equal(readFileSync(protectedPrompt, "utf8"), promptBefore);
     assert.equal(readFileSync(protectedSkill, "utf8"), skillBefore);
   } finally {
@@ -527,15 +571,15 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(sizeReview, /With a PR but `gh` unavailable or\s+unauthenticated/);
     assert.match(
       sizeReview,
-      /Include\s+`Post comment to PR #<N> \(Recommended\)`, `Write SIZE_REVIEW\.md`, and\s+`Return inline`/,
+      /offer\s+`Post comment to PR #<N> \(Recommended\)`, `Write SIZE_REVIEW\.md`,\s+and `Return inline`/,
     );
     assert.match(sizeReview, /do not\s+offer the PR-post option/);
-    assert.match(sizeReview, /write `SIZE_REVIEW\.md`, print the one-line summary/);
+    assert.match(sizeReview, /write `SIZE_REVIEW\.md`,\s+print the full report to stdout, then print/);
     assert.match(sizeReview, /do not invoke `gh`/);
     assert.match(sizeReview, /PR\s+delivery is unavailable/);
     assert.match(sizeReview, /preflight passes\s+but the actual `gh pr comment` post fails/);
     assert.doesNotMatch(sizeReview, /PR in scope →\s*post the report as a PR comment automatically/);
-    assert.doesNotMatch(sizeReview, /In interactive mode, use `ask_user_question` with the package `questions\[\]`/);
+    assert.match(sizeReview, /use `ask_user_question` with the `questions\[\]` JSON shape only when that tool is available/i);
 
     const sizeReviewTemplate = sizeReview.match(
       /```markdown\n([\s\S]*?)\n```\n\nFor PRs under threshold:/,
@@ -549,7 +593,7 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(optionalGitSpiceFlow, /gs stack submit\n\\`\\`\\`/);
     assert.doesNotMatch(optionalGitSpiceFlow, /\n```(?:bash)?\n/);
 
-    const alternateDelivery = outputActions.match(/## 7\. Other delivery shapes[\s\S]*/)?.[0];
+    const alternateDelivery = outputActions.match(/## 7\. Free-form escape-hatch delivery shapes[\s\S]*/)?.[0];
     assert.ok(alternateDelivery, "alternate delivery instructions should be generated");
     assert.match(alternateDelivery, /Before every GitHub-backed alternate delivery/);
     assert.match(alternateDelivery, /GitHub issues/);
@@ -564,6 +608,169 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(alternateDelivery, /do not silently fall back/i);
   } finally {
     rmSync(source, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("migration preserves source prompt descriptions and rejects unsupported prompt frontmatter", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  try {
+    const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(path.join(packageCopy.root, "prompts/code-quality-review.md"), "utf8"), /description: source prompt/);
+
+    const reviewPrompt = path.join(source, "commands/review.md");
+    writeFileSync(reviewPrompt, readFileSync(reviewPrompt, "utf8").replace("description: source prompt", "description: source prompt\nfuture-key: future value"));
+    const protectedPrompt = path.join(packageCopy.root, "prompts/code-quality-review.md");
+    const before = readFileSync(protectedPrompt, "utf8");
+    const invalid = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, /Unsupported source prompt frontmatter key/);
+    assert.equal(readFileSync(protectedPrompt, "utf8"), before);
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("migration fails closed for unknown source files and invalid plugin metadata", () => {
+  for (const [relativePath, content, expected] of [
+    ["skills/deep-review/references/new.md", "# new\n", /Unclassified source file/],
+    [".claude-plugin/plugin.json", '{"name":"not-code-quality","license":"MIT"}\n', /plugin\.json name must be/],
+    [".claude-plugin/plugin.json", '{"name":"code-quality","license":"Apache-2.0"}\n', /plugin\.json license must be/],
+  ]) {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const protectedPrompt = path.join(packageCopy.root, "prompts/code-quality-review.md");
+    writeFixtureFile(packageCopy.root, "prompts/code-quality-review.md", "unchanged\n");
+    try {
+      writeFixtureFile(source, relativePath, content);
+      const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+      assert.equal(readFileSync(protectedPrompt, "utf8"), "unchanged\n");
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+      rmSync(packageCopy.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("duplicate or drifted wholesale source sections abort before installation", () => {
+  for (const [file, needle, injection, expected] of [
+    ["skills/deep-review/SKILL.md", "| Step 0 | Scope | Sonnet |", "\nnew source model assignment line", /Unexpected source body drift/],
+    ["skills/deep-review/references/output-actions.md", "Legacy interactive delivery instructions.", "\nnew source delivery line", /Unexpected source body drift/],
+    ["skills/deep-review/references/output-actions.md", "Legacy PR posting instructions.", "\nnew source posting line", /Unexpected source body drift/],
+    ["commands/review.md", "Run the `deep-review` skill against the specified target.", "\nRun the `deep-review` skill against the specified target.", /Expected exactly one source text occurrence/],
+    ["skills/deep-review/SKILL.md", "## Workflow", "\n## Model Assignment\n\nduplicate", /Expected exactly one section start marker/],
+  ]) {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const protectedSkill = path.join(packageCopy.root, "skills/deep-review/SKILL.md");
+    writeFixtureFile(packageCopy.root, "skills/deep-review/SKILL.md", "unchanged\n");
+    try {
+      const sourcePath = path.join(source, file);
+      writeFileSync(sourcePath, readFileSync(sourcePath, "utf8").replace(needle, `${needle}${injection}`));
+      const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+      assert.equal(readFileSync(protectedSkill, "utf8"), "unchanged\n");
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+      rmSync(packageCopy.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("generated delivery contracts use a guarded question schema and neutral execution wording", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  try {
+    const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const skill = readFileSync(path.join(packageCopy.root, "skills/deep-review/SKILL.md"), "utf8");
+    const actions = readFileSync(path.join(packageCopy.root, "skills/deep-review/references/output-actions.md"), "utf8");
+    const size = readFileSync(path.join(packageCopy.root, "skills/size-review/SKILL.md"), "utf8");
+
+    const questionExample = actions.match(/```json\n([\s\S]*?)\n```/)?.[1];
+    assert.ok(questionExample);
+    assert.doesNotMatch(questionExample, /"id"\s*:/);
+    assert.match(actions, /only when that tool is available/i);
+    assert.match(actions, /plain chat|conversational fallback/i);
+    assert.match(actions, /tool supplies `Type something\.`\s*\/\s*`Chat about this`/i);
+    assert.doesNotMatch(actions, /picks "Other"|"Other" free-form input|automatically appends an \*\*"Other"\*\*/i);
+    assert.match(actions, /## 7\. Free-form escape-hatch delivery shapes/);
+    assert.match(actions, /5-lens scan \+ calibration/);
+    assert.match(actions, /PR was detected but `gh` is unavailable or unauthenticated/i);
+    assert.match(actions, /Do not commit, do not push/);
+    assert.match(actions, /overwrite without prompting/i);
+    assert.match(size, /only when that tool is available/i);
+    assert.match(size, /plain chat|conversational fallback/i);
+    assert.match(size, /write `SIZE_REVIEW\.md`, print the full report to stdout, then print/i);
+    assert.match(size, /`<user>\/size-review` branch/i);
+    assert.doesNotMatch(skill, /5-lens parallel architecture|After the parallel scan|Launch the applicable subagents in parallel|parallel reviewers/);
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("fixture regeneration is byte-for-byte deterministic across two runs", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const runtimeFiles = runtimeManifest;
+  try {
+    const first = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.equal(first.status, 0, first.stderr);
+    const firstBytes = new Map(runtimeFiles.map((relative) => [relative, readFileSync(path.join(packageCopy.root, relative))]));
+    const second = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.equal(second.status, 0, second.stderr);
+    for (const [relative, bytes] of firstBytes) {
+      assert.deepEqual(readFileSync(path.join(packageCopy.root, relative)), bytes, relative);
+    }
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("rollback reports a deletion failure after restoring original resource roots", () => {
+  const packageCopy = createTemporaryPackage();
+  const generated = mkdtempSync(path.join(os.tmpdir(), "pi-code-quality-generated-"));
+  writeFixtureFile(packageCopy.root, "prompts/sentinel.txt", "original prompts\n");
+  writeFixtureFile(packageCopy.root, "skills/sentinel.txt", "original skills\n");
+  writeFixtureFile(generated, "prompts/new.txt", "new prompts\n");
+  writeFixtureFile(generated, "skills/new.txt", "new skills\n");
+  const probe = [
+    "import importlib.util, shutil, sys",
+    "from pathlib import Path",
+    "script, package_root, generated = map(Path, sys.argv[1:])",
+    "spec = importlib.util.spec_from_file_location('migration', script)",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "failed = False",
+    "def move_with_second_swap_failure(source, target):",
+    "    source, target = Path(source), Path(target)",
+    "    if source.name.startswith('.skills.staging-') and target == package_root / 'skills':",
+    "        raise OSError('simulated skills swap failure')",
+    "    source.rename(target)",
+    "def remove_with_one_failure(target):",
+    "    global failed",
+    "    if target == package_root / 'prompts' and not failed:",
+    "        failed = True",
+    "        raise OSError('simulated prompt removal failure')",
+    "    shutil.rmtree(target)",
+    "module.install_generated_tree(generated, package_root, move=move_with_second_swap_failure, remove=remove_with_one_failure)",
+  ].join("\n");
+  try {
+    const result = spawnSync("python3", ["-c", probe, packageCopy.script, packageCopy.root, generated], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Failed to roll back generated resource installation: simulated prompt removal failure/);
+    assert.equal(readFileSync(path.join(packageCopy.root, "prompts/sentinel.txt"), "utf8"), "original prompts\n");
+    assert.equal(readFileSync(path.join(packageCopy.root, "skills/sentinel.txt"), "utf8"), "original skills\n");
+  } finally {
+    rmSync(generated, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });
   }
 });

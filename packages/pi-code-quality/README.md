@@ -77,5 +77,6 @@ Source checkouts of the `pi-nexus` monorepo include a repo-local maintainer skil
 ```
 
 ```bash
-python3 scripts/migrate-code-quality-plugin.py ~/path/to/claude-marketplace/plugins/code-quality
+# From the pi-nexus repository root:
+python3 packages/pi-code-quality/scripts/migrate-code-quality-plugin.py ~/path/to/claude-marketplace/plugins/code-quality
 ```

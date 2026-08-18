@@ -16,7 +16,9 @@ license: MIT
 
 # Deep Review
 
-Perform a comprehensive code review through a 5-lens parallel architecture.
+Perform a comprehensive code review through five independent lens passes.
+Use parallel-capable execution when available, with the same methodology run
+sequentially when delegation is unavailable.
 Generic workers can scan in parallel for correctness and quality defects, security
 vulnerabilities, idiom violations, and solution-fit problems when a parallel
 task/subagent tool is available. Otherwise, run the same lenses sequentially with
@@ -56,7 +58,7 @@ concerns so each agent can focus deeply:
   detection of AI-authorship signals and collection of curation evidence. Kept
   separate so authorship speculation never contaminates the four review lenses.
 
-After the parallel scan, a calibration agent scores every finding on a 0-100 scale,
+After the lens passes, a calibration pass scores every finding on a 0-100 scale,
 cross-references across lenses, and produces a filtered, verdict-bearing report.
 
 ## Execution Model and Model Tier Intent
@@ -242,12 +244,14 @@ is auditable rather than buried inside one orchestrator turn.
 
 ---
 
-### Phase 1: Parallel 5-lens scan
+### Phase 1: Five independent lens passes
 
-Launch the applicable subagents in parallel. **Tailor each lens's context bundle** to
-what that lens actually needs — broadcasting the full Step 0 context to every agent
-multiplies input cost by 5× without adding signal. Each lens's prompt below specifies
-which context elements to include.
+When a generic parallel task/subagent tool is available, run the applicable lens
+passes concurrently. Otherwise, run the exact same lens prompts sequentially with
+separated outputs. **Tailor each lens's context bundle** to what that lens actually
+needs — broadcasting the full Step 0 context to every worker multiplies input cost
+by 5× without adding signal. Each lens's prompt below specifies which context
+elements to include.
 
 **Important:** Use generic workers when delegation exists, or omit any worker-type
 selection parameter. This skill provides its own complete review methodology, so do
@@ -630,7 +634,7 @@ and the curation evidence bundle.
 
 > You are a senior staff engineer performing calibration review. You are fair, precise,
 > and allergic to false positives -- and equally allergic to false negatives. Your job
-> is to take findings from the parallel reviewers (Correctness & Quality, Security,
+> is to take findings from the independent lens reviewers (Correctness & Quality, Security,
 > Idiom & Best Practices, Architecture and Solution-Fit, AI Slop & Curation Evidence)
 > and produce a unified, calibrated assessment.
 >

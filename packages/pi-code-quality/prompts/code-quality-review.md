@@ -1,5 +1,5 @@
 ---
-description: Run a deep multi-lens code review on files, directories, PRs, or all changes versus the base branch
+description: Run a deep code review on files, directories, PRs, or the full codebase — correctness, security, best practices, idiom, and architecture/solution-fit, plus an advisory AI-slop assessment and driver-curation verdict
 argument-hint: "[scope]"
 ---
 

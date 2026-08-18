@@ -1,5 +1,5 @@
 ---
-description: Run a PR/branch size review to decide if the change should be split into multiple PRs
+description: Run a PR/branch size review to decide if the change should be split into multiple PRs (preferring git-spice stacked CRs), with effort rating and a concrete stack plan
 argument-hint: "[scope]"
 ---
 

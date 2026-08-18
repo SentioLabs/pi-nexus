@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import atexit
+import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
@@ -12,19 +14,38 @@ DEFAULT_SOURCE_CANDIDATES = (
     Path.home() / "devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/code-quality",
 )
 
-REQUIRED_SOURCE_PATHS = (
-    "commands/review.md",
-    "commands/size.md",
-    "skills/deep-review/SKILL.md",
-    "skills/deep-review/references/go.md",
-    "skills/deep-review/references/python.md",
-    "skills/deep-review/references/rust.md",
-    "skills/deep-review/references/svelte-ts.md",
-    "skills/deep-review/references/output-actions.md",
-    "skills/size-review/SKILL.md",
-    "skills/size-review/references/default-exclusions.md",
-    ".claude-plugin/plugin.json",
+RUNTIME_MANIFEST = (
+    ("commands/review.md", "prompts/code-quality-review.md"),
+    ("commands/size.md", "prompts/code-quality-size.md"),
+    ("skills/deep-review/SKILL.md", "skills/deep-review/SKILL.md"),
+    ("skills/deep-review/references/go.md", "skills/deep-review/references/go.md"),
+    ("skills/deep-review/references/output-actions.md", "skills/deep-review/references/output-actions.md"),
+    ("skills/deep-review/references/python.md", "skills/deep-review/references/python.md"),
+    ("skills/deep-review/references/rust.md", "skills/deep-review/references/rust.md"),
+    ("skills/deep-review/references/svelte-ts.md", "skills/deep-review/references/svelte-ts.md"),
+    ("skills/size-review/SKILL.md", "skills/size-review/SKILL.md"),
+    ("skills/size-review/references/default-exclusions.md", "skills/size-review/references/default-exclusions.md"),
 )
+REQUIRED_SOURCE_PATHS = tuple(source for source, _ in RUNTIME_MANIFEST) + (".claude-plugin/plugin.json",)
+INTENTIONALLY_IGNORED_SOURCE_PATHS = ("CHANGELOG.md", "version.txt")
+SOURCE_METADATA_PATH = ".claude-plugin/plugin.json"
+
+# Sections replaced wholesale must match an explicitly reviewed source body. The
+# fixture digests are retained only for the self-contained overlay-contract test.
+REPLACED_SECTION_DIGESTS = {
+    "deep-review model assignment": {
+        "714aa2ec20e7b189b534619b62f41907c38e34d16f88838acbd89d342870d3e1",
+        "9a24c926519dd11530443564d10c22f5f6d170960fcbaef2a3a1743b6ab2442b",
+    },
+    "deep-review output actions section 3": {
+        "4a2c90334e52080c37d92fcc3a36771c6b293d0ed6b6df98ab79ccb65960f657",
+        "ee31e5398d1a68b7165b67def73976ce699801f48208144500f8c0ab3f4ce0c9",
+    },
+    "deep-review output actions section 4": {
+        "8ab1767a533cc561ddcdf4fc7167723415db9efcf8894c5a4e015389df8af333",
+        "ca176ffaf05d7488b35dcc8cbe59381aa4e13cf05dc6e437bcd3082902dd1986",
+    },
+}
 
 FORBIDDEN_GENERATED = (
     "${CLAUDE_PLUGIN_ROOT}",
@@ -41,14 +62,12 @@ FORBIDDEN_GENERATED = (
 
 PROMPT_CONFIG = {
     "review": {
-        "description": "Run a deep multi-lens code review on files, directories, PRs, or all changes versus the base branch",
         "title": "# Deep Review",
         "skill": "deep-review",
         "source_command": "/code-quality:review",
         "target_command": "/code-quality-review",
     },
     "size": {
-        "description": "Run a PR/branch size review to decide if the change should be split into multiple PRs",
         "title": "# Size Review",
         "skill": "size-review",
         "source_command": "/code-quality:size",
@@ -87,32 +106,107 @@ def validate_source(source: Path) -> None:
             f"Missing expected paths:\n{details}"
         )
 
+    expected = set(REQUIRED_SOURCE_PATHS) | set(INTENTIONALLY_IGNORED_SOURCE_PATHS)
+    actual = {path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file()}
+    unclassified = sorted(actual - expected)
+    if unclassified:
+        details = "\n".join(f"- {relative}" for relative in unclassified)
+        raise SystemExit(
+            "Unclassified source file(s) would be omitted from pi-code-quality generation:\n"
+            f"{details}"
+        )
+
+    metadata_path = source / SOURCE_METADATA_PATH
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf8"))
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"Invalid source plugin.json at {metadata_path}: {error}") from error
+    if not isinstance(metadata, dict):
+        raise SystemExit(f"Invalid source plugin.json at {metadata_path}: expected an object")
+    if metadata.get("name") != "code-quality":
+        raise SystemExit(
+            f"Source plugin.json name must be 'code-quality', got {metadata.get('name')!r}: {metadata_path}"
+        )
+    if metadata.get("license") != "MIT":
+        raise SystemExit(
+            f"Source plugin.json license must be 'MIT', got {metadata.get('license')!r}: {metadata_path}"
+        )
+
 
 def require_replace(text: str, old: str, new: str, context: str) -> str:
-    if old not in text:
-        raise RuntimeError(f"Expected source text not found while patching {context}: {old[:120]!r}")
-    return text.replace(old, new)
-
-
-def replace_section(text: str, start_marker: str, end_marker: str, replacement: str, context: str) -> str:
-    try:
-        start = text.index(start_marker)
-        end = text.index(end_marker, start)
-    except ValueError as error:
+    occurrences = text.count(old)
+    if occurrences != 1:
         raise RuntimeError(
-            f"Expected section markers not found while patching {context}: "
-            f"{start_marker!r} -> {end_marker!r}"
-        ) from error
+            f"Expected exactly one source text occurrence while patching {context}, found {occurrences}: {old[:120]!r}"
+        )
+    return text.replace(old, new, 1)
+
+
+def replace_all(text: str, old: str, new: str, context: str, *, require_match: bool = True) -> str:
+    occurrences = text.count(old)
+    if occurrences == 0 and require_match:
+        raise RuntimeError(f"Expected source text not found while patching {context}: {old[:120]!r}")
+    result = text.replace(old, new)
+    if old in result:
+        raise RuntimeError(f"Source text remained after lexical replacement in {context}: {old[:120]!r}")
+    return result
+
+
+def replace_section(
+    text: str,
+    start_marker: str,
+    end_marker: str,
+    replacement: str,
+    context: str,
+    expected_digests: set[str] | None = None,
+) -> str:
+    starts = text.count(start_marker)
+    ends = text.count(end_marker)
+    if starts != 1:
+        raise RuntimeError(f"Expected exactly one section start marker while patching {context}, found {starts}: {start_marker!r}")
+    if ends != 1:
+        raise RuntimeError(f"Expected exactly one section end marker while patching {context}, found {ends}: {end_marker!r}")
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    body = text[start:end]
+    if expected_digests and hashlib.sha256(body.encode("utf8")).hexdigest() not in expected_digests:
+        raise RuntimeError(
+            f"Unexpected source body drift in {context}; review and update the exact section guard before regenerating"
+        )
     return text[:start] + replacement + text[end:]
 
 
-def strip_frontmatter(text: str, context: str) -> str:
+def split_frontmatter(text: str, context: str) -> tuple[str, str]:
     if not text.startswith("---\n"):
         raise RuntimeError(f"Expected frontmatter while patching {context}")
     end = text.find("\n---\n", 4)
     if end == -1:
         raise RuntimeError(f"Expected closing frontmatter delimiter while patching {context}")
-    return text[end + len("\n---\n") :].lstrip("\n")
+    return text[4:end], text[end + len("\n---\n") :].lstrip("\n")
+
+
+def strip_frontmatter(text: str, context: str) -> str:
+    return split_frontmatter(text, context)[1]
+
+
+def parse_prompt_frontmatter(text: str, context: str) -> tuple[str, str]:
+    frontmatter, body = split_frontmatter(text, context)
+    lines = frontmatter.splitlines()
+    if len(lines) != 1:
+        unsupported = [line.partition(":")[0] for line in lines if not line.startswith("description: ")]
+        if unsupported:
+            raise RuntimeError(f"Unsupported source prompt frontmatter key while patching {context}: {unsupported[0]!r}")
+        raise RuntimeError(
+            f"Unsupported source prompt frontmatter shape while patching {context}; only one scalar description is supported"
+        )
+    if not lines[0].startswith("description: "):
+        raise RuntimeError(
+            f"Unsupported source prompt frontmatter shape while patching {context}; only one scalar description is supported"
+        )
+    description = lines[0].removeprefix("description: ").strip()
+    if not description:
+        raise RuntimeError(f"Source prompt description is empty while patching {context}")
+    return description, body
 
 
 def add_license_frontmatter(text: str, context: str) -> str:
@@ -135,7 +229,7 @@ def transform_prompt(source_name: str, text: str) -> str:
     if source_name not in PROMPT_CONFIG:
         raise RuntimeError(f"Unknown prompt source: {source_name}")
     config = PROMPT_CONFIG[source_name]
-    body = strip_frontmatter(text, f"{source_name} prompt")
+    description, body = parse_prompt_frontmatter(text, f"{source_name} prompt")
     title = config["title"]
     first_line, separator, remainder = body.partition("\n")
     if first_line != title:
@@ -148,7 +242,7 @@ def transform_prompt(source_name: str, text: str) -> str:
         f"Use the `{config['skill']}` skill against the specified target.",
         f"{source_name} prompt invocation",
     )
-    body = require_replace(
+    body = replace_all(
         body,
         config["source_command"],
         config["target_command"],
@@ -158,7 +252,7 @@ def transform_prompt(source_name: str, text: str) -> str:
         raise RuntimeError(f"Unexpected pre-existing $ARGUMENTS marker while patching {source_name} prompt")
     return (
         "---\n"
-        f"description: {config['description']}\n"
+        f"description: {description}\n"
         "argument-hint: \"[scope]\"\n"
         "---\n\n"
         f"{body.rstrip()}\n\n"
@@ -173,17 +267,33 @@ def replace_reference_roots(text: str, context: str) -> str:
     )
     for old, new in replacements:
         if old in text:
-            text = text.replace(old, new)
+            text = replace_all(text, old, new, context)
     return text
 
 
 def transform_deep_review(text: str) -> str:
     context = "deep-review skill"
     text = add_license_frontmatter(text, context)
-    text = require_replace(
+    text = replace_all(
         text,
         "${CLAUDE_PLUGIN_ROOT}/skills/deep-review/references/",
         "references/",
+        context,
+    )
+    text = require_replace(
+        text,
+        "Perform a comprehensive code review through a 5-lens parallel architecture.",
+        "Perform a comprehensive code review through five independent lens passes.\n"
+        "Use parallel-capable execution when available, with the same methodology run\n"
+        "sequentially when delegation is unavailable.",
+        context,
+    )
+    text = require_replace(
+        text,
+        "After the parallel scan, a calibration agent scores every finding on a 0-100 scale,\n"
+        "cross-references across lenses, and produces a filtered, verdict-bearing report.",
+        "After the lens passes, a calibration pass scores every finding on a 0-100 scale,\n"
+        "cross-references across lenses, and produces a filtered, verdict-bearing report.",
         context,
     )
     text = require_replace(
@@ -240,6 +350,7 @@ def transform_deep_review(text: str) -> str:
         "often needs to explain architectural reasoning. Phase 2 calibration may run up\n"
         "to 10,000 tokens because it covers all lenses plus cross-lens analysis.\n",
         context,
+        REPLACED_SECTION_DIGESTS["deep-review model assignment"],
     )
     text = require_replace(
         text,
@@ -259,6 +370,22 @@ def transform_deep_review(text: str) -> str:
         "If `.code-quality/review-acceptances.md` exists at the repo root, read it and store the\n"
         "verbatim contents alongside the rest of Step 0 output. If it is absent, Phase 2 grades\n"
         "normally with no acceptances applied.",
+        context,
+    )
+    text = require_replace(
+        text,
+        "### Phase 1: Parallel 5-lens scan\n\n"
+        "Launch the applicable subagents in parallel. **Tailor each lens's context bundle** to\n"
+        "what that lens actually needs — broadcasting the full Step 0 context to every agent\n"
+        "multiplies input cost by 5× without adding signal. Each lens's prompt below specifies\n"
+        "which context elements to include.",
+        "### Phase 1: Five independent lens passes\n\n"
+        "When a generic parallel task/subagent tool is available, run the applicable lens\n"
+        "passes concurrently. Otherwise, run the exact same lens prompts sequentially with\n"
+        "separated outputs. **Tailor each lens's context bundle** to what that lens actually\n"
+        "needs — broadcasting the full Step 0 context to every worker multiplies input cost\n"
+        "by 5× without adding signal. Each lens's prompt below specifies which context\n"
+        "elements to include.",
         context,
     )
     text = require_replace(
@@ -315,6 +442,14 @@ def transform_deep_review(text: str) -> str:
         text,
         "#### Phase 1e: AI Slop & Curation Evidence (model: \"sonnet\")",
         "#### Phase 1e: AI Slop & Curation Evidence (standard-tier intent)",
+        context,
+    )
+    text = require_replace(
+        text,
+        "is to take findings from the parallel reviewers (Correctness & Quality, Security,\n"
+        "> Idiom & Best Practices, Architecture and Solution-Fit, AI Slop & Curation Evidence)",
+        "is to take findings from the independent lens reviewers (Correctness & Quality, Security,\n"
+        "> Idiom & Best Practices, Architecture and Solution-Fit, AI Slop & Curation Evidence)",
         context,
     )
     text = require_replace(
@@ -462,7 +597,7 @@ def transform_output_actions(text: str) -> str:
         "## 1. Detect interactive vs. non-interactive (CI/CD) mode\n\n"
         "The skill runs in two contexts:\n\n"
         "- **Interactive** — a human is in the loop in a Pi session or IDE extension.\n"
-        "  `ask_user_question` works.\n"
+        "  Use `ask_user_question` only when the tool is available.\n"
         "- **Non-interactive** — running headless in CI/CD, a scheduled job, or automation.\n"
         "  `ask_user_question` has no human to answer it; either it errors or it stalls\n"
         "  the job.\n\n"
@@ -521,26 +656,28 @@ def transform_output_actions(text: str) -> str:
         "## 3. Ask the user (interactive mode only)\n\n"
         "**Skip this section entirely in non-interactive mode** (per §1). In CI,\n"
         "post the PR comment via §4 only when a PR was detected and GitHub delivery\n"
-        "preflight passes. If a PR was detected but `gh` is unavailable or\n"
-        "unauthenticated, write `DEEP_REVIEW.md`, print the one-line summary, and\n"
+        "preflight passes. If a PR was detected but `gh` is unavailable or unauthenticated,\n"
+        "write `DEEP_REVIEW.md`, print the one-line summary, and\n"
         "surface that PR delivery was unavailable.\n\n"
-        "In interactive mode, use the `ask_user_question` tool. When a PR was\n"
-        "detected, first verify GitHub delivery availability:\n\n"
+        "In interactive mode, use `ask_user_question` with the `questions[]` JSON\n"
+        "shape only when that tool is available. If it is unavailable, use a plain-chat\n"
+        "conversational fallback: ask the user how to deliver the report, or return it\n"
+        "inline when no response is needed. When a PR was detected, first verify GitHub\n"
+        "delivery availability:\n\n"
         "```bash\n"
         "command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1\n"
         "```\n\n"
         "An equivalent explicit availability/auth check is acceptable. If this\n"
         "preflight fails, **Do not offer the PR-post option**. Offer\n"
-        "`Write DEEP_REVIEW.md` and `Return inline` (or use the package free-form\n"
-        "escape hatches), and tell the user GitHub PR delivery is unavailable or\n"
-        "unauthenticated.\n\n"
-        "**PR detected and GitHub delivery available — present two options using\n"
-        "the package `questions[]` shape:**\n\n"
+        "`Write DEEP_REVIEW.md` and `Return inline` through the available question\n"
+        "tool or the plain-chat conversational fallback, and tell the user GitHub PR\n"
+        "delivery is unavailable or unauthenticated.\n\n"
+        "**PR detected and GitHub delivery available — when `ask_user_question` is\n"
+        "available, present two options using its `questions[]` shape:**\n\n"
         "```json\n"
         "{\n"
         "  \"questions\": [\n"
         "    {\n"
-        "      \"id\": \"delivery\",\n"
         "      \"question\": \"How would you like to surface these findings?\",\n"
         "      \"header\": \"Output\",\n"
         "      \"options\": [\n"
@@ -558,22 +695,23 @@ def transform_output_actions(text: str) -> str:
         "}\n"
         "```\n\n"
         "Use 2-4 concise options. Mark the PR option as `(Recommended)` only when\n"
-        "a PR is detected and GitHub delivery is available. The package provides the\n"
-        "`Type something.` and `Chat about this` escape hatches; do not add manual\n"
-        "pseudo-options for those choices.\n\n"
+        "a PR is detected and GitHub delivery is available. The `ask_user_question`\n"
+        "tool supplies `Type something.` / `Chat about this` free-form escape hatches;\n"
+        "pi-code-quality does not bundle that tool, so do not add manual pseudo-options\n"
+        "or claim the package supplies them.\n\n"
         "**No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and\n"
         "tell the user: \"No open PR found for this branch — wrote findings to\n"
         "`DEEP_REVIEW.md` (untracked).\" If the user wants something else they can\n"
-        "ask in their next turn. Do not present a 1-option menu; the question tool\n"
-        "requires at least 2 options and a single-choice ask is friction without\n"
-        "information.\n\n"
-        "If the user uses the free-form escape hatch, parse their request. Common\n"
-        "requests to handle:\n\n"
+        "ask in their next turn. Do not present a 1-option menu; when the question\n"
+        "tool is unavailable, use the plain-chat conversational fallback instead.\n\n"
+        "If the user makes a free-form escape-hatch request, parse it. Common requests\n"
+        "to handle:\n\n"
         "- Review branch + markdown — see §7\n"
         "- GitHub issues for each confirmed finding — see §7\n"
         "- Inline review comments at specific lines — see §7\n"
         "- Print to terminal only — just emit the markdown report and exit\n",
         context,
+        REPLACED_SECTION_DIGESTS["deep-review output actions section 3"],
     )
     text = replace_section(
         text,
@@ -624,15 +762,46 @@ def transform_output_actions(text: str) -> str:
         "posted comment — links to untracked paths 404 from the PR view. Attribution\n"
         "should be a plain `<sub>` footer with no links.\n",
         context,
+        REPLACED_SECTION_DIGESTS["deep-review output actions section 4"],
+    )
+    text = require_replace(
+        text,
+        "When the user selects \"Write DEEP_REVIEW.md\" (interactive) OR when running\n"
+        "non-interactively with no PR detected (CI), write the full markdown report\n"
+        "(per the **Output Format** section of SKILL.md) to `DEEP_REVIEW.md` at the\n"
+        "repo root. Do not commit, do not push.",
+        "When the user selects \"Write DEEP_REVIEW.md\" (interactive), when no PR is\n"
+        "detected non-interactively, **or when a PR was detected but `gh` is unavailable or unauthenticated**,\n"
+        "write the full markdown report (per the **Output Format**\n"
+        "section of SKILL.md) to `DEEP_REVIEW.md` at the repo root. Do not commit, do not push.\n"
+        "The unavailable/unauthenticated-`gh` path is a neutral local-report\n"
+        "fallback, not a failed PR-post attempt.",
+        context,
+    )
+    text = require_replace(
+        text,
+        "- **Non-interactive (CI):** also print a single-line summary to stdout —\n"
+        "  `deep-review: <verdict> · grade <letter> · <final_score>/100 · wrote\n"
+        "  DEEP_REVIEW.md` — so the workflow log captures the result. If the CI is\n"
+        "  expected to upload `DEEP_REVIEW.md` as a workflow artifact, the path\n"
+        "  should remain at the repo root unless the workflow specifies otherwise.",
+        "- **Non-interactive (CI):** also print a single-line summary to stdout —\n"
+        "  `deep-review: <verdict> · grade <letter> · <final_score>/100 · wrote\n"
+        "  DEEP_REVIEW.md` — so the workflow log captures the result. When this followed\n"
+        "  a PR detection with unavailable or unauthenticated `gh`, also surface that PR\n"
+        "  delivery was unavailable. If the CI is expected to upload `DEEP_REVIEW.md` as\n"
+        "  a workflow artifact, the path should remain at the repo root unless the\n"
+        "  workflow specifies otherwise.",
+        context,
     )
     text = require_replace(
         text,
         "## 7. Other delivery shapes (when the user picks \"Other\")\n\n"
         "These are fallbacks — only use when the user explicitly asks via the\n"
         "\"Other\" free-form input.\n\n",
-        "## 7. Other delivery shapes (when the user picks \"Other\")\n\n"
-        "These are fallbacks — only use when the user explicitly asks via the\n"
-        "\"Other\" free-form input.\n\n"
+        "## 7. Free-form escape-hatch delivery shapes\n\n"
+        "These are fallbacks — only use when the user explicitly makes a free-form\n"
+        "escape-hatch request through an available question tool or plain chat.\n\n"
         "### GitHub-backed alternate delivery preflight\n\n"
         "Before every GitHub-backed alternate delivery — creating GitHub issues,\n"
         "posting inline review comments with `gh api`, or a combined action that\n"
@@ -663,15 +832,21 @@ def transform_output_actions(text: str) -> str:
         "`DEEP_REVIEW.md`, never a `CLAUDE_*` report filename.",
         context,
     )
-    text = text.replace("/code-quality:review", "/code-quality-review")
-    text = text.replace("AskUserQuestion", "ask_user_question")
+    text = replace_all(text, "/code-quality:review", "/code-quality-review", context)
+    text = replace_all(text, "AskUserQuestion", "ask_user_question", context, require_match=False)
+    text = require_replace(
+        text,
+        "<sub>Generated by `/code-quality-review` · 5-lens parallel scan + calibration</sub>",
+        "<sub>Generated by `/code-quality-review` · 5-lens scan + calibration</sub>",
+        context,
+    )
     return text
 
 
 def transform_size_review(text: str) -> str:
     context = "size-review skill"
     text = add_license_frontmatter(text, context)
-    text = require_replace(
+    text = replace_all(
         text,
         "${CLAUDE_PLUGIN_ROOT}/skills/size-review/references/",
         "references/",
@@ -786,19 +961,26 @@ def transform_size_review(text: str) -> str:
         "but the actual `gh pr comment` post fails, exit non-zero loudly; do not silently\n"
         "fall back.\n\n"
         "In non-interactive mode never prompt. With a PR and successful preflight, post the\n"
-        "report as a PR comment automatically. With a PR but `gh` unavailable or\n"
-        "unauthenticated, write `SIZE_REVIEW.md`, print the one-line summary, and state PR\n"
-        "delivery is unavailable; do not invoke `gh`. With no PR, write `SIZE_REVIEW.md`\n"
-        "and print `size-review: <verdict> · <recommendation>` to stdout.\n\n"
-        "In interactive mode with a PR and successful preflight, use `ask_user_question`\n"
-        "with the package `questions[]` JSON shape and 2-4 concise options. Include\n"
-        "`Post comment to PR #<N> (Recommended)`, `Write SIZE_REVIEW.md`, and\n"
-        "`Return inline` options when PR delivery is available. When a PR exists but\n"
-        "`gh` is unavailable or unauthenticated, do not offer the PR-post option: offer\n"
-        "`Write SIZE_REVIEW.md`, `Return inline`, or package free-form output and state\n"
-        "PR delivery is unavailable. With no PR, offer only available local or inline\n"
-        "delivery. The package provides the `Type something.` and `Chat about this`\n"
-        "free-form guidance; do not add manual pseudo-options.\n\n"
+        "report as a PR comment automatically. With a PR but `gh` unavailable or unauthenticated,\n"
+        "write `SIZE_REVIEW.md`, print the full report to stdout, then print\n"
+        "the one-line `size-review: <verdict> · <recommendation>` summary and state PR\n"
+        "delivery is unavailable; do not invoke `gh`. With no PR, write `SIZE_REVIEW.md`,\n"
+        "print the full report to stdout, then print the one-line\n"
+        "`size-review: <verdict> · <recommendation>` summary.\n\n"
+        "In interactive mode, use `ask_user_question` with the `questions[]` JSON shape only when that tool is available.\n"
+        "If it is unavailable, use a plain chat conversational fallback to ask how the user wants the report delivered.\n"
+        "With a PR and successful\n"
+        "preflight, offer `Post comment to PR #<N> (Recommended)`, `Write SIZE_REVIEW.md`,\n"
+        "and `Return inline` choices. When a PR exists but `gh` is unavailable or unauthenticated,\n"
+        "do not offer the PR-post option: offer local or inline delivery\n"
+        "and state PR delivery is unavailable. With no PR, offer only available local or\n"
+        "inline choices. The `ask_user_question` tool supplies `Type something.` /\n"
+        "`Chat about this` free-form escape hatches; pi-code-quality does not bundle that\n"
+        "tool, so do not add manual pseudo-options.\n\n"
+        "Only after the user explicitly selects **Branch + markdown**, create a\n"
+        "`<user>/size-review` branch, write `SIZE_REVIEW.md` at the repo root, commit, and\n"
+        "push for archival. Preserve `Write SIZE_REVIEW.md` for local uncommitted delivery\n"
+        "and `Return inline` for chat delivery.\n\n"
         "If a stack plan was produced and the user wants to act on it, offer a handoff only to\n"
         "tools or skills that are actually available. GitHub and git-spice delivery are\n"
         "conditional on those tools being installed and authenticated; otherwise keep the\n"
@@ -806,8 +988,8 @@ def transform_size_review(text: str) -> str:
         "`CLAUDE_*` report filename.\n",
         context,
     )
-    text = text.replace("/code-quality:size", "/code-quality-size")
-    text = text.replace("AskUserQuestion", "ask_user_question")
+    text = replace_all(text, "/code-quality:size", "/code-quality-size", context, require_match=False)
+    text = replace_all(text, "AskUserQuestion", "ask_user_question", context, require_match=False)
     return text
 
 
@@ -859,28 +1041,24 @@ def build_generated_tree(source: Path, temporary_root: Path) -> Path:
 
 
 def validate_generated_tree(temporary_root: Path) -> None:
-    prompts_root = temporary_root / "prompts"
-    skills_root = temporary_root / "skills"
-    prompt_entries = sorted(path.name for path in prompts_root.iterdir())
-    skill_entries = sorted(path.name for path in skills_root.iterdir())
-    expected_prompts = ["code-quality-review.md", "code-quality-size.md"]
-    expected_skills = ["deep-review", "size-review"]
-    if prompt_entries != expected_prompts:
-        raise RuntimeError(f"Generated prompt root mismatch: {prompt_entries!r}")
-    if skill_entries != expected_skills:
-        raise RuntimeError(f"Generated skill root mismatch: {skill_entries!r}")
-    for relative in expected_prompts:
-        if not (prompts_root / relative).is_file():
-            raise RuntimeError(f"Generated prompt missing: {relative}")
-    for relative in expected_skills:
-        if not (skills_root / relative).is_dir():
-            raise RuntimeError(f"Generated skill missing: {relative}/")
+    expected_files = {target for _, target in RUNTIME_MANIFEST}
+    actual_files = {
+        path.relative_to(temporary_root).as_posix()
+        for path in temporary_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extras = sorted(actual_files - expected_files)
+        raise RuntimeError(
+            "Generated runtime manifest mismatch: "
+            f"missing={missing!r}; extras={extras!r}"
+        )
 
-    for file_path in sorted(path for path in temporary_root.rglob("*") if path.is_file()):
-        text = file_path.read_text(encoding="utf8")
+    for relative in sorted(actual_files):
+        text = (temporary_root / relative).read_text(encoding="utf8")
         for forbidden in FORBIDDEN_GENERATED:
             if forbidden in text:
-                relative = file_path.relative_to(temporary_root)
                 raise RuntimeError(f"Forbidden generated text {forbidden!r} found in {relative}")
 
 
@@ -888,8 +1066,12 @@ def rename_path(source: Path, target: Path) -> None:
     source.rename(target)
 
 
-def install_generated_tree(temporary_root: Path, package_root: Path, move=rename_path) -> None:
-    names = ("prompts", "skills")
+def remove_tree(path: Path) -> None:
+    shutil.rmtree(path)
+
+
+def install_generated_tree(temporary_root: Path, package_root: Path, move=rename_path, remove=remove_tree) -> None:
+    names = tuple(sorted({target.split("/", 1)[0] for _, target in RUNTIME_MANIFEST}))
     staging = {}
     backups = {}
     installed = set()
@@ -915,23 +1097,32 @@ def install_generated_tree(temporary_root: Path, package_root: Path, move=rename
     except Exception as install_error:
         rollback_errors = []
         for name in reversed(names):
-            if name in installed:
-                shutil.rmtree(package_root / name, ignore_errors=True)
-
-        for name in names:
-            backup = backups.get(name)
-            if backup and backup.exists():
-                target = package_root / name
+            target = package_root / name
+            if name in installed and target.exists():
                 try:
-                    if target.exists() and name in installed:
-                        shutil.rmtree(target, ignore_errors=True)
-                    if not target.exists():
-                        move(backup, target)
+                    remove(target)
                 except Exception as rollback_error:
                     rollback_errors.append(rollback_error)
 
+        for name, backup in backups.items():
+            target = package_root / name
+            try:
+                if target.exists():
+                    remove(target)
+                if not backup.exists():
+                    raise RuntimeError(f"Rollback backup disappeared for {name}: {backup}")
+                move(backup, target)
+                if not target.exists() or backup.exists():
+                    raise RuntimeError(f"Rollback did not restore original {name} root")
+            except Exception as rollback_error:
+                rollback_errors.append(rollback_error)
+
         for stage in staging.values():
-            shutil.rmtree(stage, ignore_errors=True)
+            if stage.exists():
+                try:
+                    remove(stage)
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
 
         if rollback_errors:
             details = "; ".join(str(error) for error in rollback_errors)
@@ -939,7 +1130,7 @@ def install_generated_tree(temporary_root: Path, package_root: Path, move=rename
         raise
     else:
         for backup in backups.values():
-            shutil.rmtree(backup)
+            remove(backup)
 
 
 def main() -> None:

@@ -589,20 +589,28 @@ but the actual `gh pr comment` post fails, exit non-zero loudly; do not silently
 fall back.
 
 In non-interactive mode never prompt. With a PR and successful preflight, post the
-report as a PR comment automatically. With a PR but `gh` unavailable or
-unauthenticated, write `SIZE_REVIEW.md`, print the one-line summary, and state PR
-delivery is unavailable; do not invoke `gh`. With no PR, write `SIZE_REVIEW.md`
-and print `size-review: <verdict> · <recommendation>` to stdout.
+report as a PR comment automatically. With a PR but `gh` unavailable or unauthenticated,
+write `SIZE_REVIEW.md`, print the full report to stdout, then print
+the one-line `size-review: <verdict> · <recommendation>` summary and state PR
+delivery is unavailable; do not invoke `gh`. With no PR, write `SIZE_REVIEW.md`,
+print the full report to stdout, then print the one-line
+`size-review: <verdict> · <recommendation>` summary.
 
-In interactive mode with a PR and successful preflight, use `ask_user_question`
-with the package `questions[]` JSON shape and 2-4 concise options. Include
-`Post comment to PR #<N> (Recommended)`, `Write SIZE_REVIEW.md`, and
-`Return inline` options when PR delivery is available. When a PR exists but
-`gh` is unavailable or unauthenticated, do not offer the PR-post option: offer
-`Write SIZE_REVIEW.md`, `Return inline`, or package free-form output and state
-PR delivery is unavailable. With no PR, offer only available local or inline
-delivery. The package provides the `Type something.` and `Chat about this`
-free-form guidance; do not add manual pseudo-options.
+In interactive mode, use `ask_user_question` with the `questions[]` JSON shape only when that tool is available.
+If it is unavailable, use a plain chat conversational fallback to ask how the user wants the report delivered.
+With a PR and successful
+preflight, offer `Post comment to PR #<N> (Recommended)`, `Write SIZE_REVIEW.md`,
+and `Return inline` choices. When a PR exists but `gh` is unavailable or unauthenticated,
+do not offer the PR-post option: offer local or inline delivery
+and state PR delivery is unavailable. With no PR, offer only available local or
+inline choices. The `ask_user_question` tool supplies `Type something.` /
+`Chat about this` free-form escape hatches; pi-code-quality does not bundle that
+tool, so do not add manual pseudo-options.
+
+Only after the user explicitly selects **Branch + markdown**, create a
+`<user>/size-review` branch, write `SIZE_REVIEW.md` at the repo root, commit, and
+push for archival. Preserve `Write SIZE_REVIEW.md` for local uncommitted delivery
+and `Return inline` for chat delivery.
 
 If a stack plan was produced and the user wants to act on it, offer a handoff only to
 tools or skills that are actually available. GitHub and git-spice delivery are
