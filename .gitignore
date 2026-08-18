@@ -7,3 +7,4 @@ packages/*/node_modules/
 !.pi/skills/
 !.pi/skills/**
 docs/plans/
+.worktrees
