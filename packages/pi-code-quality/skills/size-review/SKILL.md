@@ -598,14 +598,26 @@ print the full report to stdout, then print the one-line
 
 In interactive mode, use `ask_user_question` with the `questions[]` JSON shape only when that tool is available.
 If it is unavailable, use a plain chat conversational fallback to ask how the user wants the report delivered.
-With a PR and successful
-preflight, offer `Post comment to PR #<N> (Recommended)`, `Write SIZE_REVIEW.md`,
-and `Return inline` choices. When a PR exists but `gh` is unavailable or unauthenticated,
-do not offer the PR-post option: offer local or inline delivery
-and state PR delivery is unavailable. With no PR, offer only available local or
-inline choices. The `ask_user_question` tool supplies `Type something.` /
-`Chat about this` free-form escape hatches; pi-code-quality does not bundle that
-tool, so do not add manual pseudo-options.
+
+### Interactive delivery choice sets
+
+The `ask_user_question` tool supplies `Type something.` / `Chat about this`
+free-form escape hatches; pi-code-quality does not bundle that tool, so do not add
+manual pseudo-options. Offer exactly the applicable choices below through the
+available question tool or the plain chat fallback:
+
+- **ask_user_question: PR + successful gh** — offer `Post comment to PR #<N> (Recommended)`,
+  `Write SIZE_REVIEW.md`, `Return inline`, and `Branch + markdown`.
+- **ask_user_question: PR + unavailable gh** — offer `Write SIZE_REVIEW.md`,
+  `Return inline`, and `Branch + markdown`; do not offer the PR-post option and state PR delivery is unavailable.
+- **ask_user_question: no PR** — offer `Write SIZE_REVIEW.md`, `Return inline`,
+  and `Branch + markdown`.
+- **plain chat: PR + successful gh** — offer `Post comment to PR #<N> (Recommended)`,
+  `Write SIZE_REVIEW.md`, `Return inline`, and `Branch + markdown`.
+- **plain chat: PR + unavailable gh** — offer `Write SIZE_REVIEW.md`,
+  `Return inline`, and `Branch + markdown`; do not offer the PR-post option and state PR delivery is unavailable.
+- **plain chat: no PR** — offer `Write SIZE_REVIEW.md`, `Return inline`, and
+  `Branch + markdown`.
 
 Only after the user explicitly selects **Branch + markdown**, create a
 `<user>/size-review` branch, write `SIZE_REVIEW.md` at the repo root, commit, and

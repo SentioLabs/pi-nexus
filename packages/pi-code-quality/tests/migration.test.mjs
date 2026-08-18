@@ -574,10 +574,6 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(sizeReview, /tool subprocess stdin may be non-TTY during an interactive session/i);
 
     assert.match(sizeReview, /With a PR but `gh` unavailable or\s+unauthenticated/);
-    assert.match(
-      sizeReview,
-      /offer\s+`Post comment to PR #<N> \(Recommended\)`, `Write SIZE_REVIEW\.md`,\s+and `Return inline`/,
-    );
     assert.match(sizeReview, /do not\s+offer the PR-post option/);
     assert.match(sizeReview, /write `SIZE_REVIEW\.md`,\s+print the full report to stdout, then print/);
     assert.match(sizeReview, /do not invoke `gh`/);
@@ -585,6 +581,27 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(sizeReview, /preflight passes\s+but the actual `gh pr comment` post fails/);
     assert.doesNotMatch(sizeReview, /PR in scope →\s*post the report as a PR comment automatically/);
     assert.match(sizeReview, /use `ask_user_question` with the `questions\[\]` JSON shape only when that tool is available/i);
+
+    const interactiveChoices = sizeReview.match(/### Interactive delivery choice sets\n([\s\S]*?)\nOnly after the user explicitly selects/)?.[1];
+    assert.ok(interactiveChoices, "interactive delivery choices should be grouped before archival execution");
+    for (const [deliveryPath, expectedChoices] of [
+      ["ask_user_question: PR + successful gh", ["Post comment to PR #<N> (Recommended)", "Write SIZE_REVIEW.md", "Return inline", "Branch + markdown"]],
+      ["ask_user_question: PR + unavailable gh", ["Write SIZE_REVIEW.md", "Return inline", "Branch + markdown"]],
+      ["ask_user_question: no PR", ["Write SIZE_REVIEW.md", "Return inline", "Branch + markdown"]],
+      ["plain chat: PR + successful gh", ["Post comment to PR #<N> (Recommended)", "Write SIZE_REVIEW.md", "Return inline", "Branch + markdown"]],
+      ["plain chat: PR + unavailable gh", ["Write SIZE_REVIEW.md", "Return inline", "Branch + markdown"]],
+      ["plain chat: no PR", ["Write SIZE_REVIEW.md", "Return inline", "Branch + markdown"]],
+    ]) {
+      const choices = interactiveChoices.match(
+        new RegExp(`- \\*\\*${deliveryPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\*\\* — ([\\s\\S]*?)(?=\\n- \\*\\*|$)`),
+      )?.[1];
+      assert.ok(choices, `${deliveryPath} choices should be explicit`);
+      assert.deepEqual(
+        [...choices.matchAll(/`([^`]+)`/g)].map(([, choice]) => choice),
+        expectedChoices,
+        `${deliveryPath} should offer exactly its permitted choices`,
+      );
+    }
 
     const sizeReviewTemplate = sizeReview.match(
       /```markdown\n([\s\S]*?)\n```\n\nFor PRs under threshold:/,
