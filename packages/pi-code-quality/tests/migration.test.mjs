@@ -53,7 +53,8 @@ const promptSource = ({ title, skill, command }) => [
 const deepReviewSkillSource = () => [
   "---",
   "name: deep-review",
-  "description: fixture deep review skill",
+  "description: >",
+  "  fixture deep review skill",
   "---",
   "",
   "# Deep Review",
@@ -171,7 +172,8 @@ const deepReviewSkillSource = () => [
 const invalidDeepReviewSkillSource = () => [
   "---",
   "name: deep-review",
-  "description: fixture deep review skill",
+  "description: >",
+  "  fixture deep review skill",
   "---",
   "",
   "# Deep Review",
@@ -311,7 +313,8 @@ const outputActionsSource = () => [
 const sizeReviewSkillSource = () => [
   "---",
   "name: size-review",
-  "description: fixture size review skill",
+  "description: >",
+  "  fixture size review skill",
   "---",
   "",
   "# Size Review",
@@ -899,30 +902,39 @@ test("rollback reports a deletion failure after restoring original resource root
   }
 });
 
-test("skill frontmatter requires meaningful block descriptions and rejects tab indentation", () => {
+test("skill frontmatter accepts only semantic block descriptions", () => {
   const validSource = createSourceFixture({
-    deepReviewSkill: deepReviewSkillSource().replace(
-      "description: fixture deep review skill",
-      "description: >\n  fixture deep review skill\n  across two lines",
-    ),
+    deepReviewSkill: deepReviewSkillSource().replace("description: >", "description: |"),
   });
   const validPackage = createTemporaryPackage();
   try {
     const result = spawnSync("python3", [validPackage.script, validSource], { cwd: validPackage.root, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(
-      readFileSync(path.join(validPackage.root, "skills/deep-review/SKILL.md"), "utf8"),
-      /description: >\n  fixture deep review skill\n  across two lines\nlicense: MIT/,
-    );
+    for (const [skill, marker, description] of [
+      ["deep-review", "|", "fixture deep review skill"],
+      ["size-review", ">", "fixture size review skill"],
+    ]) {
+      assert.match(
+        readFileSync(path.join(validPackage.root, `skills/${skill}/SKILL.md`), "utf8"),
+        new RegExp(`description: ${marker === "|" ? "\\|" : marker}\\n  ${description}\\nlicense: MIT`),
+      );
+    }
   } finally {
     rmSync(validSource, { recursive: true, force: true });
     rmSync(validPackage.root, { recursive: true, force: true });
   }
 
   for (const [replacement, expected] of [
-    ["description: >", /Source skill description is required/],
-    ["description: |\n  \n    ", /Source skill description is required/],
+    ["description: >-", /description must use exactly/],
+    ["description: >+", /description must use exactly/],
+    ["description: |-", /description must use exactly/],
+    ["description: |+", /description must use exactly/],
+    ["description: [unterminated", /description must use exactly/],
+    ["description: >", /description must contain meaningful continuation prose/],
+    ["description: |", /description must contain meaningful continuation prose/],
+    ["description: |\n  ", /description continuation must contain non-whitespace prose/],
     ["description: >\n\tfixture deep review skill", /Tab-indented source skill frontmatter line/],
+    ["description: >\n  fixture deep review skill\n    inconsistent indentation", /inconsistent indentation/],
   ]) {
     const source = createSourceFixture();
     const packageCopy = createTemporaryPackage();
@@ -930,7 +942,10 @@ test("skill frontmatter requires meaningful block descriptions and rejects tab i
     writeFixtureFile(packageCopy.root, "prompts/code-quality-review.md", "unchanged\n");
     try {
       const skill = path.join(source, "skills/deep-review/SKILL.md");
-      writeFileSync(skill, readFileSync(skill, "utf8").replace("description: fixture deep review skill", replacement));
+      writeFileSync(
+        skill,
+        readFileSync(skill, "utf8").replace("description: >\n  fixture deep review skill", replacement),
+      );
       const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
       assert.notEqual(result.status, 0);
       assert.match(result.stderr, expected);
@@ -946,9 +961,9 @@ test("source skill frontmatter and plugin metadata schema fail closed before ins
   const cases = [
     ["skills/deep-review/SKILL.md", (text) => text.replace("name: deep-review", "name: renamed-review"), /skill name must be/],
     ["skills/size-review/SKILL.md", (text) => text.replace("name: size-review", "name: renamed-size"), /skill name must be/],
-    ["skills/deep-review/SKILL.md", (text) => text.replace("description: fixture deep review skill", "unknown: value\ndescription: fixture deep review skill"), /Unsupported source skill frontmatter key/],
+    ["skills/deep-review/SKILL.md", (text) => text.replace("description: >", "unknown: value\ndescription: >"), /Unsupported source skill frontmatter key/],
     ["skills/deep-review/SKILL.md", (text) => text.replace("name: deep-review", "name: deep-review\nname: duplicate"), /Duplicate source skill frontmatter key/],
-    ["skills/size-review/SKILL.md", (text) => text.replace("description: fixture size review skill", "license: Apache-2.0\ndescription: fixture size review skill"), /skill license must be/],
+    ["skills/size-review/SKILL.md", (text) => text.replace("description: >", "license: Apache-2.0\ndescription: >"), /skill license must be/],
   ];
   for (const [relative, mutate, expected] of cases) {
     const source = createSourceFixture(); const packageCopy = createTemporaryPackage();

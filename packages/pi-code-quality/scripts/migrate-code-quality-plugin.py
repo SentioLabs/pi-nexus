@@ -198,10 +198,6 @@ def split_frontmatter(text: str, context: str) -> tuple[str, str]:
     return text[4:end], text[end + len("\n---\n") :].lstrip("\n")
 
 
-def strip_frontmatter(text: str, context: str) -> str:
-    return split_frontmatter(text, context)[1]
-
-
 def parse_prompt_frontmatter(text: str, context: str) -> tuple[str, str]:
     frontmatter, body = split_frontmatter(text, context)
     lines = frontmatter.splitlines()
@@ -226,59 +222,58 @@ def validate_skill_frontmatter(text: str, expected_name: str, context: str) -> s
     frontmatter, body = split_frontmatter(text, context)
     entries = {}
     description_lines = []
+    description_indentation = None
     active = None
     for line in frontmatter.splitlines():
-        match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):(?:[ ](.*))?$", line)
-        if match:
-            key, value = match.groups()
-            if key in entries:
-                raise RuntimeError(f"Duplicate source skill frontmatter key while patching {context}: {key!r}")
-            if key not in {"name", "description", "license"}:
-                raise RuntimeError(f"Unsupported source skill frontmatter key while patching {context}: {key!r}")
-            entries[key] = value or ""
-            active = key
-        elif line.startswith((" ", "\t")):
-            indentation = line[: len(line) - len(line.lstrip(" \t"))]
-            if "\t" in indentation:
-                raise RuntimeError(f"Tab-indented source skill frontmatter line while patching {context}: {line!r}")
-            if active == "description" and entries[active] in {">", "|"}:
-                description_lines.append(line.strip())
-            else:
+        if "\t" in line:
+            raise RuntimeError(f"Tab-indented source skill frontmatter line while patching {context}: {line!r}")
+        if line.startswith(" "):
+            if active != "description" or entries[active] not in {">", "|"}:
                 raise RuntimeError(f"Unsupported source skill frontmatter shape while patching {context}: {line!r}")
-        elif line == "" and active == "description" and entries[active] in {">", "|"}:
-            description_lines.append("")
-        else:
+            indentation = line[: len(line) - len(line.lstrip(" "))]
+            continuation = line[len(indentation) :]
+            if not continuation.strip():
+                raise RuntimeError(
+                    f"Source skill description continuation must contain non-whitespace prose while patching {context}"
+                )
+            if description_indentation is None:
+                description_indentation = indentation
+            elif indentation != description_indentation:
+                raise RuntimeError(f"Source skill description has inconsistent indentation while patching {context}")
+            description_lines.append(continuation)
+            continue
+        if line == "":
+            if active == "description" and entries[active] in {">", "|"}:
+                raise RuntimeError(
+                    f"Source skill description continuation must contain non-whitespace prose while patching {context}"
+                )
             raise RuntimeError(f"Unsupported source skill frontmatter shape while patching {context}: {line!r}")
+        match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):(?: (.*))?$", line)
+        if not match:
+            raise RuntimeError(f"Unsupported source skill frontmatter shape while patching {context}: {line!r}")
+        key, value = match.groups()
+        if key in entries:
+            raise RuntimeError(f"Duplicate source skill frontmatter key while patching {context}: {key!r}")
+        if key not in {"name", "description", "license"}:
+            raise RuntimeError(f"Unsupported source skill frontmatter key while patching {context}: {key!r}")
+        value = value or ""
+        if key == "description" and value not in {">", "|"}:
+            raise RuntimeError(
+                f"Source skill description must use exactly 'description: >' or 'description: |' while patching {context}"
+            )
+        entries[key] = value
+        active = key
     if entries.get("name") != expected_name:
         raise RuntimeError(f"Source skill name must be {expected_name!r} while patching {context}")
-    description = entries.get("description", "")
-    if description in {">", "|"}:
-        has_description = any(line.strip() for line in description_lines)
-    else:
-        has_description = bool(description.strip())
-    if not has_description:
+    if "description" not in entries:
         raise RuntimeError(f"Source skill description is required while patching {context}")
+    if not description_lines:
+        raise RuntimeError(f"Source skill description must contain meaningful continuation prose while patching {context}")
     if "license" in entries and entries["license"] != "MIT":
         raise RuntimeError(f"Source skill license must be 'MIT' while patching {context}")
     if "license" not in entries:
         return "---\n" + frontmatter.rstrip("\n") + "\nlicense: MIT\n---\n\n" + body
     return text
-
-
-def add_license_frontmatter(text: str, context: str) -> str:
-    if not text.startswith("---\n"):
-        raise RuntimeError(f"Expected frontmatter while patching {context}")
-    end_match = re.search(r"^---$", text, flags=re.MULTILINE)
-    if not end_match or end_match.start() != 0:
-        raise RuntimeError(f"Expected opening frontmatter delimiter while patching {context}")
-    closing = re.search(r"^---$", text[4:], flags=re.MULTILINE)
-    if not closing:
-        raise RuntimeError(f"Expected closing frontmatter delimiter while patching {context}")
-    closing_start = 4 + closing.start()
-    frontmatter = text[:closing_start]
-    if re.search(r"^license:\s*MIT$", frontmatter, flags=re.MULTILINE):
-        return text
-    return text[:closing_start] + "license: MIT\n" + text[closing_start:]
 
 
 def transform_prompt(source_name: str, text: str) -> str:
