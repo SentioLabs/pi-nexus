@@ -9,6 +9,7 @@ const migrationScript = fileURLToPath(new URL("../scripts/migrate-code-quality-p
 const runtimeManifest = JSON.parse(execFileSync(
   "python3",
   [
+    "-B",
     "-c",
     "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps([target for _, target in module.RUNTIME_MANIFEST]))",
     migrationScript,

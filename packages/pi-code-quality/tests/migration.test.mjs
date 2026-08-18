@@ -11,12 +11,17 @@ const migrationScript = path.join(packageRoot, "scripts/migrate-code-quality-plu
 const runtimeManifest = JSON.parse(execFileSync(
   "python3",
   [
+    "-B",
     "-c",
     "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps([target for _, target in module.RUNTIME_MANIFEST]))",
     migrationScript,
   ],
   { encoding: "utf8" },
 ));
+
+test("real migration-script manifest probes leave no package bytecode cache", () => {
+  assert.equal(existsSync(path.join(packageRoot, "scripts", "__pycache__")), false);
+});
 
 const writeFixtureFile = (root, relativePath, content) => {
   const target = path.join(root, relativePath);
