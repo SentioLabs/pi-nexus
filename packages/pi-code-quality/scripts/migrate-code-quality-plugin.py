@@ -225,6 +225,7 @@ def parse_prompt_frontmatter(text: str, context: str) -> tuple[str, str]:
 def validate_skill_frontmatter(text: str, expected_name: str, context: str) -> str:
     frontmatter, body = split_frontmatter(text, context)
     entries = {}
+    description_lines = []
     active = None
     for line in frontmatter.splitlines():
         match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):(?:[ ](.*))?$", line)
@@ -236,13 +237,26 @@ def validate_skill_frontmatter(text: str, expected_name: str, context: str) -> s
                 raise RuntimeError(f"Unsupported source skill frontmatter key while patching {context}: {key!r}")
             entries[key] = value or ""
             active = key
-        elif line.startswith((" ", "\t")) and active == "description" and entries[active] in {">", "|"}:
-            continue
+        elif line.startswith((" ", "\t")):
+            indentation = line[: len(line) - len(line.lstrip(" \t"))]
+            if "\t" in indentation:
+                raise RuntimeError(f"Tab-indented source skill frontmatter line while patching {context}: {line!r}")
+            if active == "description" and entries[active] in {">", "|"}:
+                description_lines.append(line.strip())
+            else:
+                raise RuntimeError(f"Unsupported source skill frontmatter shape while patching {context}: {line!r}")
+        elif line == "" and active == "description" and entries[active] in {">", "|"}:
+            description_lines.append("")
         else:
             raise RuntimeError(f"Unsupported source skill frontmatter shape while patching {context}: {line!r}")
     if entries.get("name") != expected_name:
         raise RuntimeError(f"Source skill name must be {expected_name!r} while patching {context}")
-    if not entries.get("description"):
+    description = entries.get("description", "")
+    if description in {">", "|"}:
+        has_description = any(line.strip() for line in description_lines)
+    else:
+        has_description = bool(description.strip())
+    if not has_description:
         raise RuntimeError(f"Source skill description is required while patching {context}")
     if "license" in entries and entries["license"] != "MIT":
         raise RuntimeError(f"Source skill license must be 'MIT' while patching {context}")
@@ -614,12 +628,11 @@ def transform_deep_review(text: str) -> str:
 
 def transform_output_actions(text: str) -> str:
     context = "deep-review output actions"
-    text = replace_all(
+    text = require_replace(
         text,
         ".headRepository.owner.login + \"/\" + .headRepository.name",
         ".baseRepository.owner.login + \"/\" + .baseRepository.name",
         context,
-        require_match=False,
     )
     text = require_replace(
         text,
@@ -710,10 +723,9 @@ def transform_output_actions(text: str) -> str:
         "write `DEEP_REVIEW.md`, print the one-line summary, and\n"
         "surface that PR delivery was unavailable.\n\n"
         "In interactive mode, use `ask_user_question` with the `questions[]` JSON\n"
-        "shape only when that tool is available. If it is unavailable, use a plain-chat\n"
-        "conversational fallback: ask the user how to deliver the report, or return it\n"
-        "inline when no response is needed. When a PR was detected, first verify GitHub\n"
-        "delivery availability:\n\n"
+        "shape only when that tool is available. When a PR was detected and an interactive\n"
+        "delivery choice is needed, if it is unavailable, use a plain-chat conversational\n"
+        "fallback to ask how to deliver the report. First verify GitHub delivery availability:\n\n"
         "```bash\n"
         "command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1\n"
         "```\n\n"
@@ -752,8 +764,9 @@ def transform_output_actions(text: str) -> str:
         "**No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and\n"
         "tell the user: \"No open PR found for this branch — wrote findings to\n"
         "`DEEP_REVIEW.md` (untracked).\" If the user wants something else they can\n"
-        "ask in their next turn. Do not present a 1-option menu; when the question\n"
-        "tool is unavailable, use the plain-chat conversational fallback instead.\n\n"
+        "ask in their next turn. Do not present a 1-option menu. Direct-write does not\n"
+        "depend on question-tool availability. Use plain chat only for the PR path, where\n"
+        "an actual interactive delivery choice is needed.\n\n"
         "If the user makes a free-form escape-hatch request, parse it. Common requests\n"
         "to handle:\n\n"
         "- Review branch + markdown — see §7\n"
@@ -1119,6 +1132,14 @@ def validate_generated_tree(temporary_root: Path) -> None:
         for forbidden in FORBIDDEN_GENERATED:
             if forbidden in text:
                 raise RuntimeError(f"Forbidden generated text {forbidden!r} found in {relative}")
+
+    output_actions = (temporary_root / "skills/deep-review/references/output-actions.md").read_text(encoding="utf8")
+    base_repository = ".baseRepository.owner.login + \"/\" + .baseRepository.name"
+    head_repository = ".headRepository.owner.login + \"/\" + .headRepository.name"
+    if base_repository not in output_actions:
+        raise RuntimeError("Generated output actions must derive the PR repository from baseRepository")
+    if head_repository in output_actions:
+        raise RuntimeError("Generated output actions must not derive the PR repository from headRepository")
 
 
 def rename_path(source: Path, target: Path) -> None:

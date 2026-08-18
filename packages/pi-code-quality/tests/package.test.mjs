@@ -83,6 +83,16 @@ test("deep-review and output actions preserve Pi portability guards", () => {
   assert.match(actions, /questions\[\]/);
   assert.match(actions, /tool subprocess stdin may be non-TTY during an interactive session/i);
   assert.match(actions, /DEEP_REVIEW\.md/);
+  assert.match(actions, /\.baseRepository\.owner\.login \+ "\/" \+ \.baseRepository\.name/);
+  assert.doesNotMatch(actions, /\.headRepository\.owner\.login \+ "\/" \+ \.headRepository\.name/);
+  assert.ok(actions.includes([
+    "**No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and",
+    "tell the user: \"No open PR found for this branch — wrote findings to",
+    "`DEEP_REVIEW.md` (untracked).\" If the user wants something else they can",
+    "ask in their next turn. Do not present a 1-option menu. Direct-write does not",
+    "depend on question-tool availability. Use plain chat only for the PR path, where",
+    "an actual interactive delivery choice is needed.",
+  ].join("\n")));
   assert.doesNotMatch(combined, /\$\{CLAUDE_PLUGIN_ROOT\}/);
   assert.doesNotMatch(combined, /AskUserQuestion/);
   assert.doesNotMatch(combined, /\/code-quality:/);

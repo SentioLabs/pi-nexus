@@ -229,6 +229,12 @@ const outputActionsSource = () => [
   "",
   "Use an explicit PR, GitHub event payload, or `gh pr view` for the current branch.",
   "",
+  "```bash",
+  "gh pr view --json number,url,headRepository,baseRepository \\",
+  "  --jq '{number, url, repo: (.headRepository.owner.login + \"/\" + .headRepository.name)}' \\",
+  "  2>/dev/null",
+  "```",
+  "",
   "## 3. Ask the user (interactive mode only)",
   "",
   "Legacy interactive delivery instructions.",
@@ -550,6 +556,50 @@ test("staged installation restores both live roots when the second swap fails", 
   }
 });
 
+test("interruption during the second staged swap restores originals and propagates", () => {
+  const packageCopy = createTemporaryPackage();
+  const generated = mkdtempSync(path.join(os.tmpdir(), "pi-code-quality-generated-"));
+  const promptBefore = Buffer.from("original prompts\n", "utf8");
+  const skillBefore = Buffer.from("original skills\n", "utf8");
+  writeFixtureFile(packageCopy.root, "prompts/sentinel.txt", promptBefore);
+  writeFixtureFile(packageCopy.root, "skills/sentinel.txt", skillBefore);
+  writeFixtureFile(generated, "prompts/new.txt", "new prompts\n");
+  writeFixtureFile(generated, "skills/new.txt", "new skills\n");
+  const probe = [
+    "import importlib.util, sys",
+    "from pathlib import Path",
+    "script, package_root, generated = map(Path, sys.argv[1:])",
+    "spec = importlib.util.spec_from_file_location('migration', script)",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "def move_with_second_swap_interrupt(source, target):",
+    "    source, target = Path(source), Path(target)",
+    "    if source.name.startswith('.skills.staging-') and target == package_root / 'skills':",
+    "        raise KeyboardInterrupt('simulated skills swap interruption')",
+    "    source.rename(target)",
+    "module.install_generated_tree(generated, package_root, move=move_with_second_swap_interrupt)",
+  ].join("\n");
+
+  try {
+    const result = spawnSync("python3", ["-c", probe, packageCopy.script, packageCopy.root, generated], {
+      encoding: "utf8",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /KeyboardInterrupt: simulated skills swap interruption/);
+    assert.deepEqual(readFileSync(path.join(packageCopy.root, "prompts/sentinel.txt")), promptBefore);
+    assert.deepEqual(readFileSync(path.join(packageCopy.root, "skills/sentinel.txt")), skillBefore);
+    assert.equal(existsSync(path.join(packageCopy.root, "prompts/new.txt")), false);
+    assert.equal(existsSync(path.join(packageCopy.root, "skills/new.txt")), false);
+    assert.deepEqual(
+      readdirSync(packageCopy.root).filter((entry) => entry.includes(".staging-") || entry.includes(".backup-")),
+      [],
+    );
+  } finally {
+    rmSync(generated, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
 test("generated deep- and size-review delivery requires gh availability and auth before PR posting", () => {
   const source = createSourceFixture();
   const packageCopy = createTemporaryPackage();
@@ -584,6 +634,22 @@ test("generated deep- and size-review delivery requires gh availability and auth
     assert.match(outputActions, /exit non-zero/);
     assert.match(outputActions, /tool subprocess stdin may be non-TTY during an interactive session/i);
     assert.match(sizeReview, /tool subprocess stdin may be non-TTY during an interactive session/i);
+    assert.match(outputActions, /\.baseRepository\.owner\.login \+ "\/" \+ \.baseRepository\.name/);
+    assert.doesNotMatch(outputActions, /\.headRepository\.owner\.login \+ "\/" \+ \.headRepository\.name/);
+
+    const noPrDirectWriteParagraph = [
+      "**No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and",
+      "tell the user: \"No open PR found for this branch — wrote findings to",
+      "`DEEP_REVIEW.md` (untracked).\" If the user wants something else they can",
+      "ask in their next turn. Do not present a 1-option menu. Direct-write does not",
+      "depend on question-tool availability. Use plain chat only for the PR path, where",
+      "an actual interactive delivery choice is needed.",
+    ].join("\n");
+    assert.ok(outputActions.includes(noPrDirectWriteParagraph));
+    assert.match(
+      outputActions,
+      /When a PR was detected and an interactive\s+delivery choice is needed, if it is\s+unavailable, use a plain-chat conversational\s+fallback to ask how to deliver the report\./,
+    );
 
     assert.match(sizeReview, /With a PR but `gh` unavailable or\s+unauthenticated/);
     assert.match(sizeReview, /do not\s+offer the PR-post option/);
@@ -688,6 +754,30 @@ test("migration fails closed for unknown source files and invalid plugin metadat
       rmSync(source, { recursive: true, force: true });
       rmSync(packageCopy.root, { recursive: true, force: true });
     }
+  }
+});
+
+test("fork PR repository derivation is guarded and generated from baseRepository", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const protectedPrompt = path.join(packageCopy.root, "prompts/code-quality-review.md");
+  writeFixtureFile(packageCopy.root, "prompts/code-quality-review.md", "unchanged\n");
+  try {
+    const outputActions = path.join(source, "skills/deep-review/references/output-actions.md");
+    writeFileSync(
+      outputActions,
+      readFileSync(outputActions, "utf8").replace(
+        ".headRepository.owner.login + \"/\" + .headRepository.name",
+        ".forkRepository.owner.login + \"/\" + .forkRepository.name",
+      ),
+    );
+    const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Expected exactly one source text occurrence while patching deep-review output actions/);
+    assert.equal(readFileSync(protectedPrompt, "utf8"), "unchanged\n");
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(packageCopy.root, { recursive: true, force: true });
   }
 });
 
@@ -806,6 +896,49 @@ test("rollback reports a deletion failure after restoring original resource root
   } finally {
     rmSync(generated, { recursive: true, force: true });
     rmSync(packageCopy.root, { recursive: true, force: true });
+  }
+});
+
+test("skill frontmatter requires meaningful block descriptions and rejects tab indentation", () => {
+  const validSource = createSourceFixture({
+    deepReviewSkill: deepReviewSkillSource().replace(
+      "description: fixture deep review skill",
+      "description: >\n  fixture deep review skill\n  across two lines",
+    ),
+  });
+  const validPackage = createTemporaryPackage();
+  try {
+    const result = spawnSync("python3", [validPackage.script, validSource], { cwd: validPackage.root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      readFileSync(path.join(validPackage.root, "skills/deep-review/SKILL.md"), "utf8"),
+      /description: >\n  fixture deep review skill\n  across two lines\nlicense: MIT/,
+    );
+  } finally {
+    rmSync(validSource, { recursive: true, force: true });
+    rmSync(validPackage.root, { recursive: true, force: true });
+  }
+
+  for (const [replacement, expected] of [
+    ["description: >", /Source skill description is required/],
+    ["description: |\n  \n    ", /Source skill description is required/],
+    ["description: >\n\tfixture deep review skill", /Tab-indented source skill frontmatter line/],
+  ]) {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const protectedPrompt = path.join(packageCopy.root, "prompts/code-quality-review.md");
+    writeFixtureFile(packageCopy.root, "prompts/code-quality-review.md", "unchanged\n");
+    try {
+      const skill = path.join(source, "skills/deep-review/SKILL.md");
+      writeFileSync(skill, readFileSync(skill, "utf8").replace("description: fixture deep review skill", replacement));
+      const result = spawnSync("python3", [packageCopy.script, source], { cwd: packageCopy.root, encoding: "utf8" });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, expected);
+      assert.equal(readFileSync(protectedPrompt, "utf8"), "unchanged\n");
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+      rmSync(packageCopy.root, { recursive: true, force: true });
+    }
   }
 });
 

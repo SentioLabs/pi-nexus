@@ -89,10 +89,9 @@ write `DEEP_REVIEW.md`, print the one-line summary, and
 surface that PR delivery was unavailable.
 
 In interactive mode, use `ask_user_question` with the `questions[]` JSON
-shape only when that tool is available. If it is unavailable, use a plain-chat
-conversational fallback: ask the user how to deliver the report, or return it
-inline when no response is needed. When a PR was detected, first verify GitHub
-delivery availability:
+shape only when that tool is available. When a PR was detected and an interactive
+delivery choice is needed, if it is unavailable, use a plain-chat conversational
+fallback to ask how to deliver the report. First verify GitHub delivery availability:
 
 ```bash
 command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1
@@ -137,8 +136,9 @@ or claim the package supplies them.
 **No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and
 tell the user: "No open PR found for this branch — wrote findings to
 `DEEP_REVIEW.md` (untracked)." If the user wants something else they can
-ask in their next turn. Do not present a 1-option menu; when the question
-tool is unavailable, use the plain-chat conversational fallback instead.
+ask in their next turn. Do not present a 1-option menu. Direct-write does not
+depend on question-tool availability. Use plain chat only for the PR path, where
+an actual interactive delivery choice is needed.
 
 If the user makes a free-form escape-hatch request, parse it. Common requests
 to handle:
