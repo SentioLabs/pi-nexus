@@ -1,0 +1,56 @@
+{
+  "name": "@sentiolabs/pi-git-spice",
+  "version": "0.1.0",
+  "description": "Pi skills, prompt templates, and optional subagents for git-spice stacked-branch workflows.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "git",
+    "git-spice",
+    "stacked-prs",
+    "stacked-diffs",
+    "branch-stack",
+    "code-review"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Sentio Labs",
+    "url": "https://github.com/sentiolabs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "directory": "packages/pi-git-spice"
+  },
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-git-spice#readme",
+  "bugs": {
+    "url": "https://github.com/SentioLabs/pi-nexus/issues"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:dry-run"
+  },
+  "files": [
+    "agents/",
+    "prompts/",
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "skills": ["./skills"],
+    "prompts": ["./prompts/*.md"],
+    "subagents": {
+      "agents": ["./agents"]
+    }
+  }
+}
