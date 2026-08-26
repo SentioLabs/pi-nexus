@@ -53,7 +53,10 @@ test("prompts retain arguments and make every mutation non-interactive", () => {
   }
   assert.match(prompts["git-spice-init.md"], /git-spice --no-prompt repo init --trunk=<name> --remote=<name>/);
   assert.match(prompts["git-spice-init.md"], /separate explicit confirmation/i);
+  assert.doesNotMatch(prompts["git-spice-init.md"], /Otherwise let the interactive prompt run/);
+  assert.doesNotMatch(prompts["git-spice-init.md"], /git-spice --no-prompt repo init --reset/);
   assert.match(prompts["git-spice-new.md"], /branch create <name> -m <message>/);
+  assert.doesNotMatch(prompts["git-spice-new.md"], /auto-generate from the commit message/);
   assert.match(prompts["git-spice-new.md"], /Add `-a` only after explicit approval/i);
   assert.match(prompts["git-spice-new.md"], /branch create <name> --no-commit/);
   assert.match(prompts["git-spice-continue.md"], /git-spice --no-prompt rebase continue --no-edit/);
@@ -90,8 +93,29 @@ test("agents expose dotted Pi identities and safe tool contracts", () => {
   assert.match(doctor, /^---\nname: stack-doctor\npackage: git-spice\n/);
   assert.match(doctor, /\ntools: bash, read, find, grep\n/);
   assert.match(doctor, /\ninheritProjectContext: true\ndefaultContext: fresh\n/);
-  assert.match(doctor, /git-spice --no-prompt rebase continue/);
+  assert.match(doctor, /git-spice --no-prompt rebase continue --no-edit/);
+  assert.match(doctor, /git-spice --no-prompt <scope> submit --force <draft-flag>/);
+  assert.match(doctor, /--draft.*--no-draft|--no-draft.*--draft/s);
   assert.doesNotMatch(`${stacker}\n${doctor}`, /model: sonnet|subagent_type|  - (?:Bash|Read|Write|Edit|Glob|Grep)\n/);
+});
+
+test("every generated executable branch and rebase workflow is non-interactive", () => {
+  const runtime = [
+    ...expectedPrompts.map((name) => `prompts/${name}`),
+    ...expectedSkills.map((name) => `skills/${name}/SKILL.md`),
+    ...expectedAgents.map((name) => `agents/${name}`),
+  ].map(readText).join("\n");
+  assert.doesNotMatch(runtime, /`git-spice bc`/, "branch-create shorthand is not safe executable guidance");
+  assert.doesNotMatch(runtime, /`git-spice rbc`/, "rebase-continue shorthand omits --no-edit");
+  const branchCommands = Array.from(runtime.matchAll(/git-spice(?: --no-prompt)? branch create[^\n`]*/g), ([command]) => command.trim());
+  assert.ok(branchCommands.length > 0);
+  for (const command of branchCommands) {
+    assert.match(command, /^git-spice --no-prompt branch create /, command);
+    assert.match(command, /(?:^| )-m (?:"[^"]+"|<[^>]+>)|--no-commit/, command);
+  }
+  const continuations = Array.from(runtime.matchAll(/`(git-spice(?: --no-prompt)? rebase continue[^`]*)`/g), ([, command]) => command);
+  assert.ok(continuations.length > 0);
+  for (const command of continuations) assert.equal(command, "git-spice --no-prompt rebase continue --no-edit");
 });
 
 test("npm pack contains the exact generated runtime and no maintainer tooling", () => {

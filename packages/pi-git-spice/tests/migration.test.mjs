@@ -22,6 +22,8 @@ const prompt = (description, body, argumentHint) => [
   "---",
   "",
   body,
+  "Fixture source body remains.",
+  "/git-spice:custom-source-reference",
   "",
 ].join("\n");
 
@@ -57,13 +59,13 @@ const sourceFiles = () => ({
   "commands/init.md": prompt("Initialize git-spice", [
     "# Init",
     "Confirm you're inside a git repository:",
-    "Run `git-spice repo init` after collecting trunk and remote values from `$ARGUMENTS`.",
-    "Use `git-spice repo init --reset` only when requested.",
+    "2. Check whether git-spice is already initialized: `git-spice log long 2>&1`. If it succeeds and shows a trunk, tell the user it's already initialized and offer to re-init with `git-spice repo init --reset` only if they ask.",
+    "3. Run `git-spice repo init`. If `$ARGUMENTS` was provided, treat it as either a trunk branch name or `--trunk=<name> --remote=<name>` flags and pass it through. Otherwise let the interactive prompt run.",
   ].join("\n"), "[trunk-name | --trunk=<name> --remote=<name>]"),
   "commands/new.md": prompt("Create a stacked branch", [
     "# New",
     "Create a new branch on top of the current one with `git-spice branch create`.",
-    "Use `$ARGUMENTS` as the branch name and run `git-spice branch create`.",
+    "1. Parse `$ARGUMENTS` as the branch name. If empty, ask the user for one (or note that git-spice will auto-generate from the commit message if `--no-commit` isn't used).",
     "Clean trees use `git-spice branch create <name> --no-commit`.",
   ].join("\n"), "<branch-name>"),
   "commands/restack.md": prompt("Restack branches", [
@@ -92,7 +94,11 @@ const sourceFiles = () => ({
     "",
     "## Command map",
     "Use `git-spice log long` to inspect a stack.",
-    "For work run `git-spice branch create <slug>`.",
+    "For work run `git-spice branch create <slug>` (`git-spice bc`).",
+    "After conflicts, run `git-spice rebase continue` (`git-spice rbc`).",
+    "```bash",
+    "git-spice branch create feat-a",
+    "```",
     "",
     "## Dispatching the subagents",
     "Dispatch via the Task tool with `subagent_type: git-spice:stacker` or `subagent_type: git-spice:stack-doctor`.",
@@ -103,6 +109,7 @@ const sourceFiles = () => ({
     "# Stacking workflow",
     "",
     "Use `git-spice branch create <slug>` for a completed task.",
+    "After conflicts, run `git-spice rebase continue`.",
     "",
     "## Driving with subagents",
     "Dispatch via the Task tool with `subagent_type: git-spice:stacker` or `subagent_type: git-spice:stack-doctor`.",
@@ -114,6 +121,8 @@ const sourceFiles = () => ({
     "",
     "## Diagnosis checklist",
     "Run `git-spice rebase continue` only after a diagnosis.",
+    "For a known repair, run `git-spice <scope> submit --fill`.",
+    "## Repair principles",
   ].join("\n")),
   "agents/stacker.md": agent("Use this agent to build a stack of dependent git-spice branches from an ordered list of changes.", ["Bash", "Read", "Write", "Edit", "Glob", "Grep"], [
     "# Stacker Agent",
@@ -192,7 +201,31 @@ const installedSentinels = (root) => {
 
 const assertRollback = (root, sentinels) => {
   for (const [name, bytes] of sentinels) assert.deepEqual(readFileSync(path.join(root, name, "sentinel.txt")), bytes, name);
-  assert.deepEqual(readdirSync(root).filter((name) => /(?:stage|backup|old|new)/i.test(name)), [], "temporary install directories");
+  assert.deepEqual(
+    readdirSync(root).filter((name) => name.startsWith(".pi-git-spice-install-")),
+    [],
+    "transaction staging and backup directories",
+  );
+};
+
+const inlineGitSpiceCommands = (text, operation) => Array.from(
+  text.matchAll(new RegExp("`(git-spice(?: --no-prompt)? " + operation + "[^`]*)`", "g")),
+  ([, command]) => command,
+);
+
+const assertSafeBranchCreation = (text, context) => {
+  const commands = Array.from(text.matchAll(/git-spice(?: --no-prompt)? branch create[^\n`]*/g), ([command]) => command.trim());
+  assert.ok(commands.length > 0, `${context} contains branch creation guidance`);
+  for (const command of commands) {
+    assert.match(command, /^git-spice --no-prompt branch create /, command);
+    assert.match(command, /(?:^| )-m (?:"[^"]+"|<[^>]+>)|--no-commit/, command);
+  }
+};
+
+const assertSafeRebaseContinuation = (text, context) => {
+  const commands = inlineGitSpiceCommands(text, "rebase continue");
+  assert.ok(commands.length > 0, `${context} contains rebase continuation guidance`);
+  for (const command of commands) assert.equal(command, "git-spice --no-prompt rebase continue --no-edit", context);
 };
 
 test("migration CLI accepts positional and option source forms", () => {
@@ -247,31 +280,66 @@ test("fixture regeneration is byte-for-byte deterministic", () => {
   for (const [relative, bytes] of first) assert.deepEqual(readFileSync(path.join(packageCopy.root, relative)), bytes, relative);
 });
 
-test("migration generates all Pi safety adaptations", () => {
+test("migration transforms source bodies while applying Pi safety adaptations", () => {
   const source = createSourceFixture();
   const packageCopy = createTemporaryPackage();
   assert.equal(runMigration(packageCopy.script, source, packageCopy.root).status, 0);
-  const prompts = readFileSync(path.join(packageCopy.root, "prompts/git-spice-init.md"), "utf8")
-    + readFileSync(path.join(packageCopy.root, "prompts/git-spice-new.md"), "utf8")
-    + readFileSync(path.join(packageCopy.root, "prompts/git-spice-continue.md"), "utf8")
-    + readFileSync(path.join(packageCopy.root, "prompts/git-spice-submit.md"), "utf8");
-  assert.match(prompts, /git-spice --no-prompt repo init --trunk=<name> --remote=<name>/);
-  assert.match(prompts, /separate explicit confirmation/i);
-  assert.match(prompts, /branch create <name> -m <message>.*--no-prompt|--no-prompt.*branch create <name> -m <message>/s);
-  assert.match(prompts, /rebase continue --no-edit/);
-  assert.match(prompts, /draft/i);
-  assert.doesNotMatch(prompts, /\/git-spice:/);
-  const skillOutput = readFileSync(path.join(packageCopy.root, "skills/git-spice/SKILL.md"), "utf8");
-  assert.match(skillOutput, /If the subagent tool is available, list agents first/);
-  assert.match(skillOutput, /git-spice\.stacker/);
-  assert.match(skillOutput, /direct workflow instead/);
-  assert.doesNotMatch(skillOutput, /subagent_type|Task tool/);
+  const prompts = Object.fromEntries(Object.keys(sourceFiles())
+    .filter((relative) => relative.startsWith("commands/"))
+    .map((relative) => [relative, readFileSync(path.join(packageCopy.root, "prompts", `git-spice-${path.basename(relative)}`), "utf8")]));
+  const combinedPrompts = Object.values(prompts).join("\n");
+  assert.match(combinedPrompts, /git-spice --no-prompt repo init --trunk=<name> --remote=<name>/);
+  assert.match(combinedPrompts, /separate explicit confirmation/i);
+  assert.match(combinedPrompts, /draft/i);
+  assert.doesNotMatch(combinedPrompts, /\/git-spice:/);
+  for (const [relative, output] of Object.entries(prompts)) {
+    assert.match(output, /Fixture source body remains\./);
+    assert.match(output, /\/git-spice-custom-source-reference/);
+  }
+  assertSafeBranchCreation(prompts["commands/new.md"], "new prompt");
+  assertSafeRebaseContinuation(prompts["commands/continue.md"], "continue prompt");
+
+  for (const relative of ["skills/git-spice/SKILL.md", "skills/stacking-workflow/SKILL.md"]) {
+    const output = readFileSync(path.join(packageCopy.root, relative), "utf8");
+    assert.match(output, /If the subagent tool is available, list agents first/);
+    assert.match(output, /git-spice\.stacker/);
+    assert.match(output, /direct workflow instead/);
+    assert.doesNotMatch(output, /subagent_type|Task tool/);
+    assertSafeBranchCreation(output, relative);
+    assertSafeRebaseContinuation(output, relative);
+  }
+
   const stacker = readFileSync(path.join(packageCopy.root, "agents/stacker.md"), "utf8");
   assert.match(stacker, /name: stacker/);
   assert.match(stacker, /package: git-spice/);
   assert.match(stacker, /description: Use this agent to build a stack of dependent git-spice branches/);
   assert.match(stacker, /tools: bash, read, write, edit, find, grep/);
   assert.doesNotMatch(stacker, /model: sonnet/);
+  assertSafeBranchCreation(stacker, "stacker agent");
+
+  const doctor = readFileSync(path.join(packageCopy.root, "agents/stack-doctor.md"), "utf8");
+  assertSafeRebaseContinuation(doctor, "stack-doctor agent");
+  const submitMutations = inlineGitSpiceCommands(doctor, "(?:branch|upstack|downstack|stack|<scope>) submit");
+  assert.ok(submitMutations.length > 0, "stack-doctor contains submit guidance");
+  for (const command of submitMutations) {
+    assert.match(command, /^git-spice --no-prompt /, command);
+    if (!command.endsWith(" submit")) assert.match(command, /--draft|--no-draft|<draft-flag>/, command);
+  }
+  assert.match(doctor, /--draft.*--no-draft|--no-draft.*--draft/s);
+  assert.match(doctor, /never rely on an implicit draft state/i);
+});
+
+test("prompt source revisions and every git-spice reference survive semantic transformation", () => {
+  const revised = sourceFiles()["commands/restack.md"]
+    .replace("Run `git-spice stack restack`", "Fixture prompt revision: preserve this instruction. Run `git-spice stack restack`")
+    .replace("/git-spice:continue", "/git-spice:continue and /git-spice:continue");
+  const source = createSourceFixture({ "commands/restack.md": revised });
+  const packageCopy = createTemporaryPackage();
+  assert.equal(runMigration(packageCopy.script, source, packageCopy.root).status, 0);
+  const output = readFileSync(path.join(packageCopy.root, "prompts/git-spice-restack.md"), "utf8");
+  assert.match(output, /Fixture prompt revision: preserve this instruction/);
+  assert.equal((output.match(/\/git-spice-continue/g) ?? []).length, 2);
+  assert.doesNotMatch(output, /\/git-spice:continue/);
 });
 
 for (const [name, overrides, diagnostic] of [

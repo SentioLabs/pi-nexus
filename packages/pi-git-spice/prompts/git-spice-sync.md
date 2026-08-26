@@ -2,8 +2,15 @@
 description: Pull trunk and clean up branches whose CRs were merged
 ---
 
-# Sync after merged Change Requests
+Sync with the remote: pull trunk, delete merged branches, restack survivors.
 
-Check `git status --porcelain` first; stop on a dirty tree. Check `git-spice auth status` and report missing authentication rather than enabling prompts. Then run `git-spice --no-prompt repo sync --restack` and show `git-spice log long`.
+1. Run `git status --porcelain`. If the working tree is dirty, stop and tell the user to commit/stash first — `repo sync` will rebase tracked branches and a dirty tree will block it.
+2. `git-spice --no-prompt auth status`. If not logged in, sync still works locally but won't query CR merge status accurately; warn the user.
+3. Run `git-spice --no-prompt repo sync --restack`. Show the output verbatim — it lists which branches it deleted and which it kept. (`--restack` matters: without it, branches above a deleted branch are only retargeted to trunk, not rebased, and the stack is left flagged as needing restack.)
+4. After it completes, run `git-spice --no-prompt log long` so the user sees the new shape (the bottom of any open stack now sits on the updated trunk).
 
-If sync stops on a conflict, report the blocker, let the user resolve it, and direct them to `/git-spice-continue`. Never retry a mutation by enabling CLI prompts.
+If `repo sync` fails partway through (typically a restack conflict), instruct the user to resolve the conflicts and run `/git-spice-continue`.
+
+## Pi execution safety
+
+Execute `git-spice --no-prompt repo sync --restack`; report missing configuration rather than enabling prompts.

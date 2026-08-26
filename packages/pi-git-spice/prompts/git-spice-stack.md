@@ -2,6 +2,14 @@
 description: Show the current stack (branches + commits, with current branch highlighted)
 ---
 
-# Show the current stack
+Run `git-spice --no-prompt log long` and present the output to the user verbatim — it's already formatted as a tree. Then add a one-line interpretation:
 
-Run `git-spice log long` and present its tree. If git-spice reports that the repository is not initialized, suggest `/git-spice-init`; if restacking is needed, suggest `/git-spice-restack`.
+- If on trunk with no tracked branches: "No stack yet. Create the first branch with `/git-spice-new <name>` after staging changes."
+- If on a tracked branch: state which branch is current and how many branches are above/below it.
+- If a restack appears pending (git-spice may flag this): note that and suggest `/git-spice-restack`.
+
+If `git-spice --no-prompt log long` errors with "not initialized", suggest running `/git-spice-init` first.
+
+## Pi execution safety
+
+Inspect with `git-spice --no-prompt log long`; report missing configuration rather than enabling prompts.

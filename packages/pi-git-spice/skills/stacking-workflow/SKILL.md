@@ -75,7 +75,7 @@ git-spice --no-prompt commit amend            # or 'commit create' for a follow-
 git-spice --no-prompt stack submit --fill     # idempotent — only the changed branch + its upstack force-push
 ```
 
-The auto-restack of upstack branches happens during `commit amend`. If a restack hits conflicts, resolve and `git-spice --no-prompt rebase continue`.
+The auto-restack of upstack branches happens during `commit amend`. If a restack hits conflicts, resolve and `git-spice --no-prompt rebase continue --no-edit`.
 
 ### 4. Land the stack
 

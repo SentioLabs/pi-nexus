@@ -69,13 +69,13 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 
 | Intent | Command |
 |---|---|
-| Stack a new branch on top of HEAD with staged changes | `git-spice --no-prompt branch create <name>` (`git-spice bc`) |
+| Stack a new branch on top of HEAD with staged changes | `git-spice --no-prompt branch create <name> -m "<message>"` (`bc`) |
 | Same, auto-naming the branch from the commit message | `git-spice --no-prompt branch create -m "subject"` (name is optional) |
-| Same, but auto-stage tracked-but-modified files (like `git commit -a`) | `git-spice --no-prompt branch create <name> -a` |
+| Same, but auto-stage tracked-but-modified files (like `git commit -a`) | `git-spice --no-prompt branch create <name> -a -m "<message>"` |
 | Same, with an explicit commit message | `git-spice --no-prompt branch create <name> -m "subject"` |
 | Create branch without committing | `git-spice --no-prompt branch create <name> --no-commit` |
-| Insert a branch *between* current and its upstack | `git-spice --no-prompt branch create <name> --insert` |
-| Create branch *below* current (push current upstack) | `git-spice --no-prompt branch create <name> --below` |
+| Insert a branch *between* current and its upstack | `git-spice --no-prompt branch create <name> --insert -m "<message>"` |
+| Create branch *below* current (push current upstack) | `git-spice --no-prompt branch create <name> --below -m "<message>"` |
 | Track an existing git branch | `git-spice --no-prompt branch track` (`git-spice btr`) |
 | Track every untracked branch below current | `git-spice --no-prompt downstack track` (`git-spice dstr`) |
 
@@ -163,12 +163,12 @@ git-spice rebases run `git rebase` under the hood. Conflicts pause the operation
 
 | Intent | Command |
 |---|---|
-| Continue after resolving conflicts | `git-spice --no-prompt rebase continue` (`git-spice rbc`) |
+| Continue after resolving conflicts | `git-spice --no-prompt rebase continue --no-edit` (`rbc`) |
 | Abort and restore pre-rebase state | `git-spice --no-prompt rebase abort` (`git-spice rba`) |
 
 Workflow during a conflict:
 1. Edit conflicted files, `git add` them.
-2. Run `git-spice --no-prompt rebase continue`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).
+2. Run `git-spice --no-prompt rebase continue --no-edit`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).
 
 Using raw `git rebase --continue` works for the *current* rebase only; git-spice won't auto-advance to the next branch in a multi-step operation.
 
@@ -178,11 +178,11 @@ Using raw `git rebase --continue` works for the *current* rebase only; git-spice
 
 ```bash
 # On trunk, with the first chunk staged
-git-spice --no-prompt branch create feat-a
+git-spice --no-prompt branch create feat-a -m "<message>"
 # Stage the next chunk
-git-spice --no-prompt branch create feat-b
+git-spice --no-prompt branch create feat-b -m "<message>"
 # And so on
-git-spice --no-prompt branch create feat-c
+git-spice --no-prompt branch create feat-c -m "<message>"
 git-spice --no-prompt log long   # confirm the shape
 ```
 
@@ -218,7 +218,7 @@ Without `--restack`, survivors are only retargeted to the new trunk and remain m
 
 ```bash
 git-spice --no-prompt branch checkout feat-b
-git-spice --no-prompt branch create --insert feat-b2   # feat-b2 sits between feat-b and feat-c
+git-spice --no-prompt branch create --insert feat-b2   -m "<message>" # feat-b2 sits between feat-b and feat-c
 ```
 
 ### Move a sub-stack onto a different base
@@ -232,7 +232,7 @@ git-spice --no-prompt upstack onto main     # detach feat-b + everything above; 
 
 Stacks get into wedged states. Common ones:
 
-- **Restack stopped on conflict** → `git add` resolutions, `git-spice --no-prompt rebase continue`. If you want out, `git-spice --no-prompt rebase abort`.
+- **Restack stopped on conflict** → `git add` resolutions, `git-spice --no-prompt rebase continue --no-edit`. If you want out, `git-spice --no-prompt rebase abort`.
 - **Branch silently diverged from base** → `git-spice --no-prompt branch restack` for one, `git-spice --no-prompt repo restack` for all.
 - **Branches "missing" from `log long`** → first check `git-spice --no-prompt log long --all`; by default `log` only shows the current stack. If genuinely untracked, `git-spice --no-prompt branch track` on each, or `git-spice --no-prompt downstack track` from the top.
 - **Upstack flagged "needs restack" after a sync** → `repo sync` ran without `--restack`. Run `git-spice --no-prompt repo restack` (or `stack restack` if it's one stack).
@@ -255,7 +255,7 @@ The **stacker** subagent encapsulates this loop and is what you should dispatch 
 ## Don't
 
 - **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice --no-prompt upstack restack`, or `git-spice --no-prompt branch edit` when the user is driving interactively.
-- **Don't `git push --force`** on a tracked branch. Use `git-spice <scope> submit` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.
+- **Don't `git push --force`** on a tracked branch. Use `git-spice --no-prompt <scope> submit` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.
 - **Don't delete tracked branches with `git branch -D`.** Use `git-spice --no-prompt branch delete` so upstack branches get re-parented.
 - **Don't assume `gs`** is git-spice in commands you write. Always `git-spice`.
 

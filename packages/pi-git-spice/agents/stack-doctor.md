@@ -40,22 +40,26 @@ Map symptoms to likely root causes:
 
 | Symptom | Likely cause | Repair |
 |---|---|---|
-| `git status` shows "currently rebasing" + unmerged paths | rebase paused on conflict | resolve files → `git add` → `git-spice --no-prompt rebase continue` |
-| `git status` shows "currently rebasing", no conflicts | rebase paused, awaiting continue | `git-spice --no-prompt rebase continue` |
+| `git status` shows "currently rebasing" + unmerged paths | rebase paused on conflict | resolve files → `git add` → `git-spice --no-prompt rebase continue --no-edit` |
+| `git status` shows "currently rebasing", no conflicts | rebase paused, awaiting continue | `git-spice --no-prompt rebase continue --no-edit` |
 | Branch's commits don't extend its recorded base | base was force-pushed or branch was rebased manually | `git-spice --no-prompt branch restack` (one branch) or `git-spice --no-prompt repo restack` (many) |
 | Branches exist in git but not in `log long --all` | untracked | `git-spice --no-prompt branch track` per branch, or `git-spice --no-prompt downstack track` from the top |
 | Upstack branches flagged "needs restack" right after a sync or delete | `repo sync` / `branch delete` ran without `--restack` — they only retarget | `git-spice --no-prompt stack restack` (one stack) or `git-spice --no-prompt repo restack` (all) |
 | `log long` shows wrong trunk | trunk reconfigured or repo init ran with wrong `--trunk` | `git-spice --no-prompt repo init --trunk=<correct>` |
 | Submit errors with auth message | token expired or scope insufficient | `git-spice --no-prompt auth login` (user must run interactively) |
-| Submit errors with "branch up to date" but PR isn't | nav-comment edge case or stale CR cache | `git-spice <scope> submit --force` after confirming the local branch is right |
-| Stack is correct locally but PR descriptions are stale | submit ran without `--fill` and the prompt was canceled | re-run `git-spice <scope> submit --fill` |
+| Submit errors with "branch up to date" but PR isn't | nav-comment edge case or stale CR cache | `git-spice --no-prompt <scope> submit --force <draft-flag>` after confirming the local branch is right |
+| Stack is correct locally but PR descriptions are stale | submit ran without `--fill` and the prompt was canceled | re-run `git-spice --no-prompt <scope> submit --fill <draft-flag>` |
 
 If the symptom doesn't fit anything here, walk the diagnosis checklist again and write up what you found rather than guessing.
+
+## Submit safety
+
+For any submit repair, resolve an explicit `--draft` or `--no-draft` state before running the command. Never rely on an implicit draft state; stop and report missing configuration instead of enabling prompts.
 
 ## Repair principles
 
 1. **Smallest fix that addresses the diagnosis.** `git-spice --no-prompt branch restack` before `git-spice --no-prompt stack restack` before `git-spice --no-prompt repo restack`. Bigger ops are harder to reason about if they themselves fail.
-2. **Never `git rebase --continue` directly during a git-spice operation.** Use `git-spice --no-prompt rebase continue`. Plain git only finishes the inner rebase and leaves git-spice's outer queue stalled.
+2. **Never `git rebase --continue` directly during a git-spice operation.** Use `git-spice --no-prompt rebase continue --no-edit`. Plain git only finishes the inner rebase and leaves git-spice's outer queue stalled.
 3. **Never `--force` on submit unless you've confirmed the local state is the source of truth.** Reviewer comments don't survive a force-push that loses commits.
 4. **Never `repo init --reset` without explicit dispatcher consent.** It forgets all tracking. Almost never the right answer.
 5. **If a repair could lose work, stop.** Report `NEEDS_CONFIRMATION` with the exact commands you'd run and what they'd change. Let the dispatcher (and the user) decide.
@@ -87,7 +91,7 @@ Remaining concerns / proposed next steps:
 - <bullets — for NEEDS_CONFIRMATION, list the exact commands you'd run>
 
 Final state:
-<paste git-spice log long and git status>
+<paste git-spice --no-prompt log long and git status>
 ```
 
 - `FIXED` — stack is healthy, all symptoms resolved, verified with `git-spice --no-prompt log long`.

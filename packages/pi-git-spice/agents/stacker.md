@@ -69,7 +69,7 @@ Branches built:
 ...
 
 Final stack:
-<paste git-spice log long>
+<paste git-spice --no-prompt log long>
 
 Concerns / next steps:
 - <one bullet per non-blocking concern>
@@ -94,5 +94,5 @@ Concerns / next steps:
 - **Working tree starts dirty.** Report `BLOCKED`. The dispatcher's job is to clean up first, not yours.
 - **A task requires a file the previous branch should have created but didn't.** Report `NEEDS_CONTEXT` — the cuts are wrong.
 - **The verification command is flaky** (passes on retry). Note it as a concern in your report; don't paper over it with retry loops unless the dispatcher's prompt explicitly says to.
-- **`git-spice --no-prompt branch create` errors with "branch already exists".** Stop. Report `BLOCKED` with the conflicting branch name. Don't pick a different name silently.
+- **`git-spice --no-prompt branch create <name> -m "<message>"` errors with "branch already exists".** Stop. Report `BLOCKED` with the conflicting branch name. Don't pick a different name silently.
 - **Restack conflict mid-build** (rare — happens if the dispatcher told you to start partway up an existing stack). Report `BLOCKED` and recommend handing off to stack-doctor.

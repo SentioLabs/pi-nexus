@@ -53,57 +53,34 @@ PROMPT_ANCHORS = {
     "commands/sync.md": "Sync with the remote: pull trunk, delete merged branches, restack survivors.",
 }
 
-PROMPT_BODIES = {
-    "commands/continue.md": """# Continue a git-spice rebase
+PROMPT_SAFETY_APPENDICES = {
+    "commands/continue.md": """## Pi execution safety
 
-Use `$ARGUMENTS` to select the path. Run `git status --porcelain` first and stop if unresolved paths remain. Do not stage resolutions without explicit approval.
-
-- For an abort request, run `git-spice --no-prompt rebase abort` and report that the pre-rebase state was restored.
-- Otherwise, once resolutions are staged, run `git-spice --no-prompt rebase continue --no-edit`.
-
-If continuing reaches another conflict, report the files and wait. Interactive commit-message editing is terminal-only: stop and show the user `git-spice rebase continue` to run in their own terminal instead of opening an editor through Pi. When the operation finishes, run `git-spice log long` and report the result.
+For unattended continuation, use `git-spice --no-prompt rebase continue --no-edit`. Interactive commit-message editing is terminal-only; do not open an editor through Pi.
 """,
-    "commands/init.md": """# Initialize git-spice
+    "commands/init.md": """## Pi execution safety
 
-Use `$ARGUMENTS` when it provides a trunk or explicit `--trunk=<name> --remote=<name>` values. First confirm this is a repository with `git rev-parse --show-toplevel`.
-
-Do not run an argumentless initialization command in a Pi tool. Gather an explicit trunk and remote through an available user-question tool, or through plain chat when that tool is unavailable. If either value cannot be obtained, stop and show the manual terminal command.
-
-Run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. Then run `git-spice auth status` and `git-spice log long`; never run interactive `auth login` yourself.
-
-For `--reset`, explain that branches remain but all git-spice tracking relationships are forgotten. Require a separate explicit confirmation before running `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`.
+Do not run argumentless initialization in Pi. Gather an explicit trunk and remote through an available user-question tool, or through plain chat when that tool is unavailable; if either value is unavailable, stop. Run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. For `--reset`, disclose that tracking relationships are forgotten and obtain a separate explicit confirmation before adding `--reset`.
 """,
-    "commands/new.md": """# Create a stacked branch
+    "commands/new.md": """## Pi execution safety
 
-Use `$ARGUMENTS` as the branch name. If it is missing, gather an explicit name through an available user-question tool or plain chat; stop if it cannot be obtained.
-
-For staged or explicitly approved auto-staged changes, gather an explicit commit message and run `git-spice --no-prompt branch create <name> -m <message>`. Add `-a` only after explicit approval for unstaged tracked changes. Do not invoke a commit editor through Pi.
-
-For a clean working tree, run `git-spice --no-prompt branch create <name> --no-commit`. Honor explicit `--insert` or `--below` only after collecting the branch name and, when committing, the message. Finish with `git-spice log long`.
+Gather an explicit branch name and commit message through an available user-question tool or plain chat before a populated branch creation. Use `git-spice --no-prompt branch create <name> -m <message>` for populated changes; add `-a` only after explicit approval. On a clean tree, use `git-spice --no-prompt branch create <name> --no-commit`.
 """,
-    "commands/restack.md": """# Restack branches
+    "commands/restack.md": """## Pi execution safety
 
-Use `$ARGUMENTS` to choose one explicit scope: `branch`, `upstack`, `stack` (the default), or `repo`. Execute one of `git-spice --no-prompt branch restack`, `git-spice --no-prompt upstack restack`, `git-spice --no-prompt stack restack`, or `git-spice --no-prompt repo restack`.
-
-If configuration is missing or a conflict stops the command, report the blocker rather than enabling prompts. After resolving conflicts, use `/git-spice-continue`.
+Execute only an explicit restack scope with `--no-prompt`. If configuration is missing, report it rather than enabling prompts.
 """,
-    "commands/stack.md": """# Show the current stack
+    "commands/stack.md": """## Pi execution safety
 
-Run `git-spice log long` and present its tree. If git-spice reports that the repository is not initialized, suggest `/git-spice-init`; if restacking is needed, suggest `/git-spice-restack`.
+Inspect with `git-spice --no-prompt log long`; report missing configuration rather than enabling prompts.
 """,
-    "commands/submit.md": """# Submit a stack
+    "commands/submit.md": """## Pi execution safety
 
-Parse `$ARGUMENTS` for `branch`, `upstack`, `downstack`, or `stack` (the default), plus explicit extra flags. Confirm authentication with `git-spice auth status`; do not launch interactive login.
-
-Resolve `--draft` or `--no-draft` before creating a Change Request: honor an explicit argument, otherwise read `spice.submit.draft`, then ask through an available user-question tool or plain chat. If no value can be obtained, stop. Use the resolved draft flag in both `git-spice --no-prompt <scope> submit --dry-run --fill <draft-flag>` and `git-spice --no-prompt <scope> submit --fill <draft-flag> <extra-flags>`.
-
-If `--update-only` proves that no new Change Request can be created, existing draft state may remain unchanged. Report missing configuration instead of enabling prompts.
+Resolve `--draft` or `--no-draft` from arguments, then `spice.submit.draft`, then an available user-question tool or plain chat; stop if no value is available. Use the resolved flag for both `git-spice --no-prompt <scope> submit --dry-run --fill <draft-flag>` and `git-spice --no-prompt <scope> submit --fill <draft-flag> <extra-flags>`. Do not enable prompts for missing configuration.
 """,
-    "commands/sync.md": """# Sync after merged Change Requests
+    "commands/sync.md": """## Pi execution safety
 
-Check `git status --porcelain` first; stop on a dirty tree. Check `git-spice auth status` and report missing authentication rather than enabling prompts. Then run `git-spice --no-prompt repo sync --restack` and show `git-spice log long`.
-
-If sync stops on a conflict, report the blocker, let the user resolve it, and direct them to `/git-spice-continue`. Never retry a mutation by enabling CLI prompts.
+Execute `git-spice --no-prompt repo sync --restack`; report missing configuration rather than enabling prompts.
 """,
 }
 
@@ -278,19 +255,134 @@ def render_prompt(fields: list[tuple[str, str]], body: str) -> str:
     return "---\n" + "\n".join(f"{key}: {value}" for key, value in fields) + "\n---\n\n" + body.rstrip() + "\n"
 
 
-def transform_prompt(source_relative: str, text: str) -> str:
-    if source_relative not in PROMPT_BODIES:
-        raise RuntimeError(f"Unsupported source prompt: {source_relative}")
-    fields, _ = parse_prompt_frontmatter(text, source_relative)
-    anchor = PROMPT_ANCHORS[source_relative]
-    require_replace(text, anchor, anchor, source_relative)
-    return render_prompt(fields, PROMPT_BODIES[source_relative])
+def transform_prompt_references(body: str, context: str) -> str:
+    references = re.findall(r"/git-spice:([A-Za-z0-9][A-Za-z0-9-]*)", body)
+    if "/git-spice:" in body and not references:
+        raise RuntimeError(f"Malformed /git-spice reference while patching {context}")
+    for name in sorted(set(references)):
+        source_reference = f"/git-spice:{name}"
+        target_reference = f"/git-spice-{name}"
+        source_count = body.count(source_reference)
+        body = replace_all(body, source_reference, target_reference, context)
+        if body.count(source_reference) or body.count(target_reference) < source_count:
+            raise RuntimeError(f"Failed to preserve /git-spice reference cardinality while patching {context}: {source_reference!r}")
+    return body
 
 
 def make_commands_noninteractive(text: str) -> str:
     command = r"(?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>)"
-    text = re.sub(rf"(?m)^git-spice (?={command}\b)(?!-)(?!--no-prompt\b)", "git-spice --no-prompt ", text)
-    return re.sub(rf"`git-spice (?={command}\b)(?!-)(?!--no-prompt\b)", "`git-spice --no-prompt ", text)
+    return re.sub(
+        rf"(?<![\w-])git-spice(?! --no-prompt)(?= {command}(?:\s|`|$))",
+        "git-spice --no-prompt",
+        text,
+    )
+
+
+def make_rebase_continuations_noninteractive(text: str) -> str:
+    return re.sub(
+        r"git-spice(?: --no-prompt)? rebase continue(?!\s+--no-edit)",
+        "git-spice --no-prompt rebase continue --no-edit",
+        text,
+    )
+
+
+def make_branch_creations_explicit(text: str) -> str:
+    def explicit_command(command: str, arguments: str) -> str:
+        arguments = arguments.strip()
+        executable, marker, comment = arguments.partition(" #")
+        if not executable:
+            executable = '<name> -m "<message>"'
+        elif not re.search(r"(?:^|\s)(?:-m|--message)(?:\s|=)", executable) and "--no-commit" not in executable:
+            executable += ' -m "<message>"'
+        return command + " " + executable + (marker + comment if marker else "")
+
+    def replace_inline_command(match: re.Match[str]) -> str:
+        return "`" + explicit_command(match.group(1), match.group(2)) + "`"
+
+    def replace_line_command(match: re.Match[str]) -> str:
+        return match.group(1) + explicit_command(match.group(2), match.group(3))
+
+    text = re.sub(r"`(git-spice --no-prompt branch create)([^`]*)`", replace_inline_command, text)
+    return re.sub(
+        r"(?m)^(\s*)(git-spice --no-prompt branch create)([^\n]*)$",
+        replace_line_command,
+        text,
+    )
+
+
+def make_submit_mutations_noninteractive(text: str) -> str:
+    return re.sub(
+        r"git-spice(?: --no-prompt)? ((?:branch|upstack|downstack|stack|<scope>) submit)",
+        r"git-spice --no-prompt \1",
+        text,
+    )
+
+
+def make_stack_doctor_submit_drafts_explicit(text: str) -> str:
+    def replace_command(match: re.Match[str]) -> str:
+        command = match.group(1)
+        arguments = match.group(2).strip()
+        if not arguments:
+            return f"`{command}`"
+        if not re.search(r"(?:^|\s)(?:--draft|--no-draft|<draft-flag>)(?:\s|$)", arguments):
+            arguments += " <draft-flag>"
+        return f"`{command} {arguments}`"
+
+    return re.sub(
+        r"`(git-spice --no-prompt (?:branch|upstack|downstack|stack|<scope>) submit)([^`]*)`",
+        replace_command,
+        text,
+    )
+
+
+def transform_executable_guidance(text: str) -> str:
+    text = make_commands_noninteractive(text)
+    text = make_submit_mutations_noninteractive(text)
+    text = make_rebase_continuations_noninteractive(text)
+    return make_branch_creations_explicit(text)
+
+
+def transform_prompt(source_relative: str, text: str) -> str:
+    if source_relative not in PROMPT_SAFETY_APPENDICES:
+        raise RuntimeError(f"Unsupported source prompt: {source_relative}")
+    fields, body = parse_prompt_frontmatter(text, source_relative)
+    anchor = PROMPT_ANCHORS[source_relative]
+    require_replace(body, anchor, anchor, source_relative)
+    body = transform_prompt_references(body, source_relative)
+    body = transform_executable_guidance(body)
+    if source_relative == "commands/init.md":
+        body = require_replace(
+            body,
+            "`git-spice --no-prompt repo init --reset`",
+            "`git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`",
+            source_relative,
+        )
+        body = require_replace(
+            body,
+            "3. Run `git-spice --no-prompt repo init`. If `$ARGUMENTS` was provided, treat it as either a trunk branch name or `--trunk=<name> --remote=<name>` flags and pass it through. Otherwise let the interactive prompt run.",
+            "3. Resolve `$ARGUMENTS` to explicit `--trunk=<name> --remote=<name>` values. If either value is absent, gather it through an available user-question tool or plain chat; stop if it remains unavailable. Run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`.",
+            source_relative,
+        )
+    if source_relative == "commands/new.md":
+        body = require_replace(
+            body,
+            "1. Parse `$ARGUMENTS` as the branch name. If empty, ask the user for one (or note that git-spice will auto-generate from the commit message if `--no-commit` isn't used).",
+            "1. Parse `$ARGUMENTS` as the branch name. If empty, gather an explicit name through an available user-question tool or plain chat; stop if it remains unavailable.",
+            source_relative,
+        )
+    if source_relative == "commands/submit.md":
+        body = re.sub(
+            r"(git-spice --no-prompt <scope> submit --dry-run --fill)(?!\s+<draft-flag>)",
+            r"\1 <draft-flag>",
+            body,
+        )
+        body = re.sub(
+            r"(git-spice --no-prompt <scope> submit --fill)(?!\s+<draft-flag>)",
+            r"\1 <draft-flag>",
+            body,
+        )
+    body = body.rstrip() + "\n\n" + PROMPT_SAFETY_APPENDICES[source_relative].rstrip()
+    return render_prompt(fields, body)
 
 
 def replace_section(text: str, start: str, end: str, replacement: str, context: str) -> str:
@@ -307,14 +399,10 @@ def transform_git_spice_skill(text: str) -> str:
     normalized = validate_skill_frontmatter(text, "git-spice", "skills/git-spice/SKILL.md")
     frontmatter, body = split_frontmatter(normalized, "skills/git-spice/SKILL.md")
     body = replace_section(body, "## Dispatching the subagents", "## Configuration", "## Dispatching optional Pi subagents\n\n" + DISPATCH_CONTRACT, "skills/git-spice/SKILL.md")
-    body = replace_all(body, "/git-spice:", "/git-spice-", "skills/git-spice/SKILL.md", require_match=False)
-    body = make_commands_noninteractive(body)
-    body = require_replace(
-        body,
-        "`git-spice --no-prompt branch create <slug>`",
-        "`git-spice --no-prompt branch create <slug> -m \"<message>\"`",
-        "skills/git-spice/SKILL.md",
-    )
+    body = transform_prompt_references(body, "skills/git-spice/SKILL.md")
+    body = transform_executable_guidance(body)
+    body = require_replace(body, "`git-spice bc`", "`bc`", "skills/git-spice/SKILL.md")
+    body = require_replace(body, "`git-spice rbc`", "`rbc`", "skills/git-spice/SKILL.md")
     return "---\n" + frontmatter + "\n---\n\n" + body.rstrip() + "\n"
 
 
@@ -322,14 +410,8 @@ def transform_stacking_workflow(text: str) -> str:
     normalized = validate_skill_frontmatter(text, "stacking-workflow", "skills/stacking-workflow/SKILL.md")
     frontmatter, body = split_frontmatter(normalized, "skills/stacking-workflow/SKILL.md")
     body = replace_section(body, "## Driving with subagents", "## Don't", "## Driving with optional Pi subagents\n\n" + DISPATCH_CONTRACT, "skills/stacking-workflow/SKILL.md")
-    body = replace_all(body, "/git-spice:", "/git-spice-", "skills/stacking-workflow/SKILL.md", require_match=False)
-    body = make_commands_noninteractive(body)
-    body = require_replace(
-        body,
-        "`git-spice --no-prompt branch create <slug>`",
-        "`git-spice --no-prompt branch create <slug> -m \"<message>\"`",
-        "skills/stacking-workflow/SKILL.md",
-    )
+    body = transform_prompt_references(body, "skills/stacking-workflow/SKILL.md")
+    body = transform_executable_guidance(body)
     return "---\n" + frontmatter + "\n---\n\n" + body.rstrip() + "\n"
 
 
@@ -337,14 +419,23 @@ def transform_agent(source_relative: str, text: str) -> str:
     name, expected_tools, anchor = AGENT_CONFIG[source_relative]
     description, tools, body = parse_agent_frontmatter(text, expected_tools, source_relative)
     require_replace(body, anchor, anchor, source_relative)
-    body = make_commands_noninteractive(body)
     if name == "stacker":
         body = require_replace(
             body,
-            "`git-spice --no-prompt branch create <prefix><slug>` (uses staged changes as the commit). The commit message defaults to the staged changes; if the task description maps to a clean conventional-commit subject, prefer `git-spice --no-prompt branch create <name> -m \"<subject>\"`.",
-            "`git-spice --no-prompt branch create <prefix><slug> -m \"<subject>\"`. Gather the subject explicitly; do not rely on defaults or open an editor.",
+            "`git-spice branch create <prefix><slug>` (uses staged changes as the commit). The commit message defaults to the staged changes; if the task description maps to a clean conventional-commit subject, prefer `git-spice branch create <name> -m \"<subject>\"`.",
+            "`git-spice branch create <prefix><slug> -m \"<subject>\"`. Gather the subject explicitly; do not rely on defaults or open an editor.",
             source_relative,
         )
+    if name == "stack-doctor":
+        body = require_replace(
+            body,
+            "## Repair principles",
+            "## Submit safety\n\nFor any submit repair, resolve an explicit `--draft` or `--no-draft` state before running the command. Never rely on an implicit draft state; stop and report missing configuration instead of enabling prompts.\n\n## Repair principles",
+            source_relative,
+        )
+    body = transform_executable_guidance(body)
+    if name == "stack-doctor":
+        body = make_stack_doctor_submit_drafts_explicit(body)
     tool_names = ", ".join(TOOL_MAP[tool] for tool in tools)
     return "\n".join((
         "---",
