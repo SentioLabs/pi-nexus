@@ -70,12 +70,25 @@ function makePackage(root, original = "original skill bytes\n") {
   return packageCopy;
 }
 
-function runMigration(packageCopy, args) {
+function runMigration(packageCopy, args, env = {}) {
   return spawnSync(
     "python3",
     [join(packageCopy, "scripts", "migrate-review-responder-plugin.py"), ...args],
-    { cwd: packageCopy, encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } },
+    {
+      cwd: packageCopy,
+      encoding: "utf8",
+      env: { ...process.env, ...env, PYTHONDONTWRITEBYTECODE: "1" },
+    },
   );
+}
+
+function assertPatternsInOrder(text, patterns, context) {
+  let offset = 0;
+  for (const pattern of patterns) {
+    const match = pattern.exec(text.slice(offset));
+    assert.notEqual(match, null, `${context}: missing ordered pattern ${pattern}`);
+    offset += match.index + match[0].length;
+  }
 }
 
 function assertOriginalSkill(packageCopy, expected = "original skill bytes\n") {
@@ -126,6 +139,38 @@ test("migration CLI exposes positional and option source forms", () => {
   assert.match(result.stdout, /Regenerate pi-review-responder resources/);
   assert.match(result.stdout, /\[--source SOURCE\]/);
   assert.match(result.stdout, /\[source\]/);
+});
+
+test("no-argument source selection skips invalid candidates under a temporary HOME", () => {
+  const root = makeTempDir();
+  try {
+    const home = join(root, "home");
+    const invalidCandidate = join(
+      home,
+      "devspace/personal/bfirestone/agent-marketplace/claude-marketplace/plugins/review-responder",
+    );
+    const verifiedCandidate = join(
+      home,
+      "devspace/personal/sentiolabs/agent-nexus/claude-marketplace/plugins/review-responder",
+    );
+    writeSource(invalidCandidate, { extra: "unclassified.txt" });
+    writeSource(verifiedCandidate);
+    const packageCopy = makePackage(root);
+
+    const result = runMigration(packageCopy, [], { HOME: home });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      result.stdout,
+      new RegExp(`Generated pi-review-responder resources from: ${verifiedCandidate.replaceAll("\\", "\\\\")}`),
+    );
+    assert.notEqual(
+      readFileSync(join(packageCopy, "skills", "review-responder", "SKILL.md"), "utf8"),
+      "original skill bytes\n",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("positional and --source forms are mutually exclusive", () => {
@@ -365,6 +410,63 @@ test("fixture regeneration is byte-for-byte deterministic", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("fixture generation enforces ordered retrieval and per-post evidence refresh", () => {
+  withFixture(({ source, packageCopy }) => {
+    const result = runMigration(packageCopy, [source]);
+    assert.equal(result.status, 0, result.stderr);
+    const skill = readFileSync(
+      join(packageCopy, "skills", "review-responder", "SKILL.md"),
+      "utf8",
+    );
+    const fetchPhase = skill.slice(
+      skill.indexOf("## Phase 2: Fetch Unresolved Review Threads"),
+      skill.indexOf("## Phase 3: Evaluate Validity"),
+    );
+    assertPatternsInOrder(fetchPhase, [
+      /retain every thread `id` plus its `isResolved` state without filtering or\s+fetching comments/i,
+      /continue[^.]*while `hasNextPage` is true/is,
+      /only after[^.]*complete[^.]*filter/is,
+      /for each thread that remains unresolved[^.]*comments/is,
+    ], "complete thread retrieval before filtering");
+
+    const scopePhase = skill.slice(
+      skill.indexOf("## Phase 1: Identify Scope"),
+      skill.indexOf("## Phase 2: Fetch Unresolved Review Threads"),
+    );
+    assertPatternsInOrder(scopePhase, [
+      /require `command -v gh` to exit successfully/i,
+      /stop without invoking\s+`gh auth status`[^.]*without making an API call/is,
+      /only after that success, run `gh auth status`/i,
+      /require successful authentication/i,
+      /stop before\s+any `gh pr view`, GraphQL, or REST call/is,
+      /only after both checks succeed[^.]*GitHub API/is,
+    ], "fail-closed gh availability and authentication preflight");
+
+    const replyPhase = skill.slice(
+      skill.indexOf("## Phase 6: Preview and Post Replies"),
+      skill.indexOf("## Important Notes"),
+    );
+    assertPatternsInOrder(replyPhase, [
+      /explicit approval of\s+the batch/i,
+      /after that approval and immediately before each REST post/i,
+      /refresh[^.]*headRefOid[^.]*canonical base repository/is,
+      /re-check[^.]*verdict[^.]*evidence/is,
+      /every \*\*Fixed\*\* and \*\*Already fixed\*\*[^.]*equals[^.]*ancestor/is,
+      /evidence changed[^.]*new reply preview[^.]*approval/is,
+      /re-fetch that thread[^.]*complete comment pagination/is,
+      /gh api --hostname "\$host" --method POST/,
+    ], "post-approval refresh before every reply post");
+    assert.match(
+      replyPhase,
+      /\*\*Fixed\*\* and \*\*Already fixed\*\*[^\n]*marker `evidence`[^\n]*exactly the cited fix commit SHA/i,
+    );
+    assert.match(
+      replyPhase,
+      /\*\*Invalid\*\*, \*\*Won't fix\*\*, and \*\*Not applicable\*\*[\s\S]{0,120}marker `evidence`[\s\S]{0,120}evaluated and refreshed PR `headRefOid`/i,
+    );
+  });
 });
 
 test("manifest probes leave no scripts/__pycache__", () => {

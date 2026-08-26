@@ -8,6 +8,15 @@ const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const readText = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
 const readJson = (relative) => JSON.parse(readText(relative));
 
+function assertPatternsInOrder(text, patterns, context) {
+  let offset = 0;
+  for (const pattern of patterns) {
+    const match = pattern.exec(text.slice(offset));
+    assert.notEqual(match, null, `${context}: missing ordered pattern ${pattern}`);
+    offset += match.index + match[0].length;
+  }
+}
+
 test("package exposes exactly the review-responder skill", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "@sentiolabs/pi-review-responder");
@@ -59,6 +68,57 @@ test("generated skill preserves source behavior and Pi safety contracts", () => 
   ]) {
     assert.doesNotMatch(skill, forbidden);
   }
+});
+
+test("generated workflow orders retrieval and post-approval safety checks", () => {
+  const skill = readText("skills/review-responder/SKILL.md");
+  const fetchPhase = skill.slice(
+    skill.indexOf("## Phase 2: Fetch Unresolved Review Threads"),
+    skill.indexOf("## Phase 3: Evaluate Validity"),
+  );
+  assertPatternsInOrder(fetchPhase, [
+    /retain every thread `id` plus its `isResolved` state without filtering or\s+fetching comments/i,
+    /continue[^.]*while `hasNextPage` is true/is,
+    /only after[^.]*complete[^.]*filter/is,
+    /for each thread that remains unresolved[^.]*comments/is,
+  ], "complete thread retrieval before filtering");
+
+  const scopePhase = skill.slice(
+    skill.indexOf("## Phase 1: Identify Scope"),
+    skill.indexOf("## Phase 2: Fetch Unresolved Review Threads"),
+  );
+  assertPatternsInOrder(scopePhase, [
+    /require `command -v gh` to exit successfully/i,
+    /stop without invoking\s+`gh auth status`[^.]*without making an API call/is,
+    /only after that success, run `gh auth status`/i,
+    /require successful authentication/i,
+    /stop before\s+any `gh pr view`, GraphQL, or REST call/is,
+    /only after both checks succeed[^.]*GitHub API/is,
+  ], "fail-closed gh availability and authentication preflight");
+
+  const replyPhase = skill.slice(
+    skill.indexOf("## Phase 6: Preview and Post Replies"),
+    skill.indexOf("## Important Notes"),
+  );
+  assertPatternsInOrder(replyPhase, [
+    /explicit approval of\s+the batch/i,
+    /after that approval and immediately before each REST post/i,
+    /refresh[^.]*headRefOid[^.]*canonical base repository/is,
+    /re-check[^.]*verdict[^.]*evidence/is,
+    /every \*\*Fixed\*\* and \*\*Already fixed\*\*[^.]*equals[^.]*ancestor/is,
+    /evidence changed[^.]*new reply preview[^.]*approval/is,
+    /re-fetch that thread[^.]*complete comment pagination/is,
+    /gh api --hostname "\$host" --method POST/,
+  ], "post-approval refresh before every reply post");
+
+  assert.match(
+    replyPhase,
+    /\*\*Fixed\*\* and \*\*Already fixed\*\*[^\n]*marker `evidence`[^\n]*exactly the cited fix commit SHA/i,
+  );
+  assert.match(
+    replyPhase,
+    /\*\*Invalid\*\*, \*\*Won't fix\*\*, and \*\*Not applicable\*\*[\s\S]{0,120}marker `evidence`[\s\S]{0,120}evaluated and refreshed PR `headRefOid`/i,
+  );
 });
 
 test("npm pack contains runtime and package docs but no maintainer tooling", () => {
