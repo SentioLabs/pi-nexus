@@ -466,6 +466,21 @@ test("fixture generation enforces ordered retrieval and per-post evidence refres
       replyPhase,
       /\*\*Invalid\*\*, \*\*Won't fix\*\*, and \*\*Not applicable\*\*[\s\S]{0,120}marker `evidence`[\s\S]{0,120}evaluated and refreshed PR `headRefOid`/i,
     );
+
+    const verdictMappings = [...replyPhase.matchAll(
+      /^- \*\*(Fixed|Already fixed|Invalid|Won't fix|Not applicable)\*\* → `(fixed|already-fixed|invalid|wont-fix|not-applicable)`$/gm,
+    )].map(([, verdict, slug]) => [verdict, slug]);
+    assert.deepEqual(verdictMappings, [
+      ["Fixed", "fixed"],
+      ["Already fixed", "already-fixed"],
+      ["Invalid", "invalid"],
+      ["Won't fix", "wont-fix"],
+      ["Not applicable", "not-applicable"],
+    ]);
+    assert.match(
+      replyPhase,
+      /Never derive marker verdict slugs by lowercasing or generic whitespace\/punctuation normalization;\s+use only this mapping\./,
+    );
   });
 });
 

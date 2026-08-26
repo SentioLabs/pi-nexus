@@ -307,6 +307,17 @@ Prepare each exact evidence-based reply and append this hidden fingerprint:
 <!-- pi-review-responder: comment=<databaseId> verdict=<slug> evidence=<oid> -->
 ```
 
+Use exactly this marker `verdict` mapping:
+
+- **Fixed** → `fixed`
+- **Already fixed** → `already-fixed`
+- **Invalid** → `invalid`
+- **Won't fix** → `wont-fix`
+- **Not applicable** → `not-applicable`
+
+Never derive marker verdict slugs by lowercasing or generic whitespace/punctuation normalization;
+use only this mapping.
+
 Map marker evidence exactly by verdict:
 
 - For **Fixed** and **Already fixed**, marker `evidence` is exactly the cited fix commit SHA,
