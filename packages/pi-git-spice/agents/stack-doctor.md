@@ -32,7 +32,7 @@ Run these in order. Don't skip — each step is cheap and the data compounds.
 4. **`git-spice --no-prompt auth status`** — is the user logged in? Some failures (e.g. submit errors) trace to expired tokens.
 5. **`git log --oneline -20 <branch>`** for any branch in question — does the history match what you'd expect given the recorded base?
 6. **`git config --get-regexp '^spice\.'`** — are there config overrides (custom trunk, prefix, draft default) that change the picture?
-7. **`git-spice --no-prompt repo init`** would print the recorded trunk + remote, but it's interactive — instead grep `git config --get spice.trunk` and `git config --get spice.remote` (if those keys exist; otherwise note and skip).
+7. **`git-spice --no-prompt repo init --trunk=<name> --remote=<name>`** would print the recorded trunk + remote, but it's interactive — instead grep `git config --get spice.trunk` and `git config --get spice.remote` (if those keys exist; otherwise note and skip).
 
 ## Hypothesis matrix
 
@@ -45,16 +45,12 @@ Map symptoms to likely root causes:
 | Branch's commits don't extend its recorded base | base was force-pushed or branch was rebased manually | `git-spice --no-prompt branch restack` (one branch) or `git-spice --no-prompt repo restack` (many) |
 | Branches exist in git but not in `log long --all` | untracked | `git-spice --no-prompt branch track` per branch, or `git-spice --no-prompt downstack track` from the top |
 | Upstack branches flagged "needs restack" right after a sync or delete | `repo sync` / `branch delete` ran without `--restack` — they only retarget | `git-spice --no-prompt stack restack` (one stack) or `git-spice --no-prompt repo restack` (all) |
-| `log long` shows wrong trunk | trunk reconfigured or repo init ran with wrong `--trunk` | `git-spice --no-prompt repo init --trunk=<correct>` |
+| `log long` shows wrong trunk | trunk reconfigured or repo init ran with wrong `--trunk` | `git-spice --no-prompt repo init --trunk=<correct> --remote=<name>` |
 | Submit errors with auth message | token expired or scope insufficient | `git-spice --no-prompt auth login` (user must run interactively) |
 | Submit errors with "branch up to date" but PR isn't | nav-comment edge case or stale CR cache | `git-spice --no-prompt <scope> submit --force <draft-flag>` after confirming the local branch is right |
 | Stack is correct locally but PR descriptions are stale | submit ran without `--fill` and the prompt was canceled | re-run `git-spice --no-prompt <scope> submit --fill <draft-flag>` |
 
 If the symptom doesn't fit anything here, walk the diagnosis checklist again and write up what you found rather than guessing.
-
-## Submit safety
-
-For any submit repair, resolve an explicit `--draft` or `--no-draft` state before running the command. Never rely on an implicit draft state; stop and report missing configuration instead of enabling prompts.
 
 ## Repair principles
 
@@ -102,7 +98,15 @@ Final state:
 ## Don't
 
 - Don't dispatch sub-agents.
-- Don't run `git-spice --no-prompt stack submit` during recovery — the goal is local correctness first.
+- Don't run `git-spice --no-prompt stack submit <draft-flag>` during recovery — the goal is local correctness first.
 - Don't run `git reset --hard` to "clean up". You'll lose work.
 - Don't paper over a symptom by re-creating branches from scratch — diagnose what made them wrong.
 - Don't recommend `repo init --reset` unless you've ruled out everything else and the dispatcher knows it forgets all tracking.
+
+## Explicit initialization and reset safety
+
+For every initialization, reconfiguration, or recovery path, gather both trunk and remote from explicit arguments, a Pi user-question tool, or plain chat. Always run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. A reset forgets all git-spice tracking relationships while leaving Git branches; disclose that impact and require a separate explicit confirmation before running `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`.
+
+## Explicit submit draft state
+
+Before every create-capable direct submit workflow, resolve draft state from an explicit argument, then `spice.submit.draft`, then a Pi user-question tool or plain chat. Execute with an explicit `<draft-flag>` chosen as `--draft` or `--no-draft`; never rely on an implicit draft state. The `--update-only` exception applies only when that flag proves no new Change Request can be created; otherwise never omit the draft flag.

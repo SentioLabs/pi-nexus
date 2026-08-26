@@ -72,7 +72,7 @@ git-spice --no-prompt branch checkout <branch-with-comments>
 # fix the issues
 git add <files>
 git-spice --no-prompt commit amend            # or 'commit create' for a follow-up commit
-git-spice --no-prompt stack submit --fill     # idempotent — only the changed branch + its upstack force-push
+git-spice --no-prompt stack submit --fill <draft-flag> # idempotent — only the changed branch + its upstack force-push
 ```
 
 The auto-restack of upstack branches happens during `commit amend`. If a restack hits conflicts, resolve and `git-spice --no-prompt rebase continue --no-edit`.
@@ -83,7 +83,7 @@ Branches at the bottom merge first. After each merge:
 
 ```bash
 git-spice --no-prompt trunk
-git-spice --no-prompt repo sync --restack     # pulls trunk, deletes the merged branch, restacks the rest
+git-spice --no-prompt repo sync --restack # pulls trunk, deletes the merged branch, restacks the rest
 ```
 
 `repo sync` is the canonical post-merge cleanup. Run it whenever a CR merges. Keep the `--restack` flag: without it the surviving branches are only *retargeted* to the new trunk, not rebased, and stay flagged as needing restack until a separate `repo restack`.
@@ -107,3 +107,7 @@ If the subagent tool is available, list agents first. Dispatch only an executabl
 - **Don't stack to avoid writing a coherent PR description.** A stack is more communication overhead, not less — each branch needs its own description.
 - **Don't keep a long-lived stack open.** Land the bottom branches as they get acks; don't wait for the whole tower. A 5-branch stack open for two weeks is a merge-conflict generator.
 - **Don't restack by hand once the stack exists.** Use `git-spice` so bases stay tracked.
+
+## Explicit submit draft state
+
+Before every create-capable direct submit workflow, resolve draft state from an explicit argument, then `spice.submit.draft`, then a Pi user-question tool or plain chat. Execute with an explicit `<draft-flag>` chosen as `--draft` or `--no-draft`; never rely on an implicit draft state. The `--update-only` exception applies only when that flag proves no new Change Request can be created; otherwise never omit the draft flag.

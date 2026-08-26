@@ -22,6 +22,25 @@ const expectedPrompts = [
 ];
 const expectedSkills = ["git-spice", "stacking-workflow"];
 const expectedAgents = ["stack-doctor.md", "stacker.md"];
+const gitSpiceAliasNames = [
+  "r", "ls", "ll", "bdi", "bc", "btr", "dstr", "cc", "ca", "csp", "cf", "cp", "bco", "br",
+  "usr", "dsr", "sr", "rr", "bsq", "bsp", "be", "bfo", "bon", "uso", "se", "dse", "brn", "bd",
+  "sd", "usd", "buntr", "bs", "dss", "uss", "ss", "rs", "rbc", "rba",
+];
+const runtimePaths = [
+  ...expectedPrompts.map((name) => `prompts/${name}`),
+  ...expectedSkills.map((name) => `skills/${name}/SKILL.md`),
+  ...expectedAgents.map((name) => `agents/${name}`),
+];
+
+const executableGitSpiceCommands = (text) => {
+  const snippets = [
+    ...Array.from(text.matchAll(/`([^`\n]+)`/g), ([, snippet]) => snippet.trim()),
+    ...Array.from(text.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g), ([, block]) => block.split("\n").map((line) => line.trim())),
+  ].flat();
+  const knownCommand = new RegExp(`^git-spice (?:--no-prompt )?(?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>|${gitSpiceAliasNames.join("|")})(?:\\s|$)`);
+  return snippets.filter((snippet) => knownCommand.test(snippet));
+};
 
 test("package exposes the exact Pi git-spice runtime", () => {
   const pkg = readJson("package.json");
@@ -99,23 +118,58 @@ test("agents expose dotted Pi identities and safe tool contracts", () => {
   assert.doesNotMatch(`${stacker}\n${doctor}`, /model: sonnet|subagent_type|  - (?:Bash|Read|Write|Edit|Glob|Grep)\n/);
 });
 
-test("every generated executable branch and rebase workflow is non-interactive", () => {
-  const runtime = [
-    ...expectedPrompts.map((name) => `prompts/${name}`),
-    ...expectedSkills.map((name) => `skills/${name}/SKILL.md`),
-    ...expectedAgents.map((name) => `agents/${name}`),
-  ].map(readText).join("\n");
-  assert.doesNotMatch(runtime, /`git-spice bc`/, "branch-create shorthand is not safe executable guidance");
-  assert.doesNotMatch(runtime, /`git-spice rbc`/, "rebase-continue shorthand omits --no-edit");
-  const branchCommands = Array.from(runtime.matchAll(/git-spice(?: --no-prompt)? branch create[^\n`]*/g), ([command]) => command.trim());
-  assert.ok(branchCommands.length > 0);
-  for (const command of branchCommands) {
-    assert.match(command, /^git-spice --no-prompt branch create /, command);
-    assert.match(command, /(?:^| )-m (?:"[^"]+"|<[^>]+>)|--no-commit/, command);
+test("every executable command in every generated resource has command-specific safety", () => {
+  for (const relative of runtimePaths) {
+    const commands = executableGitSpiceCommands(readText(relative));
+    assert.ok(commands.length > 0, `${relative} exposes executable git-spice guidance`);
+    for (const command of commands) {
+      assert.match(command, /^git-spice --no-prompt /, `${relative}: ${command}`);
+      if (/^git-spice --no-prompt (?:repo init|r i)\b/.test(command)) {
+        assert.match(command, /(?:^| )--trunk=<[^>]+>/, `${relative}: ${command}`);
+        assert.match(command, /(?:^| )--remote=<[^>]+>/, `${relative}: ${command}`);
+      }
+      if (/^git-spice --no-prompt (?:branch create|bc)\b/.test(command)) {
+        assert.match(command, /(?:^| )-m (?:"[^"]+"|<[^>]+>)|(?:^| )--message(?:=| )|(?:^| )--no-commit(?: |$)/, `${relative}: ${command}`);
+      }
+      if (/^git-spice --no-prompt (?:rebase continue|rbc)\b/.test(command)) {
+        assert.match(command, /(?:^| )--no-edit(?: |$)/, `${relative}: ${command}`);
+      }
+      if (/^git-spice --no-prompt (?:(?:branch|upstack|downstack|stack|<scope>) submit|bs|dss|uss|ss)\b/.test(command) && !/(?:^| )--update-only(?: |$)/.test(command)) {
+        assert.match(command, /(?:^| )(?:--draft|--no-draft|<draft-flag>)(?: |$)/, `${relative}: ${command}`);
+      }
+      if (/^git-spice --no-prompt (?:repo sync|rs)\b/.test(command)) {
+        assert.match(command, /(?:^| )--restack(?:=\S+)?(?: |$)/, `${relative}: ${command}`);
+      }
+    }
   }
-  const continuations = Array.from(runtime.matchAll(/`(git-spice(?: --no-prompt)? rebase continue[^`]*)`/g), ([, command]) => command);
-  assert.ok(continuations.length > 0);
-  for (const command of continuations) assert.equal(command, "git-spice --no-prompt rebase continue --no-edit");
+});
+
+test("direct submit workflows explicitly resolve draft state with the update-only exception", () => {
+  for (const relative of [
+    "prompts/git-spice-submit.md",
+    "skills/git-spice/SKILL.md",
+    "skills/stacking-workflow/SKILL.md",
+    "agents/stack-doctor.md",
+  ]) {
+    const text = readText(relative);
+    assert.match(text, /arguments?[\s\S]*spice\.submit\.draft[\s\S]*(?:user-question|question tool)[\s\S]*plain chat/i, relative);
+    assert.match(text, /--draft[\s\S]*--no-draft|--no-draft[\s\S]*--draft/s, relative);
+    assert.match(text, /--update-only[\s\S]*(?:exception|no new|cannot create|skip)/i, relative);
+  }
+});
+
+test("every direct init and reset path gathers explicit trunk and remote safely", () => {
+  for (const relative of ["prompts/git-spice-init.md", "skills/git-spice/SKILL.md", "agents/stack-doctor.md"]) {
+    const text = readText(relative);
+    const initCommands = executableGitSpiceCommands(text).filter((command) => /^git-spice --no-prompt repo init\b/.test(command));
+    assert.ok(initCommands.length > 0, relative);
+    for (const command of initCommands) {
+      assert.match(command, /--trunk=<[^>]+>/, `${relative}: ${command}`);
+      assert.match(command, /--remote=<[^>]+>/, `${relative}: ${command}`);
+    }
+    assert.match(text, /(?:user-question|question tool)[\s\S]*plain chat/i, relative);
+    assert.match(text, /reset[\s\S]*(?:forget|tracking)[\s\S]*separate explicit confirmation/i, relative);
+  }
 });
 
 test("npm pack contains the exact generated runtime and no maintainer tooling", () => {

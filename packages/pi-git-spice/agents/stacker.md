@@ -46,7 +46,7 @@ For each task in order:
 
 4. **Stage and create the branch.**
    - `git add` the files you changed. Be specific — never `git add -A` if there are untracked files you didn't intend to commit.
-   - `git-spice --no-prompt branch create <prefix><slug> -m "<subject>"`. Gather the subject explicitly; do not rely on defaults or open an editor.
+   - `git-spice --no-prompt branch create <prefix><slug> -m "<subject>"`. Gather the subject explicitly; use `git-spice --no-prompt branch create <name> -m "<subject>"` rather than relying on defaults or opening an editor.
    - Verify: `git-spice --no-prompt log long` should show the new branch on top, with you checked out on it.
 
 5. **Record the result.** Note in your running report: branch name, commit SHA (`git rev-parse HEAD`), tests-passing yes/no.
@@ -54,7 +54,7 @@ For each task in order:
 After the loop:
 
 - Run `git-spice --no-prompt log long` one final time and include it in your report.
-- Do **not** run `git-spice --no-prompt stack submit` automatically. The dispatcher decides when to push. Mention in your report that the stack is ready to submit.
+- Do **not** run `git-spice --no-prompt stack submit <draft-flag>` automatically. The dispatcher decides when to push. Mention in your report that the stack is ready to submit.
 
 ## Reporting protocol
 
@@ -83,7 +83,7 @@ Concerns / next steps:
 
 ## Don't
 
-- Don't run `git-spice --no-prompt stack submit` (the dispatcher will).
+- Don't run `git-spice --no-prompt stack submit <draft-flag>` (the dispatcher will).
 - Don't `git rebase` or `git push --force` directly. Stay inside `git-spice` commands.
 - Don't combine two tasks into one branch "to save time". The whole point is one branch per task.
 - Don't continue past a failure. A red branch poisons every branch above it.

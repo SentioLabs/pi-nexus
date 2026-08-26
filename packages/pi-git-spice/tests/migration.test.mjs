@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,17 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = path.join(packageRoot, "scripts/migrate-git-spice-plugin.py");
+const temporaryRoots = new Set();
+
+const makeTemporaryDirectory = (prefix) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), prefix));
+  temporaryRoots.add(root);
+  return root;
+};
+
+test.after(() => {
+  for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
+});
 
 const writeFixtureFile = (root, relativePath, content) => {
   const target = path.join(root, relativePath);
@@ -49,7 +60,7 @@ const agent = (description, tools, body) => [
   "",
 ].join("\n");
 
-const sourceFiles = () => ({
+const rawSourceFiles = () => ({
   "commands/continue.md": prompt("Resume a git-spice operation", [
     "# Continue",
     "Resume — or abort — a git-spice operation that was paused on a rebase conflict.",
@@ -144,15 +155,106 @@ const sourceFiles = () => ({
   "version.txt": "1.0.0\n",
 });
 
+const commandAnchorPattern = /(?<![\w-])git-spice(?= (?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>)(?:\s|`|$))/g;
+const mutationAnchorPatterns = {
+  reset: /git-spice(?: --no-prompt)? repo init(?=[^`\n]*--reset)/g,
+  init: /git-spice(?: --no-prompt)? repo init(?![^`\n]*--reset)(?=[\s`])/g,
+  branchCreate: /git-spice(?: --no-prompt)? branch create(?=[\s`])/g,
+  rebaseContinue: /git-spice(?: --no-prompt)? rebase continue(?=[\s`])/g,
+  rebaseAbort: /git-spice(?: --no-prompt)? rebase abort(?=[\s`])/g,
+  restack: /git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|repo) restack(?=[\s`])/g,
+  sync: /git-spice(?: --no-prompt)? repo sync(?=[\s`])/g,
+  submit: /git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|<scope>) submit(?=[\s`])/g,
+};
+const expectedCommandAnchorCounts = {
+  "commands/continue.md": 4,
+  "commands/init.md": 6,
+  "commands/new.md": 5,
+  "commands/restack.md": 5,
+  "commands/stack.md": 2,
+  "commands/submit.md": 4,
+  "commands/sync.md": 3,
+  "skills/git-spice/SKILL.md": 96,
+  "skills/stacking-workflow/SKILL.md": 12,
+  "agents/stack-doctor.md": 24,
+  "agents/stacker.md": 10,
+};
+const expectedMutationAnchorCounts = {
+  "commands/continue.md": { rebaseContinue: 2, rebaseAbort: 1 },
+  "commands/init.md": { init: 1, reset: 1 },
+  "commands/new.md": { branchCreate: 4 },
+  "commands/restack.md": { restack: 4 },
+  "commands/submit.md": { submit: 2 },
+  "commands/sync.md": { sync: 1 },
+  "skills/git-spice/SKILL.md": { init: 3, reset: 2, branchCreate: 12, rebaseContinue: 3, rebaseAbort: 2, restack: 11, sync: 3, submit: 8 },
+  "skills/stacking-workflow/SKILL.md": { branchCreate: 1, rebaseContinue: 1, restack: 1, sync: 1, submit: 1 },
+  "agents/stack-doctor.md": { init: 2, rebaseContinue: 3, restack: 7, submit: 3 },
+  "agents/stacker.md": { branchCreate: 3, submit: 2 },
+};
+const aliasCommandAnchorPattern = /(?<![\w-])git-spice(?= (?:r|ls|ll|bdi|bc|btr|dstr|cc|ca|csp|cf|cp|bco|br|usr|dsr|sr|rr|bsq|bsp|be|bfo|bon|uso|se|dse|brn|bd|sd|usd|buntr|bs|dss|uss|ss|rs|rbc|rba)(?:\s|`|\)))/g;
+const expectedAliasNames = {
+  r: 1, ls: 2, ll: 2, bdi: 1, bc: 1, btr: 1, dstr: 1, cc: 1, ca: 1, csp: 1, cf: 1, cp: 1,
+  bco: 1, br: 1, usr: 1, dsr: 1, sr: 1, rr: 1, bsq: 1, bsp: 1, be: 1, bfo: 1, bon: 1, uso: 1,
+  se: 1, dse: 1, brn: 1, bd: 1, sd: 1, usd: 1, buntr: 1, bs: 1, dss: 1, uss: 1, ss: 1, rs: 1,
+  rbc: 1, rba: 1,
+};
+const expectedAliasCommandAnchorCounts = { "skills/git-spice/SKILL.md": 40 };
+
+const mutationPadding = {
+  reset: "Fixture reset mutation: `git-spice repo init --reset`.",
+  init: "Fixture init mutation: `git-spice repo init`.",
+  branchCreate: "Fixture branch mutation: `git-spice branch create <fixture> -m \"fixture\"`.",
+  rebaseContinue: "Fixture continue mutation: `git-spice rebase continue`.",
+  rebaseAbort: "Fixture abort mutation: `git-spice rebase abort`.",
+  restack: "Fixture restack mutation: `git-spice branch restack`.",
+  sync: "Fixture sync mutation: `git-spice repo sync`.",
+  submit: "Fixture submit mutation: `git-spice stack submit --fill`.",
+};
+
+const countMatches = (text, pattern) => Array.from(text.matchAll(pattern)).length;
+
+const padExpectedAnchors = (relative, content) => {
+  let padded = content;
+  const expectedMutations = expectedMutationAnchorCounts[relative] ?? {};
+  for (const name of ["reset", "init", "branchCreate", "rebaseContinue", "rebaseAbort", "restack", "sync", "submit"]) {
+    const expected = expectedMutations[name] ?? 0;
+    const actual = countMatches(padded, mutationAnchorPatterns[name]);
+    assert.ok(actual <= expected, `${relative} ${name} fixture starts within expected cardinality`);
+    padded += `${Array.from({ length: expected - actual }, () => mutationPadding[name]).join("\n")}\n`;
+  }
+  if (relative === "skills/git-spice/SKILL.md") {
+    for (const [alias, expected] of Object.entries(expectedAliasNames)) {
+      const pattern = new RegExp(`(?<![\\w-])git-spice ${alias}(?=\\s|\\\`|\\))`, "g");
+      const actual = countMatches(padded, pattern);
+      assert.ok(actual <= expected, `${relative} ${alias} alias fixture starts within expected cardinality`);
+      const invocation = alias === "r" ? "r i" : alias;
+      padded += `${Array.from({ length: expected - actual }, () => `Fixture alias command anchor: \`git-spice ${invocation}\`.`).join("\n")}\n`;
+    }
+  }
+  const expectedAliases = expectedAliasCommandAnchorCounts[relative] ?? 0;
+  const actualAliases = countMatches(padded, aliasCommandAnchorPattern);
+  assert.equal(actualAliases, expectedAliases, `${relative} alias command fixture cardinality`);
+  const expectedCommands = expectedCommandAnchorCounts[relative];
+  const actualCommands = countMatches(padded, commandAnchorPattern);
+  assert.ok(actualCommands <= expectedCommands, `${relative} command fixture starts within expected cardinality`);
+  padded += `${Array.from({ length: expectedCommands - actualCommands }, () => "Fixture command anchor: `git-spice log long`.").join("\n")}\n`;
+  return padded;
+};
+
+const sourceFiles = () => Object.fromEntries(Object.entries(rawSourceFiles()).map(([relative, content]) => [
+  relative,
+  relative.endsWith(".md") && !relative.endsWith("CHANGELOG.md") ? padExpectedAnchors(relative, content) : content,
+]));
+
 const createSourceFixture = (overrides = {}) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "pi-git-spice-source-"));
+  const root = makeTemporaryDirectory("pi-git-spice-source-");
   const files = { ...sourceFiles(), ...overrides };
   for (const [relative, content] of Object.entries(files)) writeFixtureFile(root, relative, content);
   return root;
 };
 
 const createTemporaryPackage = () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "pi-git-spice-package-"));
+  const root = makeTemporaryDirectory("pi-git-spice-package-");
   const scripts = path.join(root, "scripts");
   mkdirSync(scripts, { recursive: true });
   const script = path.join(scripts, "migrate-git-spice-plugin.py");
@@ -243,7 +345,7 @@ test("migration CLI accepts positional and option source forms", () => {
 });
 
 test("invalid source fails before rewriting installed resources", () => {
-  const source = mkdtempSync(path.join(os.tmpdir(), "pi-git-spice-invalid-"));
+  const source = makeTemporaryDirectory("pi-git-spice-invalid-");
   const packageCopy = createTemporaryPackage();
   writeFixtureFile(packageCopy.root, "prompts/sentinel.txt", "original prompts\n");
   writeFixtureFile(packageCopy.root, "skills/sentinel.txt", "original skills\n");
@@ -342,16 +444,76 @@ test("prompt source revisions and every git-spice reference survive semantic tra
   assert.doesNotMatch(output, /\/git-spice:continue/);
 });
 
-for (const [name, overrides, diagnostic] of [
-  ["invalid plugin metadata", { ".claude-plugin/plugin.json": "[]\n" }, /expected an object/],
-  ["unsupported prompt frontmatter", { "commands/init.md": prompt("init", "git-spice repo init", "[x]").replace("description: init", "unknown: value") }, /Unsupported source prompt frontmatter/],
-  ["unsupported skill frontmatter", { "skills/git-spice/SKILL.md": skill("git-spice", "valid", "# git-spice").replace("name: git-spice", "unknown: nope") }, /Unsupported source skill frontmatter|Source skill name/],
-  ["unsupported agent frontmatter", { "agents/stacker.md": agent("valid", ["Bash", "Read", "Write", "Edit", "Glob", "Grep"], "# Stacker Agent\n## Non-interactive discipline").replace("model: sonnet", "model: opus") }, /Source agent model/],
-  ["removed semantic anchor", { "commands/init.md": sourceFiles()["commands/init.md"].replace("Confirm you're inside a git repository:", "Confirm setup:") }, /Expected exactly one source text occurrence/],
-  ["duplicated semantic anchor", { "commands/init.md": sourceFiles()["commands/init.md"] + "Confirm you're inside a git repository:\n" }, /Expected exactly one source text occurrence/],
-]) {
+const validPluginMetadata = () => JSON.parse(rawSourceFiles()[".claude-plugin/plugin.json"]);
+const metadataVariants = [
+  ["plugin metadata missing field", () => {
+    const metadata = validPluginMetadata();
+    delete metadata.homepage;
+    return JSON.stringify(metadata);
+  }, /fields must exactly match.*missing=.*homepage/s],
+  ["plugin metadata duplicate top-level key", () => rawSourceFiles()[".claude-plugin/plugin.json"].replace('"name": "git-spice",', '"name": "git-spice",\n  "name": "duplicate",'), /Duplicate JSON key.*name/],
+  ["plugin metadata duplicate nested key", () => rawSourceFiles()[".claude-plugin/plugin.json"].replace('"name": "Fixture",', '"name": "Fixture",\n    "name": "duplicate",'), /Duplicate JSON key.*name/],
+  ["plugin metadata unknown field", () => {
+    const metadata = validPluginMetadata();
+    metadata.future = true;
+    return JSON.stringify(metadata);
+  }, /fields must exactly match.*unknown=.*future/s],
+  ["plugin metadata malformed JSON", () => "{ not-json\n", /Invalid source plugin\.json/],
+  ["plugin metadata whitespace-only scalar", () => {
+    const metadata = validPluginMetadata();
+    metadata.description = "   \t";
+    return JSON.stringify(metadata);
+  }, /description must be a non-empty string/],
+  ["plugin metadata whitespace-only author scalar", () => {
+    const metadata = validPluginMetadata();
+    metadata.author.url = "  ";
+    return JSON.stringify(metadata);
+  }, /author must have non-empty string name and url/],
+  ["plugin metadata whitespace-only keyword", () => {
+    const metadata = validPluginMetadata();
+    metadata.keywords = ["git-spice", "  "];
+    return JSON.stringify(metadata);
+  }, /keywords must be a string array of non-empty values/],
+];
+
+const promptFrontmatterVariants = [
+  ["missing field", (text) => text.replace(/^description:.*\n/m, ""), /description is required/],
+  ["duplicate field", (text) => text.replace(/^description:.*$/m, (line) => `${line}\n${line}`), /Duplicate source prompt frontmatter key/],
+  ["unknown field", (text) => text.replace(/^description:/m, "unknown:"), /Unsupported source prompt frontmatter key/],
+  ["malformed field", (text) => text.replace(/^description:/m, "description ="), /Unsupported source prompt frontmatter shape/],
+  ["whitespace-only field", (text) => text.replace(/^description:.*$/m, "description:    "), /description is required and non-empty/],
+  ["whitespace-only optional field", (text) => text.replace(/^argument-hint:.*$/m, "argument-hint:    "), /argument-hint must be non-empty/],
+];
+
+const skillFrontmatterVariants = [
+  ["missing field", (text) => text.replace(/^description:.*\n/m, ""), /description is required/],
+  ["duplicate field", (text) => text.replace(/^name:.*$/m, (line) => `${line}\n${line}`), /Duplicate source skill frontmatter key/],
+  ["unknown field", (text) => text.replace(/^name:/m, "unknown:"), /Unsupported source skill frontmatter key/],
+  ["malformed field", (text) => text.replace(/^description:/m, "description ="), /Unsupported source skill frontmatter shape/],
+  ["whitespace-only field", (text) => text.replace(/^description:.*$/m, "description:    "), /description is required and non-empty/],
+];
+
+const agentFrontmatterVariants = [
+  ["missing field", (text) => text.replace(/^description:.*\n/m, ""), /missing=.*description/s],
+  ["duplicate field", (text) => text.replace(/^description:.*$/m, (line) => `${line}\n${line}`), /Duplicate source agent frontmatter key/],
+  ["unknown field", (text) => text.replace(/^description:.*$/m, (line) => `${line}\nfuture: value`), /Unsupported source agent frontmatter key/],
+  ["malformed field", (text) => text.replace(/^  - Bash$/m, " - Bash"), /Unsupported source agent frontmatter shape|Malformed source agent tool/],
+  ["whitespace-only field", (text) => text.replace(/^description:.*$/m, "description:    "), /description must be a non-empty scalar/],
+];
+
+const failureVariants = [
+  ...metadataVariants.map(([name, makeContent, diagnostic]) => [name, ".claude-plugin/plugin.json", makeContent, diagnostic]),
+  ...promptFrontmatterVariants.map(([name, mutate, diagnostic]) => [`prompt frontmatter ${name}`, "commands/continue.md", () => mutate(sourceFiles()["commands/continue.md"]), diagnostic]),
+  ...skillFrontmatterVariants.map(([name, mutate, diagnostic]) => [`skill frontmatter ${name}`, "skills/git-spice/SKILL.md", () => mutate(sourceFiles()["skills/git-spice/SKILL.md"]), diagnostic]),
+  ...agentFrontmatterVariants.map(([name, mutate, diagnostic]) => [`agent frontmatter ${name}`, "agents/stacker.md", () => mutate(sourceFiles()["agents/stacker.md"]), diagnostic]),
+  ["agent frontmatter invalid fixed model", "agents/stacker.md", () => sourceFiles()["agents/stacker.md"].replace("model: sonnet", "model: opus"), /model must be exactly/],
+  ["removed semantic prose anchor", "commands/init.md", () => sourceFiles()["commands/init.md"].replace("Confirm you're inside a git repository:", "Confirm setup:"), /Expected exactly one source text occurrence/],
+  ["duplicated semantic prose anchor", "commands/init.md", () => sourceFiles()["commands/init.md"] + "Confirm you're inside a git repository:\n", /Expected exactly one source text occurrence/],
+];
+
+for (const [name, relative, makeContent, diagnostic] of failureVariants) {
   test(`${name} fails before installation`, () => {
-    const source = createSourceFixture(overrides);
+    const source = createSourceFixture({ [relative]: `${makeContent()}\n` });
     const packageCopy = createTemporaryPackage();
     const sentinels = installedSentinels(packageCopy.root);
     const result = runMigration(packageCopy.script, source, packageCopy.root);
@@ -360,6 +522,232 @@ for (const [name, overrides, diagnostic] of [
     assertRollback(packageCopy.root, sentinels);
   });
 }
+
+const guardedMutationAnchors = [
+  ["init/reset", "commands/init.md", mutationAnchorPatterns.reset, /reset mutation anchor cardinality/],
+  ["init/reconfiguration", "commands/init.md", mutationAnchorPatterns.init, /init mutation anchor cardinality/],
+  ["branch create", "commands/new.md", mutationAnchorPatterns.branchCreate, /branch create mutation anchor cardinality/],
+  ["rebase continue", "commands/continue.md", mutationAnchorPatterns.rebaseContinue, /rebase continue mutation anchor cardinality/],
+  ["rebase abort", "commands/continue.md", mutationAnchorPatterns.rebaseAbort, /rebase abort mutation anchor cardinality/],
+  ["restack", "commands/restack.md", mutationAnchorPatterns.restack, /restack mutation anchor cardinality/],
+  ["sync", "commands/sync.md", mutationAnchorPatterns.sync, /sync mutation anchor cardinality/],
+  ["submit draft injection", "commands/submit.md", mutationAnchorPatterns.submit, /submit mutation anchor cardinality/],
+  ["other command mutation", "commands/stack.md", commandAnchorPattern, /command anchor cardinality/],
+];
+
+const mutateAnchorCardinality = (content, pattern, variant) => {
+  const matches = Array.from(content.matchAll(pattern), (match) => match[0]);
+  assert.ok(matches.length > 0);
+  if (variant === "zero") return content.replace(pattern, "git spice disabled-anchor");
+  if (variant === "duplicate") {
+    if (pattern === commandAnchorPattern) return `${content}\nDuplicated mutation: \`git-spice commit amend\`.\n`;
+    const suffix = pattern === mutationAnchorPatterns.reset ? " --reset" : " fixture";
+    return `${content}\nDuplicated mutation: \`${matches[0]}${suffix}\`.\n`;
+  }
+  if (pattern === commandAnchorPattern) return content.replace(new RegExp(pattern.source), "git-spice  ");
+  return content.replace(new RegExp(pattern.source), matches[0].replace("git-spice ", "git-spice  "));
+};
+
+for (const [operation, relative, pattern, diagnostic] of guardedMutationAnchors) {
+  for (const variant of ["zero", "duplicate", "drifted"]) {
+    test(`${operation} rejects ${variant} mutation anchors before installation`, () => {
+      const source = createSourceFixture({ [relative]: mutateAnchorCardinality(sourceFiles()[relative], pattern, variant) });
+      const packageCopy = createTemporaryPackage();
+      const sentinels = installedSentinels(packageCopy.root);
+      const result = runMigration(packageCopy.script, source, packageCopy.root);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, diagnostic);
+      assertRollback(packageCopy.root, sentinels);
+    });
+  }
+}
+
+const runProbe = (python, packageCopy, source) => spawnSync("python3", ["-B", "-c", python, packageCopy.script, source], {
+  cwd: packageCopy.root,
+  encoding: "utf8",
+});
+
+const generatedTreeProbe = (body) => [
+  "import importlib.util, pathlib, sys",
+  "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+  "module = importlib.util.module_from_spec(spec)",
+  "spec.loader.exec_module(module)",
+  "source = pathlib.Path(sys.argv[2])",
+  "temporary = pathlib.Path(module.PACKAGE_ROOT) / 'validator-probe'",
+  "temporary.mkdir()",
+  "module.validate_source(source)",
+  "generated = module.build_generated_tree(source, temporary)",
+  body,
+  "module.validate_generated_tree(generated)",
+].join("\n");
+
+for (const [name, unsafeCommand] of [
+  ["bare mutation", "git-spice branch restack"],
+  ["branch creation without commit mode", "git-spice --no-prompt branch create <name>"],
+  ["rebase continuation without no-edit", "git-spice --no-prompt rebase continue"],
+  ["init without explicit remote", "git-spice --no-prompt repo init --trunk=<name>"],
+  ["sync without restack", "git-spice --no-prompt repo sync"],
+  ["submit without draft state", "git-spice --no-prompt stack submit --fill"],
+]) {
+  test(`generated runtime validation rejects ${name}`, () => {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const unsafeFragment = name === "bare mutation" ? `\n${unsafeCommand}\n` : `\nUnsafe validator fixture: \`${unsafeCommand}\`.\n`;
+    const command = JSON.stringify(unsafeFragment);
+    const result = runProbe(generatedTreeProbe(`target = generated / 'prompts/git-spice-stack.md'\ntarget.write_text(target.read_text() + ${command})`), packageCopy, source);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Unsafe generated executable git-spice command/);
+  });
+}
+
+const installationProbe = (injection) => [
+  "import importlib.util, pathlib, sys",
+  "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+  "module = importlib.util.module_from_spec(spec)",
+  "spec.loader.exec_module(module)",
+  "source = pathlib.Path(sys.argv[2])",
+  "temporary = pathlib.Path(module.PACKAGE_ROOT) / 'installation-probe'",
+  "temporary.mkdir()",
+  "module.validate_source(source)",
+  "generated = module.build_generated_tree(source, temporary)",
+  injection,
+].join("\n");
+
+const transactionDirectories = (root) => readdirSync(root).filter((name) => name.startsWith(".pi-git-spice-install-"));
+
+for (const swap of [1, 2, 3, 4, 5, 6]) {
+  test(`failure during atomic root swap ${swap} restores all originals and cleans artifacts`, () => {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const sentinels = installedSentinels(packageCopy.root);
+    const injection = [
+      "calls = {'moves': 0}",
+      "original_move = module.rename_path",
+      "def failing_move(source, destination):",
+      "    calls['moves'] += 1",
+      `    if calls['moves'] == ${swap}: raise OSError('injected swap ${swap}')`,
+      "    return original_move(source, destination)",
+      "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=failing_move, remove=module.remove_tree)",
+    ].join("\n");
+    const result = runProbe(installationProbe(injection), packageCopy, source);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`injected swap ${swap}`));
+    assertRollback(packageCopy.root, sentinels);
+  });
+}
+
+test("KeyboardInterrupt during staging preserves installed roots and removes staging artifacts", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const sentinels = installedSentinels(packageCopy.root);
+  const injection = [
+    "calls = {'copies': 0}",
+    "original_copytree = module.shutil.copytree",
+    "def failing_copytree(source, destination):",
+    "    calls['copies'] += 1",
+    "    if calls['copies'] == 2: raise KeyboardInterrupt()",
+    "    return original_copytree(source, destination)",
+    "module.shutil.copytree = failing_copytree",
+    "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=module.rename_path, remove=module.remove_tree)",
+  ].join("\n");
+  const result = runProbe(installationProbe(injection), packageCopy, source);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /KeyboardInterrupt/);
+  assertRollback(packageCopy.root, sentinels);
+});
+
+test("installed-root verification failure restores all originals", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const sentinels = installedSentinels(packageCopy.root);
+  const injection = [
+    "calls = {'installs': 0}",
+    "original_move = module.rename_path",
+    "def corrupting_move(source, destination):",
+    "    result = original_move(source, destination)",
+    "    if source.parent.name == 'staged':",
+    "        calls['installs'] += 1",
+    "        if calls['installs'] == 3: next(path for path in destination.rglob('*') if path.is_file()).unlink()",
+    "    return result",
+    "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=corrupting_move, remove=module.remove_tree)",
+  ].join("\n");
+  const result = runProbe(installationProbe(injection), packageCopy, source);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Installed generated resource verification failed/);
+  assertRollback(packageCopy.root, sentinels);
+});
+
+test("interrupted committed cleanup is retried without hiding the committed state", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  installedSentinels(packageCopy.root);
+  const injection = [
+    "calls = {'cleanup': 0}",
+    "original_remove = module.remove_tree",
+    "def interrupted_remove(target):",
+    "    if target.name.startswith('.pi-git-spice-install-'):",
+    "        calls['cleanup'] += 1",
+    "        if calls['cleanup'] == 1: raise KeyboardInterrupt()",
+    "    return original_remove(target)",
+    "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=module.rename_path, remove=interrupted_remove)",
+  ].join("\n");
+  const result = runProbe(installationProbe(injection), packageCopy, source);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /installation committed and verified.*cleanup was interrupted/is);
+  assert.deepEqual(transactionDirectories(packageCopy.root), []);
+  for (const relative of runtimeSnapshot(packageCopy.root).keys()) assert.equal(existsSync(path.join(packageCopy.root, relative)), true, relative);
+});
+
+test("rollback deletion failure retains recoverable backups and reports their path", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  installedSentinels(packageCopy.root);
+  const injection = [
+    "calls = {'installs': 0}",
+    "original_move = module.rename_path",
+    "original_remove = module.remove_tree",
+    "def failing_move(source, destination):",
+    "    if source.parent.name == 'staged':",
+    "        calls['installs'] += 1",
+    "        if calls['installs'] == 2: raise OSError('trigger rollback')",
+    "    return original_move(source, destination)",
+    "def failing_remove(target):",
+    "    if target == module.PACKAGE_ROOT / 'agents': raise OSError('cannot delete installed agents')",
+    "    return original_remove(target)",
+    "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=failing_move, remove=failing_remove)",
+  ].join("\n");
+  const result = runProbe(installationProbe(injection), packageCopy, source);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Failed to roll back generated resource installation/);
+  assert.match(result.stderr, /Recovery artifacts retained at/);
+  const transactions = transactionDirectories(packageCopy.root);
+  assert.equal(transactions.length, 1);
+  assert.equal(readFileSync(path.join(packageCopy.root, transactions[0], "backups/agents/sentinel.txt"), "utf8"), "agents original\n");
+});
+
+test("backup restoration failure never deletes the last recoverable original", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  installedSentinels(packageCopy.root);
+  const injection = [
+    "calls = {'installs': 0}",
+    "original_move = module.rename_path",
+    "def failing_move(source, destination):",
+    "    if source.parent.name == 'staged':",
+    "        calls['installs'] += 1",
+    "        if calls['installs'] == 2: raise OSError('trigger rollback')",
+    "    if source.parent.name == 'backups' and source.name == 'agents': raise OSError('cannot restore agents')",
+    "    return original_move(source, destination)",
+    "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=failing_move, remove=module.remove_tree)",
+  ].join("\n");
+  const result = runProbe(installationProbe(injection), packageCopy, source);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot restore agents/);
+  assert.match(result.stderr, /Recovery artifacts retained at/);
+  const transactions = transactionDirectories(packageCopy.root);
+  assert.equal(transactions.length, 1);
+  assert.equal(readFileSync(path.join(packageCopy.root, transactions[0], "backups/agents/sentinel.txt"), "utf8"), "agents original\n");
+});
 
 for (const [name, exceptionExpression, rootSwap] of [["OSError", "OSError('injected move failure')", "second"], ["KeyboardInterrupt", "KeyboardInterrupt()", "third"]]) {
   test(`${name} during the ${rootSwap} root swap restores every installed root`, () => {

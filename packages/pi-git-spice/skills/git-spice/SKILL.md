@@ -15,7 +15,7 @@ Use this skill whenever you need to translate user intent ("stack this", "submit
 
 The official shorthand is `gs`, but on many systems `gs` is **Ghostscript**. **Always invoke `git-spice` directly** in scripts, commands, and tool calls — never assume `gs` is git-spice. (If a user types `gs` in chat, mentally map it to `git-spice`.)
 
-The subcommand abbreviations shown in parentheses below — `r i`, `b c`, `ls`, `ll`, `bc`, etc. — work natively under `git-spice` itself (e.g. `git-spice ls` runs `log short`). They're not a `gs`-only thing. Use the full forms in scripts you check in; abbreviations are fine for one-off commands.
+The subcommand abbreviations shown in parentheses below — `r i`, `b c`, `ls`, `ll`, `bc`, etc. — work natively under `git-spice` itself (e.g. `git-spice --no-prompt ls` runs `log short`). They're not a `gs`-only thing. Use the full forms in scripts you check in; abbreviations are fine for one-off commands.
 
 ## Mental model
 
@@ -44,9 +44,9 @@ Sorted by intent, not alphabet — find the verb you mean, copy the command. Lon
 
 | Intent | Command |
 |---|---|
-| Initialize git-spice in this repo | `git-spice --no-prompt repo init` (`git-spice r i`) |
+| Initialize git-spice in this repo | `git-spice --no-prompt repo init --trunk=<name> --remote=<name>` (`git-spice --no-prompt r i --trunk=<name> --remote=<name>`) |
 | Re-init / change trunk or remote | `git-spice --no-prompt repo init --trunk=<b> --remote=<r>` |
-| Reset all tracking, keep branches | `git-spice --no-prompt repo init --reset` |
+| Reset all tracking, keep branches | `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset` |
 | Log in to GitHub/GitLab/Bitbucket | `git-spice --no-prompt auth login` |
 | Check who you're logged in as | `git-spice --no-prompt auth status` |
 | Log out | `git-spice --no-prompt auth logout` |
@@ -57,11 +57,11 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 
 | Intent | Command |
 |---|---|
-| Show the current stack | `git-spice --no-prompt log short` (`git-spice ls`) |
-| Show stack with commit details | `git-spice --no-prompt log long` (`git-spice ll`) |
-| Show **all** tracked branches, not just the current stack | `git-spice --no-prompt log long --all` (`git-spice ll -a`) |
+| Show the current stack | `git-spice --no-prompt log short` (`git-spice --no-prompt ls`) |
+| Show stack with commit details | `git-spice --no-prompt log long` (`git-spice --no-prompt ll`) |
+| Show **all** tracked branches, not just the current stack | `git-spice --no-prompt log long --all` (`git-spice --no-prompt ll -a`) |
 | Machine-readable stack state (for scripts/agents) | `git-spice --no-prompt log long --json` |
-| Diff this branch vs its base | `git-spice --no-prompt branch diff` (`git-spice bdi`) |
+| Diff this branch vs its base | `git-spice --no-prompt branch diff` (`git-spice --no-prompt bdi`) |
 
 `log` commands only show the current branch's stack by default — when hunting for branches that "disappeared", always check with `--all` before concluding they're untracked.
 
@@ -69,25 +69,25 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 
 | Intent | Command |
 |---|---|
-| Stack a new branch on top of HEAD with staged changes | `git-spice --no-prompt branch create <name> -m "<message>"` (`bc`) |
+| Stack a new branch on top of HEAD with staged changes | `git-spice --no-prompt branch create <name> -m "<message>"` (`git-spice --no-prompt bc <name> -m "<message>"`) |
 | Same, auto-naming the branch from the commit message | `git-spice --no-prompt branch create -m "subject"` (name is optional) |
 | Same, but auto-stage tracked-but-modified files (like `git commit -a`) | `git-spice --no-prompt branch create <name> -a -m "<message>"` |
 | Same, with an explicit commit message | `git-spice --no-prompt branch create <name> -m "subject"` |
 | Create branch without committing | `git-spice --no-prompt branch create <name> --no-commit` |
 | Insert a branch *between* current and its upstack | `git-spice --no-prompt branch create <name> --insert -m "<message>"` |
 | Create branch *below* current (push current upstack) | `git-spice --no-prompt branch create <name> --below -m "<message>"` |
-| Track an existing git branch | `git-spice --no-prompt branch track` (`git-spice btr`) |
-| Track every untracked branch below current | `git-spice --no-prompt downstack track` (`git-spice dstr`) |
+| Track an existing git branch | `git-spice --no-prompt branch track` (`git-spice --no-prompt btr`) |
+| Track every untracked branch below current | `git-spice --no-prompt downstack track` (`git-spice --no-prompt dstr`) |
 
 ### Commit on the current branch (auto-restacks upstack)
 
 | Intent | Command |
 |---|---|
-| Commit staged changes here | `git-spice --no-prompt commit create` (`git-spice cc`) |
-| Amend the tip commit | `git-spice --no-prompt commit amend` (`git-spice ca`) |
-| Split a commit interactively | `git-spice --no-prompt commit split` (`git-spice csp`) |
-| Apply staged changes as fixup to commit X | `git-spice --no-prompt commit fixup <ref>` (`git-spice cf`) |
-| Cherry-pick a commit onto this branch | `git-spice --no-prompt commit pick <ref>` (`git-spice cp`) |
+| Commit staged changes here | `git-spice --no-prompt commit create` (`git-spice --no-prompt cc`) |
+| Amend the tip commit | `git-spice --no-prompt commit amend` (`git-spice --no-prompt ca`) |
+| Split a commit interactively | `git-spice --no-prompt commit split` (`git-spice --no-prompt csp`) |
+| Apply staged changes as fixup to commit X | `git-spice --no-prompt commit fixup <ref>` (`git-spice --no-prompt cf`) |
+| Cherry-pick a commit onto this branch | `git-spice --no-prompt commit pick <ref>` (`git-spice --no-prompt cp`) |
 
 > Prefer `git-spice --no-prompt commit ...` over raw `git commit` while inside a stack. The git-spice variants restack everything above the current branch automatically; `git commit` leaves upstack branches misaligned and you'll have to run `git-spice --no-prompt upstack restack` yourself.
 
@@ -100,30 +100,30 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 | Top of stack | `git-spice --no-prompt top` |
 | Bottom of stack | `git-spice --no-prompt bottom` |
 | Trunk | `git-spice --no-prompt trunk` |
-| Check out a branch by name (prompts if omitted) | `git-spice --no-prompt branch checkout [name]` (`git-spice bco`) |
+| Check out a branch by name (prompts if omitted) | `git-spice --no-prompt branch checkout [name]` (`git-spice --no-prompt bco`) |
 
 ### Reshape
 
 | Intent | Command |
 |---|---|
-| Restack just this branch onto its base | `git-spice --no-prompt branch restack` (`git-spice br`) |
-| Restack this branch + everything above | `git-spice --no-prompt upstack restack` (`git-spice usr`) |
-| Restack this branch + everything below | `git-spice --no-prompt downstack restack` (`git-spice dsr`) |
-| Restack the whole stack | `git-spice --no-prompt stack restack` (`git-spice sr`) |
-| Restack every tracked branch in the repo | `git-spice --no-prompt repo restack` (`git-spice rr`) |
-| Squash this branch's commits into one | `git-spice --no-prompt branch squash` (`git-spice bsq`) |
-| Split this branch at chosen commits | `git-spice --no-prompt branch split` (`git-spice bsp`) |
-| Interactively edit/reorder this branch's commits | `git-spice --no-prompt branch edit` (`git-spice be`) — interactive; restacks upstack after |
-| Fold (merge) this branch into its base | `git-spice --no-prompt branch fold` (`git-spice bfo`) |
-| Move this branch onto a new base, leave upstack alone | `git-spice --no-prompt branch onto <base>` (`git-spice bon`) |
-| Move this branch + upstack onto a new base | `git-spice --no-prompt upstack onto <base>` (`git-spice uso`) |
-| Reorder branches in the stack | `git-spice --no-prompt stack edit` (`git-spice se`) — interactive |
-| Reorder branches below the current one | `git-spice --no-prompt downstack edit` (`git-spice dse`) — interactive |
-| Rename | `git-spice --no-prompt branch rename <new>` (`git-spice brn`) |
-| Delete branch (retargets upstack; add `--restack` to also rebase it) | `git-spice --no-prompt branch delete <name>` (`git-spice bd`) |
-| Delete every branch in the current stack | `git-spice --no-prompt stack delete` (`git-spice sd`) |
-| Delete everything above the current branch | `git-spice --no-prompt upstack delete` (`git-spice usd`) |
-| Untrack only (keep the git branch) | `git-spice --no-prompt branch untrack <name>` (`git-spice buntr`) |
+| Restack just this branch onto its base | `git-spice --no-prompt branch restack` (`git-spice --no-prompt br`) |
+| Restack this branch + everything above | `git-spice --no-prompt upstack restack` (`git-spice --no-prompt usr`) |
+| Restack this branch + everything below | `git-spice --no-prompt downstack restack` (`git-spice --no-prompt dsr`) |
+| Restack the whole stack | `git-spice --no-prompt stack restack` (`git-spice --no-prompt sr`) |
+| Restack every tracked branch in the repo | `git-spice --no-prompt repo restack` (`git-spice --no-prompt rr`) |
+| Squash this branch's commits into one | `git-spice --no-prompt branch squash` (`git-spice --no-prompt bsq`) |
+| Split this branch at chosen commits | `git-spice --no-prompt branch split` (`git-spice --no-prompt bsp`) |
+| Interactively edit/reorder this branch's commits | `git-spice --no-prompt branch edit` (`git-spice --no-prompt be`) — interactive; restacks upstack after |
+| Fold (merge) this branch into its base | `git-spice --no-prompt branch fold` (`git-spice --no-prompt bfo`) |
+| Move this branch onto a new base, leave upstack alone | `git-spice --no-prompt branch onto <base>` (`git-spice --no-prompt bon`) |
+| Move this branch + upstack onto a new base | `git-spice --no-prompt upstack onto <base>` (`git-spice --no-prompt uso`) |
+| Reorder branches in the stack | `git-spice --no-prompt stack edit` (`git-spice --no-prompt se`) — interactive |
+| Reorder branches below the current one | `git-spice --no-prompt downstack edit` (`git-spice --no-prompt dse`) — interactive |
+| Rename | `git-spice --no-prompt branch rename <new>` (`git-spice --no-prompt brn`) |
+| Delete branch (retargets upstack; add `--restack` to also rebase it) | `git-spice --no-prompt branch delete <name>` (`git-spice --no-prompt bd`) |
+| Delete every branch in the current stack | `git-spice --no-prompt stack delete` (`git-spice --no-prompt sd`) |
+| Delete everything above the current branch | `git-spice --no-prompt upstack delete` (`git-spice --no-prompt usd`) |
+| Untrack only (keep the git branch) | `git-spice --no-prompt branch untrack <name>` (`git-spice --no-prompt buntr`) |
 
 ### Submit (push + open/update PRs)
 
@@ -131,10 +131,10 @@ All submit commands are **idempotent**: re-running on an existing stack updates 
 
 | Intent | Command |
 |---|---|
-| Submit just this branch | `git-spice --no-prompt branch submit` (`git-spice bs`) |
-| Submit this branch and below | `git-spice --no-prompt downstack submit` (`git-spice dss`) |
-| Submit this branch and above | `git-spice --no-prompt upstack submit` (`git-spice uss`) |
-| Submit the whole stack | `git-spice --no-prompt stack submit` (`git-spice ss`) |
+| Submit just this branch | `git-spice --no-prompt branch submit <draft-flag>` (`git-spice --no-prompt bs <draft-flag>`) |
+| Submit this branch and below | `git-spice --no-prompt downstack submit <draft-flag>` (`git-spice --no-prompt dss <draft-flag>`) |
+| Submit this branch and above | `git-spice --no-prompt upstack submit <draft-flag>` (`git-spice --no-prompt uss <draft-flag>`) |
+| Submit the whole stack | `git-spice --no-prompt stack submit <draft-flag>` (`git-spice --no-prompt ss <draft-flag>`) |
 
 Common flags on submit:
 - `--fill` / `-c` — populate title + body from commit messages (skip the prompt). Use this for non-interactive runs.
@@ -152,7 +152,7 @@ Common flags on submit:
 
 | Intent | Command |
 |---|---|
-| Pull trunk + delete merged branches | `git-spice --no-prompt repo sync` (`git-spice rs`) |
+| Pull trunk + delete merged branches | `git-spice --no-prompt repo sync --restack` (`git-spice --no-prompt rs --restack`) |
 | Same, and also rebase the survivors | `git-spice --no-prompt repo sync --restack` |
 
 `repo sync` is the canonical "after my PR merged, clean up" command. It pulls trunk, finds branches whose CRs were merged, and deletes them. Branches that sat on top of a deleted branch are **retargeted** to trunk but **not rebased** — they'll show as needing restack. Pass `--restack` to rebase them in the same run (`--restack=aboves` limits it to direct upstacks of deleted branches), or set `spice.repoSync.restack=upstack` to make it the default. Prefer `--restack` unless there's a reason to defer the rebase.
@@ -163,8 +163,8 @@ git-spice rebases run `git rebase` under the hood. Conflicts pause the operation
 
 | Intent | Command |
 |---|---|
-| Continue after resolving conflicts | `git-spice --no-prompt rebase continue --no-edit` (`rbc`) |
-| Abort and restore pre-rebase state | `git-spice --no-prompt rebase abort` (`git-spice rba`) |
+| Continue after resolving conflicts | `git-spice --no-prompt rebase continue --no-edit` (`git-spice --no-prompt rbc --no-edit`) |
+| Abort and restore pre-rebase state | `git-spice --no-prompt rebase abort` (`git-spice --no-prompt rba`) |
 
 Workflow during a conflict:
 1. Edit conflicted files, `git add` them.
@@ -197,19 +197,19 @@ git-spice --no-prompt commit amend          # or commit create — both auto-res
 ### Submit and iterate
 
 ```bash
-git-spice --no-prompt stack submit --fill   # push all, open PRs, fill from commit messages
+git-spice --no-prompt stack submit --fill <draft-flag> # push all, open PRs, fill from commit messages
 # Reviewer leaves feedback on feat-b
 git-spice --no-prompt branch checkout feat-b
 # fix, git add
 git-spice --no-prompt commit amend
-git-spice --no-prompt stack submit --fill   # idempotent — only changed branches force-push
+git-spice --no-prompt stack submit --fill <draft-flag> # idempotent — only changed branches force-push
 ```
 
 ### Sync after a merge
 
 ```bash
 git-spice --no-prompt trunk
-git-spice --no-prompt repo sync --restack   # pulls main, deletes merged branches, restacks survivors
+git-spice --no-prompt repo sync --restack # pulls main, deletes merged branches, restacks survivors
 ```
 
 Without `--restack`, survivors are only retargeted to the new trunk and remain misaligned until a separate `git-spice --no-prompt repo restack`.
@@ -218,7 +218,7 @@ Without `--restack`, survivors are only retargeted to the new trunk and remain m
 
 ```bash
 git-spice --no-prompt branch checkout feat-b
-git-spice --no-prompt branch create --insert feat-b2   -m "<message>" # feat-b2 sits between feat-b and feat-c
+git-spice --no-prompt branch create --insert feat-b2 -m "<message>" # feat-b2 sits between feat-b and feat-c
 ```
 
 ### Move a sub-stack onto a different base
@@ -236,8 +236,8 @@ Stacks get into wedged states. Common ones:
 - **Branch silently diverged from base** → `git-spice --no-prompt branch restack` for one, `git-spice --no-prompt repo restack` for all.
 - **Branches "missing" from `log long`** → first check `git-spice --no-prompt log long --all`; by default `log` only shows the current stack. If genuinely untracked, `git-spice --no-prompt branch track` on each, or `git-spice --no-prompt downstack track` from the top.
 - **Upstack flagged "needs restack" after a sync** → `repo sync` ran without `--restack`. Run `git-spice --no-prompt repo restack` (or `stack restack` if it's one stack).
-- **Wrong trunk recorded** → `git-spice --no-prompt repo init --trunk=<correct>`.
-- **Want to start over** → `git-spice --no-prompt repo init --reset` (forgets tracking, leaves git branches intact).
+- **Wrong trunk recorded** → `git-spice --no-prompt repo init --trunk=<correct> --remote=<name>`.
+- **Want to start over** → `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset` (forgets tracking, leaves git branches intact).
 
 For non-trivial recovery (multiple wedged branches, lost work, divergence after a force-push from someone else), dispatch the **stack-doctor** subagent — it has a structured triage protocol.
 
@@ -248,14 +248,14 @@ When you need to translate a sequence of dependent tasks into a stack:
 1. Confirm the repo is initialized: `git-spice --no-prompt auth status` (network ops will need it) and that trunk is set (`git-spice --no-prompt log long` — should show the trunk root).
 2. Start on trunk: `git-spice --no-prompt trunk`.
 3. For each task: implement → `git add` → `git-spice --no-prompt branch create <slug> -m "<message>"` (this commits + creates + tracks in one step).
-4. After the last task: `git-spice --no-prompt stack submit --fill` to open the chain of PRs.
+4. After the last task: `git-spice --no-prompt stack submit --fill <draft-flag>` to open the chain of PRs.
 
 The **stacker** subagent encapsulates this loop and is what you should dispatch when handed a multi-step plan that should ship as a stack.
 
 ## Don't
 
 - **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice --no-prompt upstack restack`, or `git-spice --no-prompt branch edit` when the user is driving interactively.
-- **Don't `git push --force`** on a tracked branch. Use `git-spice --no-prompt <scope> submit` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.
+- **Don't `git push --force`** on a tracked branch. Use `git-spice --no-prompt <scope> submit <draft-flag>` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.
 - **Don't delete tracked branches with `git branch -D`.** Use `git-spice --no-prompt branch delete` so upstack branches get re-parented.
 - **Don't assume `gs`** is git-spice in commands you write. Always `git-spice`.
 
@@ -275,3 +275,11 @@ Per-repo config lives in `git config` under the `spice.*` namespace:
 - `spice.repoSync.restack=upstack` — make `repo sync` restack survivors by default.
 
 Set with `git config spice.submit.draft true` (add `--global` for user-wide).
+
+## Explicit initialization and reset safety
+
+For every initialization, reconfiguration, or recovery path, gather both trunk and remote from explicit arguments, a Pi user-question tool, or plain chat. Always run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. A reset forgets all git-spice tracking relationships while leaving Git branches; disclose that impact and require a separate explicit confirmation before running `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`.
+
+## Explicit submit draft state
+
+Before every create-capable direct submit workflow, resolve draft state from an explicit argument, then `spice.submit.draft`, then a Pi user-question tool or plain chat. Execute with an explicit `<draft-flag>` chosen as `--draft` or `--no-draft`; never rely on an implicit draft state. The `--update-only` exception applies only when that flag proves no new Change Request can be created; otherwise never omit the draft flag.
