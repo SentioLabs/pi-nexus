@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import re
+import shlex
 import shutil
 import tempfile
 
@@ -56,7 +57,7 @@ PROMPT_ANCHORS = {
 PROMPT_SAFETY_APPENDICES = {
     "commands/continue.md": """## Pi execution safety
 
-For unattended continuation, use `git-spice --no-prompt rebase continue --no-edit`. Interactive commit-message editing is terminal-only; do not open an editor through Pi.
+For unattended continuation, use `git-spice --no-prompt rebase continue --no-edit`. Interactive commit-message editing is terminal-only; do not open an editor through Pi. For missing configuration, report it rather than enabling prompts.
 """,
     "commands/init.md": """## Pi execution safety
 
@@ -91,6 +92,97 @@ AGENT_CONFIG = {
     "agents/stack-doctor.md": ("stack-doctor", ["Bash", "Read", "Glob", "Grep"], "## Diagnosis checklist"),
 }
 TOOL_MAP = {"Bash": "bash", "Read": "read", "Write": "write", "Edit": "edit", "Glob": "find", "Grep": "grep"}
+
+READ_ONLY_COMMAND_SIGNATURES = {
+    ("auth", "status"),
+    ("log", "short"),
+    ("log", "long"),
+    ("branch", "diff"),
+    ("ls",),
+    ("ll",),
+    ("bdi",),
+}
+MUTATING_COMMAND_SIGNATURES = {
+    ("repo", "init"),
+    ("repo", "restack"),
+    ("repo", "sync"),
+    ("auth", "login"),
+    ("auth", "logout"),
+    ("branch", "create"),
+    ("branch", "track"),
+    ("branch", "checkout"),
+    ("branch", "restack"),
+    ("branch", "squash"),
+    ("branch", "split"),
+    ("branch", "edit"),
+    ("branch", "fold"),
+    ("branch", "onto"),
+    ("branch", "rename"),
+    ("branch", "delete"),
+    ("branch", "untrack"),
+    ("branch", "submit"),
+    ("commit", "create"),
+    ("commit", "amend"),
+    ("commit", "split"),
+    ("commit", "fixup"),
+    ("commit", "pick"),
+    ("commit", "..."),
+    ("upstack", "restack"),
+    ("upstack", "onto"),
+    ("upstack", "delete"),
+    ("upstack", "submit"),
+    ("downstack", "track"),
+    ("downstack", "restack"),
+    ("downstack", "edit"),
+    ("downstack", "submit"),
+    ("stack", "restack"),
+    ("stack", "edit"),
+    ("stack", "delete"),
+    ("stack", "submit"),
+    ("rebase", "continue"),
+    ("rebase", "abort"),
+    ("<scope>", "submit"),
+    ("trunk",),
+    ("top",),
+    ("bottom",),
+    ("up",),
+    ("down",),
+    ("r", "i"),
+    ("bc",),
+    ("btr",),
+    ("dstr",),
+    ("cc",),
+    ("ca",),
+    ("csp",),
+    ("cf",),
+    ("cp",),
+    ("bco",),
+    ("br",),
+    ("usr",),
+    ("dsr",),
+    ("sr",),
+    ("rr",),
+    ("bsq",),
+    ("bsp",),
+    ("be",),
+    ("bfo",),
+    ("bon",),
+    ("uso",),
+    ("se",),
+    ("dse",),
+    ("brn",),
+    ("bd",),
+    ("sd",),
+    ("usd",),
+    ("buntr",),
+    ("bs",),
+    ("dss",),
+    ("uss",),
+    ("ss",),
+    ("rs",),
+    ("rbc",),
+    ("rba",),
+}
 
 COMMAND_NAMES = r"(?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>)"
 COMMAND_ANCHOR_PATTERN = re.compile(rf"(?<![\w-])git-spice(?= {COMMAND_NAMES}(?:\s|`|$))")
@@ -329,14 +421,23 @@ def validate_skill_frontmatter(text: str, expected_name: str, context: str) -> s
 
 def parse_agent_frontmatter(text: str, expected_source_tools: list[str], context: str) -> tuple[str, list[str], str]:
     frontmatter, body = split_frontmatter(text, context)
-    lines = frontmatter.splitlines()
     top_level = []
-    for line in lines:
+    tool_lines = []
+    current_key = None
+    for line in frontmatter.splitlines():
         match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):(?: (.*))?", line)
         if match:
-            top_level.append((match.group(1), match.group(2)))
-        elif not line.startswith("  - "):
-            raise RuntimeError(f"Unsupported source agent frontmatter shape while patching {context}: {line!r}")
+            current_key = match.group(1)
+            top_level.append((current_key, match.group(2)))
+            continue
+        if line.startswith("  - "):
+            if current_key != "tools":
+                raise RuntimeError(f"List item outside source agent tools block while patching {context}: {line!r}")
+            if not re.fullmatch(r"  - \S(?:.*\S)?", line):
+                raise RuntimeError(f"Malformed source agent tool or unsupported source agent frontmatter shape while patching {context}")
+            tool_lines.append(line)
+            continue
+        raise RuntimeError(f"Unsupported source agent frontmatter shape while patching {context}: {line!r}")
     keys = [key for key, _ in top_level]
     for key in keys:
         if keys.count(key) > 1:
@@ -358,10 +459,7 @@ def parse_agent_frontmatter(text: str, expected_source_tools: list[str], context
     model = top_level[2][1]
     if model != "sonnet":
         raise RuntimeError(f"Source agent model must be exactly 'model: sonnet' while patching {context}")
-    tools_start = lines.index("tools:") + 1
-    model_index = lines.index("model: sonnet") if "model: sonnet" in lines else len(lines)
-    tool_lines = lines[tools_start:model_index]
-    if not tool_lines or not all(re.fullmatch(r"  - \S(?:.*\S)?", line) for line in tool_lines):
+    if not tool_lines:
         raise RuntimeError(f"Malformed source agent tool or unsupported source agent frontmatter shape while patching {context}")
     tools = [line.removeprefix("  - ").strip() for line in tool_lines]
     if tools != expected_source_tools:
@@ -624,41 +722,112 @@ def build_generated_tree(source: Path, temporary_root: Path) -> Path:
     return generated
 
 
+def executable_snippets(text: str) -> list[str]:
+    inline_code = re.compile(r"(?<!`)(?P<delimiter>`+)(?!`)(?P<code>[^\n]*?)(?<!`)(?P=delimiter)(?!`)")
+    snippets = [match.group("code").strip() for match in inline_code.finditer(text)]
+    for match in re.finditer(r"^```([^\n`]*)\n([\s\S]*?)^```[ \t]*$", text, re.MULTILINE):
+        language = match.group(1).strip().split(maxsplit=1)[0] if match.group(1).strip() else ""
+        if language in {"bash", "sh", "shell", "zsh"}:
+            snippets.append(match.group(2))
+    known_prefixes = {signature[0] for signature in READ_ONLY_COMMAND_SIGNATURES | MUTATING_COMMAND_SIGNATURES}
+    for line in text.splitlines():
+        stripped = line.strip().removeprefix("(").lstrip()
+        match = re.match(r"git-spice\s+(\S+)", stripped)
+        if match and (match.group(1) == "--no-prompt" or match.group(1) in known_prefixes):
+            snippets.append(line.strip())
+    return [snippet for snippet in snippets if "git-spice" in snippet]
+
+
+def tokenize_executable_snippet(snippet: str) -> list[str]:
+    normalized = re.sub(r"\\\r?\n", " ", snippet).replace("\n", " ; ")
+    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    return list(lexer)
+
+
+def is_shell_control_token(token: str) -> bool:
+    return bool(token) and all(character in ";&|()" for character in token)
+
+
+def executable_git_spice_invocations(text: str) -> list[list[str]]:
+    invocations = []
+    for snippet in executable_snippets(text):
+        tokens = tokenize_executable_snippet(snippet)
+        for index, token in enumerate(tokens):
+            if token != "git-spice":
+                continue
+            end = index + 1
+            while end < len(tokens) and not is_shell_control_token(tokens[end]):
+                end += 1
+            invocation = tokens[index:end]
+            if len(invocation) > 1:
+                invocations.append(invocation)
+    return invocations
+
+
 def executable_git_spice_commands(text: str) -> list[str]:
-    snippets = [match.group(1).strip() for match in re.finditer(r"`([^`\n]+)`", text)]
-    snippets.extend(line.strip() for line in text.splitlines() if line.strip().startswith("git-spice "))
-    for match in re.finditer(r"```(?:bash|sh)\n([\s\S]*?)```", text):
-        snippets.extend(line.strip() for line in match.group(1).splitlines())
-    known = "|".join((COMMAND_NAMES.removeprefix("(?:").removesuffix(")"), *ALIAS_NAMES))
-    pattern = re.compile(rf"^git-spice (?:--no-prompt )?(?:{known})(?:\s|$)")
-    return [snippet for snippet in snippets if pattern.match(snippet)]
+    return [" ".join(invocation) for invocation in executable_git_spice_invocations(text)]
+
+
+def classify_git_spice_command(arguments: list[str]) -> tuple[str, tuple[str, ...]]:
+    for classification, signatures in (("read-only", READ_ONLY_COMMAND_SIGNATURES), ("mutation", MUTATING_COMMAND_SIGNATURES)):
+        for signature in signatures:
+            if tuple(arguments[:len(signature)]) == signature:
+                return classification, signature
+    raise ValueError("unclassified git-spice subcommand")
+
+
+def has_message_argument(arguments: list[str]) -> bool:
+    for index, argument in enumerate(arguments):
+        if argument == "-m" and index + 1 < len(arguments) and arguments[index + 1]:
+            return True
+        if argument == "--message" and index + 1 < len(arguments) and arguments[index + 1]:
+            return True
+        if argument.startswith("--message=") and argument != "--message=":
+            return True
+    return "--no-commit" in arguments
 
 
 def validate_generated_commands(path: Path, text: str) -> None:
-    for command in executable_git_spice_commands(text):
+    try:
+        invocations = executable_git_spice_invocations(text)
+    except ValueError as error:
+        raise RuntimeError(f"Unsafe generated executable git-spice command in {path.as_posix()}: malformed executable snippet: {error}") from error
+    for tokens in invocations:
+        command = " ".join(tokens)
         diagnostic = f"Unsafe generated executable git-spice command in {path.as_posix()}: {command!r}"
-        if not command.startswith("git-spice --no-prompt "):
+        if len(tokens) < 3 or tokens[1] != "--no-prompt":
             raise RuntimeError(diagnostic)
-        invocation = command.removeprefix("git-spice --no-prompt ")
-        if invocation.startswith("repo init"):
-            if not re.search(r"(?:^|\s)--trunk=<[^>]+>", invocation) or not re.search(r"(?:^|\s)--remote=<[^>]+>", invocation):
+        arguments = tokens[2:]
+        try:
+            _, signature = classify_git_spice_command(arguments)
+        except ValueError as error:
+            raise RuntimeError(diagnostic) from error
+        if signature in {("repo", "init"), ("r", "i")}:
+            if not any(re.fullmatch(r"--trunk=<[^>]+>", argument) for argument in arguments):
                 raise RuntimeError(diagnostic)
-        if re.match(r"r i(?:\s|$)", invocation):
-            if "--trunk=<" not in invocation or "--remote=<" not in invocation:
+            if not any(re.fullmatch(r"--remote=<[^>]+>", argument) for argument in arguments):
                 raise RuntimeError(diagnostic)
-        if invocation.startswith("branch create") or re.match(r"bc(?:\s|$)", invocation):
-            if not re.search(r"(?:^|\s)(?:-m\s+(?:\"[^\"]+\"|<[^>]+>)|--message(?:=|\s)|--no-commit(?:\s|$))", invocation):
+        if signature in {("branch", "create"), ("bc",)} and not has_message_argument(arguments):
+            raise RuntimeError(diagnostic)
+        if signature in {("rebase", "continue"), ("rbc",)} and "--no-edit" not in arguments:
+            raise RuntimeError(diagnostic)
+        if signature in {
+            ("branch", "submit"),
+            ("upstack", "submit"),
+            ("downstack", "submit"),
+            ("stack", "submit"),
+            ("<scope>", "submit"),
+            ("bs",),
+            ("dss",),
+            ("uss",),
+            ("ss",),
+        } and "--update-only" not in arguments:
+            if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in arguments):
                 raise RuntimeError(diagnostic)
-        if invocation.startswith("rebase continue") or re.match(r"rbc(?:\s|$)", invocation):
-            if not re.search(r"(?:^|\s)--no-edit(?:\s|$)", invocation):
-                raise RuntimeError(diagnostic)
-        submit = re.match(r"(?:branch|upstack|downstack|stack|<scope>) submit\b", invocation)
-        submit_alias = re.match(r"(?:bs|dss|uss|ss)\b", invocation)
-        if (submit or submit_alias) and "--update-only" not in invocation:
-            if not re.search(r"(?:^|\s)(?:--draft|--no-draft|<draft-flag>)(?:\s|$)", invocation):
-                raise RuntimeError(diagnostic)
-        if invocation.startswith("repo sync") or re.match(r"rs(?:\s|$)", invocation):
-            if not re.search(r"(?:^|\s)--restack(?:=\S+)?(?:\s|$)", invocation):
+        if signature in {("repo", "sync"), ("rs",)}:
+            if not any(argument == "--restack" or re.fullmatch(r"--restack=\S+", argument) for argument in arguments):
                 raise RuntimeError(diagnostic)
 
 

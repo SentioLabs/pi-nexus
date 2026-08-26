@@ -17,4 +17,4 @@ Why `git-spice --no-prompt rebase continue --no-edit` and not `git rebase --cont
 
 ## Pi execution safety
 
-For unattended continuation, use `git-spice --no-prompt rebase continue --no-edit`. Interactive commit-message editing is terminal-only; do not open an editor through Pi.
+For unattended continuation, use `git-spice --no-prompt rebase continue --no-edit`. Interactive commit-message editing is terminal-only; do not open an editor through Pi. For missing configuration, report it rather than enabling prompts.

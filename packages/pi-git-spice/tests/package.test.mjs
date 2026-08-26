@@ -22,10 +22,23 @@ const expectedPrompts = [
 ];
 const expectedSkills = ["git-spice", "stacking-workflow"];
 const expectedAgents = ["stack-doctor.md", "stacker.md"];
-const gitSpiceAliasNames = [
-  "r", "ls", "ll", "bdi", "bc", "btr", "dstr", "cc", "ca", "csp", "cf", "cp", "bco", "br",
-  "usr", "dsr", "sr", "rr", "bsq", "bsp", "be", "bfo", "bon", "uso", "se", "dse", "brn", "bd",
-  "sd", "usd", "buntr", "bs", "dss", "uss", "ss", "rs", "rbc", "rba",
+const readOnlyCommandSignatures = [
+  ["auth", "status"], ["log", "short"], ["log", "long"], ["branch", "diff"], ["ls"], ["ll"], ["bdi"],
+];
+const mutatingCommandSignatures = [
+  ["repo", "init"], ["repo", "restack"], ["repo", "sync"], ["auth", "login"], ["auth", "logout"],
+  ["branch", "create"], ["branch", "track"], ["branch", "checkout"], ["branch", "restack"],
+  ["branch", "squash"], ["branch", "split"], ["branch", "edit"], ["branch", "fold"], ["branch", "onto"],
+  ["branch", "rename"], ["branch", "delete"], ["branch", "untrack"], ["branch", "submit"],
+  ["commit", "create"], ["commit", "amend"], ["commit", "split"], ["commit", "fixup"], ["commit", "pick"],
+  ["commit", "..."], ["upstack", "restack"], ["upstack", "onto"], ["upstack", "delete"],
+  ["upstack", "submit"], ["downstack", "track"], ["downstack", "restack"], ["downstack", "edit"],
+  ["downstack", "submit"], ["stack", "restack"], ["stack", "edit"], ["stack", "delete"],
+  ["stack", "submit"], ["rebase", "continue"], ["rebase", "abort"], ["<scope>", "submit"],
+  ["trunk"], ["top"], ["bottom"], ["up"], ["down"], ["r", "i"], ["bc"], ["btr"], ["dstr"],
+  ["cc"], ["ca"], ["csp"], ["cf"], ["cp"], ["bco"], ["br"], ["usr"], ["dsr"], ["sr"], ["rr"],
+  ["bsq"], ["bsp"], ["be"], ["bfo"], ["bon"], ["uso"], ["se"], ["dse"], ["brn"], ["bd"],
+  ["sd"], ["usd"], ["buntr"], ["bs"], ["dss"], ["uss"], ["ss"], ["rs"], ["rbc"], ["rba"],
 ];
 const runtimePaths = [
   ...expectedPrompts.map((name) => `prompts/${name}`),
@@ -33,13 +46,55 @@ const runtimePaths = [
   ...expectedAgents.map((name) => `agents/${name}`),
 ];
 
-const executableGitSpiceCommands = (text) => {
-  const snippets = [
-    ...Array.from(text.matchAll(/`([^`\n]+)`/g), ([, snippet]) => snippet.trim()),
-    ...Array.from(text.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g), ([, block]) => block.split("\n").map((line) => line.trim())),
-  ].flat();
-  const knownCommand = new RegExp(`^git-spice (?:--no-prompt )?(?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>|${gitSpiceAliasNames.join("|")})(?:\\s|$)`);
-  return snippets.filter((snippet) => knownCommand.test(snippet));
+const executableSnippets = (text) => {
+  const knownPrefixes = new Set([...readOnlyCommandSignatures, ...mutatingCommandSignatures].map(([prefix]) => prefix));
+  const bareCommands = text.split("\n").map((line) => line.trim()).filter((line) => {
+    const match = line.replace(/^\(\s*/, "").match(/^git-spice\s+(\S+)/);
+    return match && (match[1] === "--no-prompt" || knownPrefixes.has(match[1]));
+  });
+  return [
+    ...Array.from(text.matchAll(/(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)/g), ([, , snippet]) => snippet.trim()),
+    ...Array.from(text.matchAll(/^```(?:bash|sh|shell|zsh)\s*\n([\s\S]*?)^```[ \t]*$/gm), ([, block]) => block),
+    ...bareCommands,
+  ].filter((snippet) => snippet.includes("git-spice"));
+};
+
+const invocationsInSnippet = (snippet) => {
+  const invocations = [];
+  for (const match of snippet.matchAll(/(?<![\w-])git-spice(?=\s)/g)) {
+    let quote = null;
+    let end = match.index + match[0].length;
+    for (; end < snippet.length; end += 1) {
+      const character = snippet[end];
+      if (character === "\\" && snippet[end + 1] === "\n") {
+        end += 1;
+        continue;
+      }
+      if (quote) {
+        if (character === quote && snippet[end - 1] !== "\\") quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'") {
+        quote = character;
+        continue;
+      }
+      if (character === "#" && /\s/.test(snippet[end - 1] ?? "")) break;
+      if (character === "\n" || ";&|()".includes(character)) break;
+    }
+    invocations.push(snippet.slice(match.index, end).replace(/\\\r?\n/g, " ").trim());
+  }
+  return invocations;
+};
+
+const executableGitSpiceCommands = (text) => executableSnippets(text).flatMap(invocationsInSnippet);
+
+const classifyGitSpiceCommand = (command) => {
+  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const argumentsAfterGlobalFlag = tokens.slice(2);
+  for (const [classification, signatures] of [["read-only", readOnlyCommandSignatures], ["mutation", mutatingCommandSignatures]]) {
+    if (signatures.some((signature) => signature.every((part, index) => argumentsAfterGlobalFlag[index] === part))) return classification;
+  }
+  return null;
 };
 
 test("package exposes the exact Pi git-spice runtime", () => {
@@ -80,6 +135,7 @@ test("prompts retain arguments and make every mutation non-interactive", () => {
   assert.match(prompts["git-spice-new.md"], /branch create <name> --no-commit/);
   assert.match(prompts["git-spice-continue.md"], /git-spice --no-prompt rebase continue --no-edit/);
   assert.match(prompts["git-spice-continue.md"], /terminal-only/i);
+  assert.match(prompts["git-spice-continue.md"], /missing configuration[\s\S]*report[\s\S]*rather than enabling prompts/i);
   assert.match(prompts["git-spice-submit.md"], /--draft.*--no-draft|--no-draft.*--draft/s);
   assert.match(prompts["git-spice-submit.md"], /spice\.submit\.draft/);
   assert.match(prompts["git-spice-submit.md"], /--dry-run/);
@@ -124,6 +180,7 @@ test("every executable command in every generated resource has command-specific 
     assert.ok(commands.length > 0, `${relative} exposes executable git-spice guidance`);
     for (const command of commands) {
       assert.match(command, /^git-spice --no-prompt /, `${relative}: ${command}`);
+      assert.notEqual(classifyGitSpiceCommand(command), null, `${relative}: unclassified command: ${command}`);
       if (/^git-spice --no-prompt (?:repo init|r i)\b/.test(command)) {
         assert.match(command, /(?:^| )--trunk=<[^>]+>/, `${relative}: ${command}`);
         assert.match(command, /(?:^| )--remote=<[^>]+>/, `${relative}: ${command}`);

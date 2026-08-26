@@ -400,6 +400,7 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   }
   assertSafeBranchCreation(prompts["commands/new.md"], "new prompt");
   assertSafeRebaseContinuation(prompts["commands/continue.md"], "continue prompt");
+  assert.match(prompts["commands/continue.md"], /missing configuration[\s\S]*report[\s\S]*rather than enabling prompts/i);
 
   for (const relative of ["skills/git-spice/SKILL.md", "skills/stacking-workflow/SKILL.md"]) {
     const output = readFileSync(path.join(packageCopy.root, relative), "utf8");
@@ -499,6 +500,9 @@ const agentFrontmatterVariants = [
   ["unknown field", (text) => text.replace(/^description:.*$/m, (line) => `${line}\nfuture: value`), /Unsupported source agent frontmatter key/],
   ["malformed field", (text) => text.replace(/^  - Bash$/m, " - Bash"), /Unsupported source agent frontmatter shape|Malformed source agent tool/],
   ["whitespace-only field", (text) => text.replace(/^description:.*$/m, "description:    "), /description must be a non-empty scalar/],
+  ["list item before description", (text) => text.replace(/^---$/m, "---\n  - Bash"), /List item outside source agent tools block/],
+  ["list item in description field", (text) => text.replace(/^description:.*$/m, (line) => `${line}\n  - Bash`), /List item outside source agent tools block/],
+  ["list item after model", (text) => text.replace(/^model: sonnet$/m, "model: sonnet\n  - Bash"), /List item outside source agent tools block/],
 ];
 
 const failureVariants = [
@@ -584,10 +588,14 @@ const generatedTreeProbe = (body) => [
 for (const [name, unsafeCommand] of [
   ["bare mutation", "git-spice branch restack"],
   ["branch creation without commit mode", "git-spice --no-prompt branch create <name>"],
+  ["branch creation with empty commit message", "git-spice --no-prompt branch create <name> -m \"\""],
   ["rebase continuation without no-edit", "git-spice --no-prompt rebase continue"],
   ["init without explicit remote", "git-spice --no-prompt repo init --trunk=<name>"],
+  ["init with empty trunk placeholder", "git-spice --no-prompt repo init --trunk=<> --remote=<name>"],
   ["sync without restack", "git-spice --no-prompt repo sync"],
+  ["sync with empty restack value", "git-spice --no-prompt repo sync --restack="],
   ["submit without draft state", "git-spice --no-prompt stack submit --fill"],
+  ["unknown subcommand", "git-spice --no-prompt future mutate"],
 ]) {
   test(`generated runtime validation rejects ${name}`, () => {
     const source = createSourceFixture();
@@ -595,6 +603,27 @@ for (const [name, unsafeCommand] of [
     const unsafeFragment = name === "bare mutation" ? `\n${unsafeCommand}\n` : `\nUnsafe validator fixture: \`${unsafeCommand}\`.\n`;
     const command = JSON.stringify(unsafeFragment);
     const result = runProbe(generatedTreeProbe(`target = generated / 'prompts/git-spice-stack.md'\ntarget.write_text(target.read_text() + ${command})`), packageCopy, source);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Unsafe generated executable git-spice command/);
+  });
+}
+
+const adversarialGeneratedSnippets = [
+  ["prompt && unknown second invocation", "prompts/git-spice-stack.md", "`git-spice --no-prompt log long && git-spice --no-prompt future mutate`"],
+  ["prompt || unsafe second invocation", "prompts/git-spice-stack.md", "`git-spice --no-prompt log long || git-spice branch restack`"],
+  ["prompt multi-backtick unknown later invocation", "prompts/git-spice-stack.md", "``git-spice --no-prompt log long && git-spice --no-prompt future mutate``"],
+  ["skill semicolon unknown later invocation", "skills/git-spice/SKILL.md", "`git-spice --no-prompt log long; git-spice --no-prompt future mutate`"],
+  ["skill pipeline unsafe later invocation", "skills/stacking-workflow/SKILL.md", "`git-spice --no-prompt log long | git-spice --no-prompt branch create <name>`"],
+  ["agent subshell unknown later invocation", "agents/stack-doctor.md", "`(git-spice --no-prompt log long && git-spice --no-prompt future mutate)`"],
+  ["agent multiline continuation unsafe later invocation", "agents/stacker.md", "```bash\ngit-spice --no-prompt log long && \\\n  git-spice --no-prompt branch create <name>\n```"],
+];
+
+for (const [name, relative, snippet] of adversarialGeneratedSnippets) {
+  test(`generated runtime validation rejects ${name}`, () => {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const fragment = JSON.stringify(`\nAdversarial validator fixture:\n${snippet}\n`);
+    const result = runProbe(generatedTreeProbe(`target = generated / ${JSON.stringify(relative)}\ntarget.write_text(target.read_text() + ${fragment})`), packageCopy, source);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Unsafe generated executable git-spice command/);
   });
