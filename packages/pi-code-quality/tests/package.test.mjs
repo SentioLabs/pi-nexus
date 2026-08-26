@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+const migrationScript = fileURLToPath(new URL("../scripts/migrate-code-quality-plugin.py", import.meta.url));
+const runtimeManifest = JSON.parse(execFileSync(
+  "python3",
+  [
+    "-B",
+    "-c",
+    "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps([target for _, target in module.RUNTIME_MANIFEST]))",
+    migrationScript,
+  ],
+  { encoding: "utf8" },
+));
 const readText = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const readJson = (path) => JSON.parse(readText(path));
 
@@ -9,7 +23,7 @@ test("package exposes code-quality skills and prompts to Pi", () => {
   const pkg = readJson("package.json");
 
   assert.equal(pkg.name, "@sentiolabs/pi-code-quality");
-  assert.equal(pkg.version, "0.1.0");
+  assert.match(pkg.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.repository.directory, "packages/pi-code-quality");
   assert.deepEqual(pkg.pi.skills, ["./skills"]);
@@ -22,27 +36,68 @@ test("package exposes code-quality skills and prompts to Pi", () => {
   assert.ok(pkg.keywords.includes("reviewability"));
 });
 
-test("slop-review skill frontmatter is valid for Pi discovery", () => {
-  const skill = readText("skills/slop-review/SKILL.md");
-
+test("deep-review skill frontmatter is valid for Pi discovery", () => {
+  const skill = readText("skills/deep-review/SKILL.md");
   assert.match(skill, /^---\n/);
-  assert.match(skill, /\nname: slop-review\n/);
-  const description = skill.match(/\ndescription: (.+)\n/)?.[1] ?? "";
-  assert.ok(description.length >= 20, "description should be descriptive");
-  assert.ok(description.length <= 1024, "description should fit Pi skill metadata limits");
+  assert.match(skill, /\nname: deep-review\n/);
+  const description = (skill.match(/\ndescription:\s*(?:[>|]\n)?([\s\S]+?)\nlicense:\s*MIT\n/)?.[1] ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  assert.ok(description.length >= 20);
+  assert.ok(description.length <= 1024);
   assert.match(skill, /\nlicense: MIT\n/);
 });
 
-test("slop-review skill contains Pi-specific portability guards", () => {
-  const skill = readText("skills/slop-review/SKILL.md");
+test("package exposes only canonical review resources", () => {
+  assert.equal(existsSync(new URL("../skills/deep-review/SKILL.md", import.meta.url)), true);
+  assert.equal(existsSync(new URL("../skills/size-review/SKILL.md", import.meta.url)), true);
+  assert.equal(existsSync(new URL("../prompts/code-quality-review.md", import.meta.url)), true);
+  assert.equal(existsSync(new URL("../prompts/code-quality-size.md", import.meta.url)), true);
+  assert.equal(existsSync(new URL("../skills/slop-review/SKILL.md", import.meta.url)), false);
+  assert.equal(existsSync(new URL("../prompts/code-quality-slop.md", import.meta.url)), false);
+});
 
+test("deep-review preserves five-lens grading and advisory separation", () => {
+  const skill = readText("skills/deep-review/SKILL.md");
+  assert.match(skill, /Phase 1a \(Correctness & Quality\)/);
+  assert.match(skill, /Phase 1b \(Security\)/);
+  assert.match(skill, /Phase 1c \(Idiom & Best Practices\)/);
+  assert.match(skill, /Phase 1d \(Architecture & Solution-Fit\)/);
+  assert.match(skill, /Phase 1e \(AI Slop & Curation Evidence\)/);
+  assert.match(skill, /advisory: it never caps, raises, or otherwise alters the review grade/i);
+  assert.match(skill, /False-negative sweep \(mandatory\)/);
+  assert.match(skill, /Grade caps/);
+  assert.match(skill, /Any CONFIRMED or ESCALATED \*\*security or correctness\*\*/);
+  assert.match(skill, /\.code-quality\/review-acceptances\.md/);
+  assert.doesNotMatch(skill, /\.code-quality\/slop-acceptances\.md/);
+});
+
+test("deep-review and output actions preserve Pi portability guards", () => {
+  const skill = readText("skills/deep-review/SKILL.md");
+  const actions = readText("skills/deep-review/references/output-actions.md");
+  const combined = `${skill}\n${actions}`;
   assert.match(skill, /Execution Model and Model Tier Intent/);
-  assert.match(skill, /Pi\/source-fidelity guard/);
-  assert.match(skill, /Do \*\*not\*\* use `\[ ! -t 0 \]` in Pi/);
-  assert.match(skill, /ask_user_question/);
-  assert.doesNotMatch(skill, /\/code-quality:slop/);
-  assert.doesNotMatch(skill, /\$\{CLAUDE_PLUGIN_ROOT\}/);
-  assert.doesNotMatch(skill, /AskUserQuestion/);
+  assert.match(skill, /sequential/i);
+  assert.match(skill, /strongest available reasoning tier/i);
+  assert.match(actions, /ask_user_question/);
+  assert.match(actions, /questions\[\]/);
+  assert.match(actions, /tool subprocess stdin may be non-TTY during an interactive session/i);
+  assert.match(actions, /DEEP_REVIEW\.md/);
+  assert.match(actions, /\.baseRepository\.owner\.login \+ "\/" \+ \.baseRepository\.name/);
+  assert.doesNotMatch(actions, /\.headRepository\.owner\.login \+ "\/" \+ \.headRepository\.name/);
+  assert.ok(actions.includes([
+    "**No PR detected — skip the question.** Write `DEEP_REVIEW.md` directly and",
+    "tell the user: \"No open PR found for this branch — wrote findings to",
+    "`DEEP_REVIEW.md` (untracked).\" If the user wants something else they can",
+    "ask in their next turn. Do not present a 1-option menu. Direct-write does not",
+    "depend on question-tool availability. Use plain chat only for the PR path, where",
+    "an actual interactive delivery choice is needed.",
+  ].join("\n")));
+  assert.doesNotMatch(combined, /\$\{CLAUDE_PLUGIN_ROOT\}/);
+  assert.doesNotMatch(combined, /AskUserQuestion/);
+  assert.doesNotMatch(combined, /\/code-quality:/);
+  assert.doesNotMatch(combined, /model: "(?:fable|opus|sonnet)"/);
+  assert.doesNotMatch(combined, /CLAUDE_DEEP_REVIEW\.md/);
 });
 
 test("size-review skill frontmatter is valid for Pi discovery", () => {
@@ -58,67 +113,76 @@ test("size-review skill frontmatter is valid for Pi discovery", () => {
   assert.match(skill, /\nlicense: MIT\n/);
 });
 
-test("size-review preserves source threshold and stack analysis behavior", () => {
+test("size-review preserves strict source thresholds and seam behavior", () => {
   const skill = readText("skills/size-review/SKILL.md");
-
-  assert.match(skill, /More than \*\*20 files changed\*\*/);
-  assert.match(skill, /More than \*\*500 lines added\*\*/);
-  assert.match(skill, /More than \*\*30 commits\*\*/);
+  assert.match(skill, /More than \*\*10 files changed\*\*/);
+  assert.match(skill, /More than \*\*400 lines added\*\*/);
+  assert.match(skill, /More than \*\*15 commits\*\*/);
   assert.match(skill, /\*\*3 or more top-level directories touched\*\*/);
-  assert.match(skill, /raw → .* after exclusions/);
-  assert.match(skill, /Cumulative/);
-  assert.match(skill, /Slice/);
+  assert.match(skill, /mixes a behavior change with a refactor or mechanical churn/);
+  assert.match(skill, /1,000 authored lines added/);
+  assert.match(skill, /30 files/);
+  assert.match(skill, /Sweep the whole catalog/);
+  assert.match(skill, /Review cost/);
+  assert.match(skill, /Split by default/);
   assert.match(skill, /references\/default-exclusions\.md/);
   assert.match(skill, /ask_user_question/);
-  assert.doesNotMatch(skill, /\/code-quality:size/);
   assert.doesNotMatch(skill, /\$\{CLAUDE_PLUGIN_ROOT\}/);
+  assert.doesNotMatch(skill, /\[ ! -t 0 \]/);
   assert.doesNotMatch(skill, /CLAUDE_SIZE_REVIEW\.md/);
 });
 
-test("prompt aliases point at the correct skills", () => {
-  const slopPrompt = readText("prompts/code-quality-slop.md");
+test("prompt aliases point at canonical review skills", () => {
+  const reviewPrompt = readText("prompts/code-quality-review.md");
   const sizePrompt = readText("prompts/code-quality-size.md");
-
-  assert.match(slopPrompt, /^---\n/);
-  assert.match(slopPrompt, /description: Run an AI slop\/code-quality review/);
-  assert.match(slopPrompt, /argument-hint: "\[scope\]"/);
-  assert.match(slopPrompt, /Use the `slop-review` skill/);
-  assert.match(slopPrompt, /\$ARGUMENTS/);
-  assert.doesNotMatch(slopPrompt, /\/code-quality:slop/);
-
+  assert.match(reviewPrompt, /^---\n/);
+  assert.match(reviewPrompt, /description: .*correctness, security, best practices, idiom, and architecture\/solution-fit, plus an advisory AI-slop assessment and driver-curation verdict/);
+  assert.match(reviewPrompt, /argument-hint: "\[scope\]"/);
+  assert.match(reviewPrompt, /Use the `deep-review` skill/);
+  assert.match(reviewPrompt, /\$ARGUMENTS/);
+  assert.match(reviewPrompt, /all changes|base branch/i);
+  assert.doesNotMatch(reviewPrompt, /\/code-quality:/);
   assert.match(sizePrompt, /^---\n/);
-  assert.match(sizePrompt, /description: Run a PR or branch size review/);
+  assert.match(sizePrompt, /description: .*preferring git-spice stacked CRs.*effort rating.*concrete stack plan/);
   assert.match(sizePrompt, /argument-hint: "\[scope\]"/);
   assert.match(sizePrompt, /Use the `size-review` skill/);
   assert.match(sizePrompt, /\$ARGUMENTS/);
-  assert.doesNotMatch(sizePrompt, /\/code-quality:size/);
+  assert.doesNotMatch(sizePrompt, /\/code-quality:/);
 });
 
-test("slop-review language reference files are bundled", () => {
+test("deep-review and size-review references are bundled", () => {
   for (const reference of ["go", "python", "rust", "svelte-ts"]) {
-    const content = readText(`skills/slop-review/references/${reference}.md`);
+    const content = readText(`skills/deep-review/references/${reference}.md`);
     assert.match(content, /^# .+AI Slop Signals/m);
   }
+  assert.match(readText("skills/deep-review/references/output-actions.md"), /^# Output Actions/);
+  const exclusions = readText("skills/size-review/references/default-exclusions.md");
+  assert.match(exclusions, /^# Universal default exclusions for size-review/m);
+  assert.match(exclusions, /go\.sum/);
+  assert.match(exclusions, /package-lock\.json/);
 });
 
-test("size-review default exclusions are bundled", () => {
-  const content = readText("skills/size-review/references/default-exclusions.md");
+test("npm pack bundles canonical review resources without maintainer or legacy files", () => {
+  const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    cwd: packageRoot,
+    encoding: "utf8",
+  }));
+  assert.equal(packed.length, 1);
+  const paths = new Set(packed[0].files.map(({ path }) => path));
 
-  assert.match(content, /^# Universal default exclusions for size-review/m);
-  assert.match(content, /go\.sum/);
-  assert.match(content, /\*\*\/package-lock\.json/);
-  assert.match(content, /\*\*\/\*\.pb\.go/);
-  assert.match(content, /\*\*\/__generated__\/\*\*/);
-});
+  for (const path of runtimeManifest) {
+    assert.equal(paths.has(path), true, `${path} should be in the package tarball`);
+  }
+  assert.deepEqual(
+    [...paths].filter((path) => path.startsWith("prompts/") || path.startsWith("skills/")).sort(),
+    runtimeManifest.sort(),
+    "the tarball runtime resources must exactly match the generated manifest",
+  );
 
-test("README documents both portable review workflows", () => {
-  const readme = readText("README.md");
-
-  assert.match(readme, /parallel agent tool/);
-  assert.match(readme, /sequential/i);
-  assert.match(readme, /\/code-quality-slop/);
-  assert.match(readme, /\/skill:slop-review/);
-  assert.match(readme, /\/code-quality-size/);
-  assert.match(readme, /\/skill:size-review/);
-  assert.match(readme, /raw vs post-exclusion size/);
+  assert.equal(paths.has("scripts/migrate-code-quality-plugin.py"), false);
+  assert.equal(
+    [...paths].some((path) => path.startsWith("scripts/") || path.startsWith("tests/") || path.startsWith(".pi/")),
+    false,
+  );
+  assert.equal([...paths].some((path) => path.includes("slop-review") || path.includes("code-quality-slop")), false);
 });

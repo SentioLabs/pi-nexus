@@ -68,6 +68,9 @@ go.work.sum
 
 ## Notes for skill consumers
 
+- These exclusions are **size accounting, not review-scope exclusions** — a file
+  excluded here (e.g., generated migration SQL) may still be in scope for
+  content review by `deep-review`, which applies its own scope rules.
 - These defaults bias toward **safe exclusions** — patterns that are generated
   in nearly every repo that uses the language/tool. Repo-specific generated
   trees (ent ORM, Atlas migrations, custom codegen output, Postman bundles,

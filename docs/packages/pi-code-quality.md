@@ -1,30 +1,37 @@
 # `@sentiolabs/pi-code-quality`
 
-`@sentiolabs/pi-code-quality` provides Pi-native code-quality skills and prompts for slop review and size review.
+`@sentiolabs/pi-code-quality` provides Pi-native skills and prompts for comprehensive multi-lens code review and PR/branch size analysis.
 
 ## Included resources
 
-- Skill: `/skill:slop-review`
-- Prompt alias: `/code-quality-slop [scope]`
+- Skill: `/skill:deep-review`
+- Prompt alias: `/code-quality-review [scope]`
 - Skill: `/skill:size-review`
 - Prompt alias: `/code-quality-size [scope]`
-- References: Go, Python, Rust, and Svelte/TypeScript slop-review guidance; default size-review exclusions
+- References: Go, Python, Rust, Svelte/TypeScript, deep-review output actions, and default size-review exclusions
 
-## Slop review workflow
+## Five-lens grading
 
-`slop-review` reviews code through four lenses: AI authorship signals, idiom fluency, code quality, and architecture/solution fit. It is the workflow for deciding whether the implementation itself looks suspect.
+`deep-review` covers five concerns: correctness and quality, security, idiom and best practices, architecture and solution fit, and advisory AI-slop and driver-curation evidence. Correctness and quality, security, idiom and best practices, and architecture and solution fit determine the review grade. AI-authorship and driver-curation signals are advisory and never raise, lower, or cap the grade.
 
-## Size review workflow
+By default, `/code-quality-review` reviews all changes that differ from the branch merge-base, including staged and unstaged edits while excluding untracked scratch files. The only acceptance filename is `.code-quality/review-acceptances.md`.
 
-`size-review` reviews how a change is packaged for human review: raw versus post-exclusion size, stacked branch shape, viable seams, split effort, and concrete stack plans.
+## Size-review shape analysis
+
+`size-review` evaluates raw versus post-exclusion size, cumulative versus slice shape for stacked branches, mixed intent, every standard seam category, split effort, reviewer cost, and a concrete stack plan. Its full analysis starts above 10 files, 400 authored additions, 15 commits, three top-level directories, or whenever behavior is mixed with refactor/mechanical churn.
+
+## Portability
+
+The package does not require Arc or any optional subagent package. When a Pi session exposes a generic parallel task/subagent tool, `deep-review` can run its independent lenses in parallel. Otherwise it runs the same lens prompts sequentially with separated findings. Model-tier requests are advisory and used only when the available tool supports model selection.
 
 ## Usage
 
 ```text
-/code-quality-slop
-/code-quality-slop src/
-/code-quality-slop #123
-/skill:slop-review
+/code-quality-review
+/code-quality-review src/
+/code-quality-review path/to/file.go
+/code-quality-review #123
+/skill:deep-review
 
 /code-quality-size
 /code-quality-size #123
@@ -32,11 +39,13 @@
 /skill:size-review
 ```
 
-## Portability
+## Rename
 
-The package does not require Arc or `pi-subagents`. It uses parallel agent tools when available and falls back to sequential lens passes otherwise.
+The review workflow is now named `deep-review`, and its prompt is `/code-quality-review`. The initial slop-named skill and prompt were removed rather than retained as aliases. Projects that use accepted-deviation policy should use `.code-quality/review-acceptances.md`.
 
 ## Local development
+
+From the monorepo root:
 
 ```bash
 npm test --workspace @sentiolabs/pi-code-quality
