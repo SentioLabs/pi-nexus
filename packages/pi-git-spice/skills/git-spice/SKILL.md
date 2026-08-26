@@ -7,7 +7,7 @@ license: MIT
 
 # git-spice
 
-git-spice is a CLI for managing **stacks of dependent Git branches**. Each branch (except the trunk) has a recorded *base* — the branch it was created from. git-spice tracks those relationships, restacks (rebases) dependents automatically when a base changes, and submits the whole chain as separate-but-linked Change Requests (CRs — PRs on GitHub, MRs on GitLab).
+The git-spice CLI manages **stacks of dependent Git branches**. Each branch (except the trunk) has a recorded *base* — the branch it was created from. git-spice tracks those relationships, restacks (rebases) dependents automatically when a base changes, and submits the whole chain as separate-but-linked Change Requests (CRs — PRs on GitHub, MRs on GitLab).
 
 Use this skill whenever you need to translate user intent ("stack this", "submit the stack", "rebase everything", "what's on top of feat-1?") into the right CLI invocations.
 
@@ -32,7 +32,7 @@ The subcommand abbreviations shown in parentheses below — `r i`, `b c`, `ls`, 
 - **downstack** — every branch between this one and trunk (exclusive of trunk).
 - **restack** — rebase a branch (or set of branches) onto its current base. Run after the base moves.
 
-git-spice operations are *local-first*. Auth is only needed for `submit`/`sync` (network operations).
+The git-spice CLI's operations are *local-first*. Auth is only needed for `submit`/`sync` (network operations).
 
 ## Command map
 
@@ -159,7 +159,7 @@ Common flags on submit:
 
 ### Recover from an interrupted rebase
 
-git-spice rebases run `git rebase` under the hood. Conflicts pause the operation. **Resolve with the git-spice variants, not raw git:**
+The git-spice CLI runs `git rebase` under the hood. Conflicts pause the operation. **Resolve with the git-spice variants, not raw git:**
 
 | Intent | Command |
 |---|---|

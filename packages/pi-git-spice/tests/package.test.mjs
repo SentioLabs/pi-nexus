@@ -47,11 +47,7 @@ const runtimePaths = [
 ];
 
 const executableSnippets = (text) => {
-  const knownPrefixes = new Set([...readOnlyCommandSignatures, ...mutatingCommandSignatures].map(([prefix]) => prefix));
-  const bareCommands = text.split("\n").map((line) => line.trim()).filter((line) => {
-    const match = line.replace(/^\(\s*/, "").match(/^git-spice\s+(\S+)/);
-    return match && (match[1] === "--no-prompt" || knownPrefixes.has(match[1]));
-  });
+  const bareCommands = text.split("\n").map((line) => line.trim()).filter((line) => /^\(?\s*git-spice(?:\s|$)/.test(line));
   return [
     ...Array.from(text.matchAll(/(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)/g), ([, , snippet]) => snippet.trim()),
     ...Array.from(text.matchAll(/^```(?:bash|sh|shell|zsh)\s*\n([\s\S]*?)^```[ \t]*$/gm), ([, block]) => block),
@@ -96,6 +92,11 @@ const classifyGitSpiceCommand = (command) => {
   }
   return null;
 };
+
+test("package command audit extracts bare unknown commands without known-prefix filtering", () => {
+  assert.deepEqual(executableGitSpiceCommands("git-spice future mutate"), ["git-spice future mutate"]);
+  assert.deepEqual(executableGitSpiceCommands("git-spice --verbose future mutate"), ["git-spice --verbose future mutate"]);
+});
 
 test("package exposes the exact Pi git-spice runtime", () => {
   const pkg = readJson("package.json");
@@ -171,6 +172,10 @@ test("agents expose dotted Pi identities and safe tool contracts", () => {
   assert.match(doctor, /git-spice --no-prompt rebase continue --no-edit/);
   assert.match(doctor, /git-spice --no-prompt <scope> submit --force <draft-flag>/);
   assert.match(doctor, /--draft.*--no-draft|--no-draft.*--draft/s);
+  assert.match(doctor, /git-spice --no-prompt branch track <branch>/);
+  assert.match(doctor, /git-spice --no-prompt downstack track <top-branch>/);
+  assert.match(doctor, /gather or derive[\s\S]*branch name/i);
+  assert.match(doctor, /ambiguous[\s\S]*missing configuration[\s\S]*rather than enabling prompts/i);
   assert.doesNotMatch(`${stacker}\n${doctor}`, /model: sonnet|subagent_type|  - (?:Bash|Read|Write|Edit|Glob|Grep)\n/);
 });
 

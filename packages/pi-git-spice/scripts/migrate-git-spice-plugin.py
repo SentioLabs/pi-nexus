@@ -93,6 +93,17 @@ AGENT_CONFIG = {
 }
 TOOL_MAP = {"Bash": "bash", "Read": "read", "Write": "write", "Edit": "edit", "Glob": "find", "Grep": "grep"}
 
+GLOBAL_FLAG_OPTIONS = {
+    "-h",
+    "--help",
+    "-v",
+    "--verbose",
+    "--no-prompt",
+    "--prompt",
+    "--version",
+}
+GLOBAL_VALUE_OPTIONS = {"-C", "--dir"}
+
 READ_ONLY_COMMAND_SIGNATURES = {
     ("auth", "status"),
     ("log", "short"),
@@ -655,6 +666,9 @@ def transform_git_spice_skill(text: str) -> str:
     frontmatter, body = split_frontmatter(normalized, context)
     validate_transformation_anchors(body, context)
     body = replace_section(body, "## Dispatching the subagents", "## Configuration", "## Dispatching optional Pi subagents\n\n" + DISPATCH_CONTRACT, context)
+    body = require_replace(body, "git-spice is a CLI for managing **stacks of dependent Git branches**.", "The git-spice CLI manages **stacks of dependent Git branches**.", context)
+    body = require_replace(body, "git-spice operations are *local-first*.", "The git-spice CLI's operations are *local-first*.", context)
+    body = require_replace(body, "git-spice rebases run `git rebase` under the hood.", "The git-spice CLI runs `git rebase` under the hood.", context)
     body = transform_prompt_references(body, context)
     body = transform_executable_guidance(body, context)
     body = body.rstrip() + "\n\n" + INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + SUBMIT_DRAFT_CONTRACT.rstrip()
@@ -683,6 +697,13 @@ def transform_agent(source_relative: str, text: str) -> str:
             body,
             "`git-spice branch create <prefix><slug>` (uses staged changes as the commit). The commit message defaults to the staged changes; if the task description maps to a clean conventional-commit subject, prefer `git-spice branch create <name> -m \"<subject>\"`.",
             "`git-spice branch create <prefix><slug> -m \"<subject>\"`. Gather the subject explicitly; use `git-spice branch create <name> -m \"<subject>\"` rather than relying on defaults or opening an editor.",
+            source_relative,
+        )
+    if name == "stack-doctor":
+        body = require_replace(
+            body,
+            "| Branches exist in git but not in `log long --all` | untracked | `git-spice branch track` per branch, or `git-spice downstack track` from the top |",
+            "| Branches exist in git but not in `log long --all` | untracked | Gather or derive each exact untracked branch name and the exact top branch name first. If branch names are ambiguous or missing configuration prevents deriving them, report it and stop rather than enabling prompts. Run `git-spice branch track <branch>` for each branch, or `git-spice downstack track <top-branch>` for whole-stack tracking. |",
             source_relative,
         )
     body = transform_executable_guidance(body, source_relative)
@@ -724,25 +745,76 @@ def build_generated_tree(source: Path, temporary_root: Path) -> Path:
 
 def executable_snippets(text: str) -> list[str]:
     inline_code = re.compile(r"(?<!`)(?P<delimiter>`+)(?!`)(?P<code>[^\n]*?)(?<!`)(?P=delimiter)(?!`)")
-    snippets = [match.group("code").strip() for match in inline_code.finditer(text)]
-    for match in re.finditer(r"^```([^\n`]*)\n([\s\S]*?)^```[ \t]*$", text, re.MULTILINE):
-        language = match.group(1).strip().split(maxsplit=1)[0] if match.group(1).strip() else ""
+    snippets = [
+        code
+        for match in inline_code.finditer(text)
+        if (code := match.group("code").strip()) and code != "git-spice"
+    ]
+    fenced_code = re.compile(
+        r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)\r?\n(?P<code>[\s\S]*?)^[ ]{0,3}(?P=fence)[ \t]*$",
+        re.MULTILINE,
+    )
+    for match in fenced_code.finditer(text):
+        info = match.group("info").strip()
+        language = info.split(maxsplit=1)[0] if info else ""
         if language in {"bash", "sh", "shell", "zsh"}:
-            snippets.append(match.group(2))
-    known_prefixes = {signature[0] for signature in READ_ONLY_COMMAND_SIGNATURES | MUTATING_COMMAND_SIGNATURES}
+            snippets.append(match.group("code"))
     for line in text.splitlines():
         stripped = line.strip().removeprefix("(").lstrip()
-        match = re.match(r"git-spice\s+(\S+)", stripped)
-        if match and (match.group(1) == "--no-prompt" or match.group(1) in known_prefixes):
+        if re.match(r"git-spice(?:\s|$)", stripped):
             snippets.append(line.strip())
     return [snippet for snippet in snippets if "git-spice" in snippet]
 
 
+def strip_shell_comments(snippet: str) -> str:
+    result = []
+    quote = None
+    index = 0
+    while index < len(snippet):
+        character = snippet[index]
+        if quote == "'":
+            result.append(character)
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            result.append(character)
+            if character == "\\" and index + 1 < len(snippet):
+                result.append(snippet[index + 1])
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+            index += 1
+            continue
+        if character == "\\" and index + 1 < len(snippet):
+            result.extend((character, snippet[index + 1]))
+            index += 2
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            result.append(character)
+            index += 1
+            continue
+        if character == "#" and (not result or result[-1].isspace() or result[-1] in ";&|()"):
+            newline = snippet.find("\n", index)
+            if newline == -1:
+                break
+            result.append("\n")
+            index = newline + 1
+            continue
+        result.append(character)
+        index += 1
+    return "".join(result)
+
+
 def tokenize_executable_snippet(snippet: str) -> list[str]:
-    normalized = re.sub(r"\\\r?\n", " ", snippet).replace("\n", " ; ")
+    uncommented = strip_shell_comments(snippet)
+    normalized = re.sub(r"\\\r?\n", " ", uncommented).replace("\r\n", "\n").replace("\n", " ; ")
     lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
-    lexer.commenters = "#"
+    lexer.commenters = ""
     return list(lexer)
 
 
@@ -760,14 +832,35 @@ def executable_git_spice_invocations(text: str) -> list[list[str]]:
             end = index + 1
             while end < len(tokens) and not is_shell_control_token(tokens[end]):
                 end += 1
-            invocation = tokens[index:end]
-            if len(invocation) > 1:
-                invocations.append(invocation)
+            invocations.append(tokens[index:end])
     return invocations
 
 
 def executable_git_spice_commands(text: str) -> list[str]:
     return [" ".join(invocation) for invocation in executable_git_spice_invocations(text)]
+
+
+def parse_git_spice_arguments(arguments: list[str]) -> tuple[list[str], set[str]]:
+    command_arguments = []
+    global_flags = set()
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in GLOBAL_FLAG_OPTIONS or re.fullmatch(r"--(?:verbose|prompt)=\S+", argument):
+            global_flags.add(argument)
+            index += 1
+            continue
+        if argument in GLOBAL_VALUE_OPTIONS:
+            if index + 1 >= len(arguments):
+                raise ValueError(f"global option {argument!r} requires a value")
+            index += 2
+            continue
+        if re.fullmatch(r"--dir=\S+", argument) or (argument.startswith("-C") and argument != "-C"):
+            index += 1
+            continue
+        command_arguments.append(argument)
+        index += 1
+    return command_arguments, global_flags
 
 
 def classify_git_spice_command(arguments: list[str]) -> tuple[str, tuple[str, ...]]:
@@ -797,13 +890,14 @@ def validate_generated_commands(path: Path, text: str) -> None:
     for tokens in invocations:
         command = " ".join(tokens)
         diagnostic = f"Unsafe generated executable git-spice command in {path.as_posix()}: {command!r}"
-        if len(tokens) < 3 or tokens[1] != "--no-prompt":
-            raise RuntimeError(diagnostic)
-        arguments = tokens[2:]
+        raw_arguments = tokens[1:]
         try:
+            arguments, global_flags = parse_git_spice_arguments(raw_arguments)
             _, signature = classify_git_spice_command(arguments)
         except ValueError as error:
             raise RuntimeError(diagnostic) from error
+        if "--no-prompt" not in global_flags:
+            raise RuntimeError(diagnostic)
         if signature in {("repo", "init"), ("r", "i")}:
             if not any(re.fullmatch(r"--trunk=<[^>]+>", argument) for argument in arguments):
                 raise RuntimeError(diagnostic)
@@ -825,6 +919,13 @@ def validate_generated_commands(path: Path, text: str) -> None:
             ("ss",),
         } and "--update-only" not in arguments:
             if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in arguments):
+                raise RuntimeError(diagnostic)
+        if path.as_posix() == "agents/stack-doctor.md":
+            required_tracking_targets = {
+                ("branch", "track"): "<branch>",
+                ("downstack", "track"): "<top-branch>",
+            }
+            if signature in required_tracking_targets and required_tracking_targets[signature] not in arguments[len(signature):]:
                 raise RuntimeError(diagnostic)
         if signature in {("repo", "sync"), ("rs",)}:
             if not any(argument == "--restack" or re.fullmatch(r"--restack=\S+", argument) for argument in arguments):

@@ -43,7 +43,7 @@ Map symptoms to likely root causes:
 | `git status` shows "currently rebasing" + unmerged paths | rebase paused on conflict | resolve files → `git add` → `git-spice --no-prompt rebase continue --no-edit` |
 | `git status` shows "currently rebasing", no conflicts | rebase paused, awaiting continue | `git-spice --no-prompt rebase continue --no-edit` |
 | Branch's commits don't extend its recorded base | base was force-pushed or branch was rebased manually | `git-spice --no-prompt branch restack` (one branch) or `git-spice --no-prompt repo restack` (many) |
-| Branches exist in git but not in `log long --all` | untracked | `git-spice --no-prompt branch track` per branch, or `git-spice --no-prompt downstack track` from the top |
+| Branches exist in git but not in `log long --all` | untracked | Gather or derive each exact untracked branch name and the exact top branch name first. If branch names are ambiguous or missing configuration prevents deriving them, report it and stop rather than enabling prompts. Run `git-spice --no-prompt branch track <branch>` for each branch, or `git-spice --no-prompt downstack track <top-branch>` for whole-stack tracking. |
 | Upstack branches flagged "needs restack" right after a sync or delete | `repo sync` / `branch delete` ran without `--restack` — they only retarget | `git-spice --no-prompt stack restack` (one stack) or `git-spice --no-prompt repo restack` (all) |
 | `log long` shows wrong trunk | trunk reconfigured or repo init ran with wrong `--trunk` | `git-spice --no-prompt repo init --trunk=<correct> --remote=<name>` |
 | Submit errors with auth message | token expired or scope insufficient | `git-spice --no-prompt auth login` (user must run interactively) |

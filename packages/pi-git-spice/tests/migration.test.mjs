@@ -103,7 +103,11 @@ const rawSourceFiles = () => ({
   "skills/git-spice/SKILL.md": skill("git-spice", "Reference for git-spice stacked branches.", [
     "# git-spice",
     "",
+    "git-spice is a CLI for managing **stacks of dependent Git branches**.",
+    "",
     "## Command map",
+    "git-spice operations are *local-first*.",
+    "git-spice rebases run `git rebase` under the hood.",
     "Use `git-spice log long` to inspect a stack.",
     "For work run `git-spice branch create <slug>` (`git-spice bc`).",
     "After conflicts, run `git-spice rebase continue` (`git-spice rbc`).",
@@ -133,6 +137,7 @@ const rawSourceFiles = () => ({
     "## Diagnosis checklist",
     "Run `git-spice rebase continue` only after a diagnosis.",
     "For a known repair, run `git-spice <scope> submit --fill`.",
+    "| Branches exist in git but not in `log long --all` | untracked | `git-spice branch track` per branch, or `git-spice downstack track` from the top |",
     "## Repair principles",
   ].join("\n")),
   "agents/stacker.md": agent("Use this agent to build a stack of dependent git-spice branches from an ordered list of changes.", ["Bash", "Read", "Write", "Edit", "Glob", "Grep"], [
@@ -430,6 +435,10 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   }
   assert.match(doctor, /--draft.*--no-draft|--no-draft.*--draft/s);
   assert.match(doctor, /never rely on an implicit draft state/i);
+  assert.match(doctor, /git-spice --no-prompt branch track <branch>/);
+  assert.match(doctor, /git-spice --no-prompt downstack track <top-branch>/);
+  assert.match(doctor, /gather or derive[\s\S]*branch name/i);
+  assert.match(doctor, /ambiguous[\s\S]*missing configuration[\s\S]*rather than enabling prompts/i);
 });
 
 test("prompt source revisions and every git-spice reference survive semantic transformation", () => {
@@ -609,6 +618,11 @@ for (const [name, unsafeCommand] of [
 }
 
 const adversarialGeneratedSnippets = [
+  ["argumentless bare invocation", "prompts/git-spice-stack.md", "git-spice"],
+  ["reviewer bare unknown command", "prompts/git-spice-stack.md", "git-spice future mutate"],
+  ["bare unknown command after global option", "prompts/git-spice-stack.md", "git-spice --verbose future mutate"],
+  ["bare unknown command with no-prompt after command", "prompts/git-spice-stack.md", "git-spice future --no-prompt mutate"],
+  ["bare unknown command already containing no-prompt", "prompts/git-spice-stack.md", "git-spice --no-prompt future mutate"],
   ["prompt && unknown second invocation", "prompts/git-spice-stack.md", "`git-spice --no-prompt log long && git-spice --no-prompt future mutate`"],
   ["prompt || unsafe second invocation", "prompts/git-spice-stack.md", "`git-spice --no-prompt log long || git-spice branch restack`"],
   ["prompt multi-backtick unknown later invocation", "prompts/git-spice-stack.md", "``git-spice --no-prompt log long && git-spice --no-prompt future mutate``"],
@@ -616,6 +630,15 @@ const adversarialGeneratedSnippets = [
   ["skill pipeline unsafe later invocation", "skills/stacking-workflow/SKILL.md", "`git-spice --no-prompt log long | git-spice --no-prompt branch create <name>`"],
   ["agent subshell unknown later invocation", "agents/stack-doctor.md", "`(git-spice --no-prompt log long && git-spice --no-prompt future mutate)`"],
   ["agent multiline continuation unsafe later invocation", "agents/stacker.md", "```bash\ngit-spice --no-prompt log long && \\\n  git-spice --no-prompt branch create <name>\n```"],
+  ["reviewer commented multiline chain", "agents/stack-doctor.md", "```bash\n# Diagnose the tracking failure before repair\ntrue && git-spice future mutate && git-spice branch restack\n```"],
+  ["inline comment before unsafe later invocation", "agents/stack-doctor.md", "```sh\ngit-spice --no-prompt log long # inspect first\ntrue | git-spice --no-prompt future mutate\n```"],
+  ["comment-only continuation before unsafe later invocation", "agents/stacker.md", "```shell\n# This comment ends on this physical line \\\ntrue && git-spice branch restack\n```"],
+  ["multiple fences with unsafe invocation in later fence", "skills/stacking-workflow/SKILL.md", "```bash\ngit-spice --no-prompt log long\n```\n\n```zsh\ngit-spice --no-prompt future mutate\n```"],
+  ["quoted comment marker before later unknown invocation", "agents/stacker.md", "```bash\nprintf '%s\\n' '# not a comment' && git-spice --no-prompt log long\ntrue && git-spice --verbose future mutate\n```"],
+  ["long backtick shell fence unknown invocation", "agents/stack-doctor.md", "````bash\ntrue && git-spice --no-prompt future mutate\n````"],
+  ["tilde shell fence unsafe invocation", "agents/stacker.md", "~~~sh\ntrue && git-spice branch restack\n~~~"],
+  ["stack-doctor branch tracking without target", "agents/stack-doctor.md", "`git-spice --no-prompt branch track`"],
+  ["stack-doctor whole-stack tracking without target", "agents/stack-doctor.md", "`git-spice --no-prompt downstack track`"],
 ];
 
 for (const [name, relative, snippet] of adversarialGeneratedSnippets) {
@@ -628,6 +651,14 @@ for (const [name, relative, snippet] of adversarialGeneratedSnippets) {
     assert.match(result.stderr, /Unsafe generated executable git-spice command/);
   });
 }
+
+test("generated runtime validation classifies commands with interspersed global options", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const fragment = JSON.stringify("\nGlobal option placement fixture: `git-spice --verbose branch --no-prompt restack`.\n");
+  const result = runProbe(generatedTreeProbe(`target = generated / 'prompts/git-spice-stack.md'\ntarget.write_text(target.read_text() + ${fragment})`), packageCopy, source);
+  assert.equal(result.status, 0, result.stderr);
+});
 
 const installationProbe = (injection) => [
   "import importlib.util, pathlib, sys",
