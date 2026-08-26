@@ -32,6 +32,20 @@
         }
       ]
     },
+    "packages/pi-review-responder": {
+      "component": "pi-review-responder",
+      "package-name": "@sentiolabs/pi-review-responder",
+      "release-type": "node",
+      "initial-version": "0.1.0",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/package-lock.json",
+          "jsonpath": "$.packages['packages/pi-review-responder'].version"
+        }
+      ]
+    },
     "packages/pi-frontend-design": {
       "component": "pi-frontend-design",
       "package-name": "@sentiolabs/pi-frontend-design",

@@ -62,6 +62,41 @@ test("release-please tracks pi-code-quality as an independent package", () => {
   assertReleaseManifestTracksPackage("packages/pi-code-quality");
 });
 
+test("release-please tracks pi-review-responder as an independent package", () => {
+  const config = readJson("release-please-config.json");
+  const reviewResponder = config.packages["packages/pi-review-responder"];
+
+  assert.ok(reviewResponder);
+  assert.equal(reviewResponder.component, "pi-review-responder");
+  assert.equal(reviewResponder["package-name"], "@sentiolabs/pi-review-responder");
+  assert.equal(reviewResponder["release-type"], "node");
+  assert.equal(reviewResponder["initial-version"], "0.1.0");
+  assert.equal(reviewResponder["changelog-path"], "CHANGELOG.md");
+  assert.deepEqual(reviewResponder["extra-files"], [
+    {
+      type: "json",
+      path: "/package-lock.json",
+      jsonpath: "$.packages['packages/pi-review-responder'].version",
+    },
+  ]);
+  assertReleaseManifestTracksPackage("packages/pi-review-responder");
+});
+
+test("pi-review-responder package metadata points at the workspace package", () => {
+  const pkg = readJson("packages/pi-review-responder/package.json");
+
+  assert.equal(pkg.name, "@sentiolabs/pi-review-responder");
+  assertReleaseManifestTracksPackage("packages/pi-review-responder");
+  assert.equal(pkg.repository.directory, "packages/pi-review-responder");
+  assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
+  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-review-responder#readme");
+  assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
+  assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.equal(pkg.publishConfig.access, "public");
+  assert.deepEqual(pkg.pi.skills, ["./skills"]);
+  assert.equal("prompts" in pkg.pi, false);
+});
+
 test("pi-arc package metadata points at the workspace package", () => {
   const pkg = readJson("packages/pi-arc/package.json");
 
@@ -138,6 +173,10 @@ test("release workflow uses idempotent npm publishing helper", () => {
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-code-quality/);
+  assert.match(
+    workflow,
+    /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-review-responder/,
+  );
   assert.doesNotMatch(workflow, /npm publish --workspace/);
   assert.doesNotMatch(workflow, /release_created/);
 });
