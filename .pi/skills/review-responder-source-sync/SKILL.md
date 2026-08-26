@@ -102,6 +102,7 @@ Claude-only / not applicable — the behavior depends on Claude-specific runtime
 - separate approval for fixes, exact git publication, and batch replies; individual `Won't fix` confirmation
 - reply-only semantics with no claim that posting resolves a thread
 - authenticated-login hidden fingerprints keyed by comment, verdict, and evidence OID
+- deterministic hidden-marker verdict slugs: **Fixed** → `fixed`, **Already fixed** → `already-fixed`, **Invalid** → `invalid`, **Won't fix** → `wont-fix`, and **Not applicable** → `not-applicable`; generic normalization is forbidden
 - pre-post refresh, newly resolved-thread skipping, ambiguous-failure re-fetch, and partial batch reporting
 - refreshed base-repository `headRefOid` and reachability proof for `Fixed` and `Already fixed` commits
 - repository-instruction-aware git behavior with no forced amend, force push, or broad staging
@@ -160,6 +161,7 @@ rg 'untrusted evidence|untrusted.*instructions' skills/review-responder/SKILL.md
 rg 'reviewThreads\(first: 100, after: \$threadCursor\)' skills/review-responder/SKILL.md
 rg 'node\(id: \$threadId\)' skills/review-responder/SKILL.md
 rg 'pi-review-responder: comment=.*verdict=.*evidence=' skills/review-responder/SKILL.md
+rg 'Fixed.*fixed|Already fixed.*already-fixed|Invalid.*invalid|Won.t fix.*wont-fix|Not applicable.*not-applicable|generic normalization is forbidden' skills/review-responder/SKILL.md
 rg 'headRefOid|Already fixed|file-backed JSON|does not resolve' skills/review-responder/SKILL.md
 
 cd ../..
