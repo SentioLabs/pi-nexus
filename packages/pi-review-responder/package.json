@@ -1,0 +1,52 @@
+{
+  "name": "@sentiolabs/pi-review-responder",
+  "version": "0.1.0",
+  "description": "Pi skill for evaluating, fixing, and responding safely to unresolved GitHub pull request review comments.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "review-responder",
+    "code-review",
+    "github",
+    "coderabbit",
+    "pull-request",
+    "review-comments"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Sentio Labs",
+    "url": "https://github.com/sentiolabs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "directory": "packages/pi-review-responder"
+  },
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-review-responder#readme",
+  "bugs": {
+    "url": "https://github.com/SentioLabs/pi-nexus/issues"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:dry-run"
+  },
+  "files": [
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
