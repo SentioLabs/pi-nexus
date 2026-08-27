@@ -7,28 +7,70 @@ import type { CommandResult, CommandRunner, GitAdapter } from "../core/ports.ts"
 
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_OUTPUT_BYTES = 64 * 1024;
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-const requireSuccess = (result: CommandResult): string => {
-  if (result.code !== 0) throw new Error(`Git command failed with exit code ${result.code}`);
-  return result.stdout.trim();
+const requireSuccess = (result: CommandResult): void => {
+  if (result.code !== 0 || result.killed || result.truncated) {
+    throw new Error("Git command returned an incomplete result");
+  }
 };
 
-const isPresent = async (target: string): Promise<boolean> => {
+const removeProtocolLineEnding = (output: string, label: string): string => {
+  if (!output.endsWith("\n")) throw new Error(`Git returned malformed ${label}`);
+  const line = output.slice(0, -1);
+  const value = line.endsWith("\r") ? line.slice(0, -1) : line;
+  if (value.includes("\n") || value.includes("\r") || value.includes("\0")) {
+    throw new Error(`Git returned malformed ${label}`);
+  }
+  return value;
+};
+
+const isWithin = (candidate: string, directory: string): boolean => {
+  const relative = path.relative(directory, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+};
+
+const normalizeDirectory = async (reportedPath: string, label: string): Promise<string> => {
+  if (!path.isAbsolute(reportedPath)) throw new Error(`Git returned a non-absolute ${label}`);
+  const normalizedPath = await realpath(reportedPath);
+  if (!(await stat(normalizedPath)).isDirectory()) throw new Error(`Git returned a non-directory ${label}`);
+  return normalizedPath;
+};
+
+const validateBranch = (branch: string, label: string): void => {
+  if (
+    branch.length === 0 ||
+    branch.includes("\0") ||
+    branch === "@" ||
+    branch.includes("..") ||
+    branch.includes("@{") ||
+    /[\x00-\x20~^:?*\[\\]/.test(branch) ||
+    branch.endsWith(".") ||
+    branch.split("/").some((component) => component.length === 0 || component.startsWith(".") || component.endsWith(".lock"))
+  ) {
+    throw new Error(`${label} is malformed`);
+  }
+};
+
+const validateBase = (base: string): void => {
+  if (base.length === 0 || base.includes("\0")) throw new Error("Base ref must not be empty or contain NUL");
+};
+
+const validateObjectId = (objectId: string, label: string): void => {
+  if (!OBJECT_ID.test(objectId)) throw new Error(`Git returned a malformed ${label}`);
+};
+
+const statIfPresent = async (target: string) => {
   try {
-    await stat(target);
-    return true;
+    return await stat(target);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
 };
 
-const validateBranch = (branch: string): void => {
-  if (branch.length === 0 || branch.includes("\0")) throw new Error("Branch name must not be empty or contain NUL");
-};
-
 export const createGitAdapter = (runner: CommandRunner): GitAdapter => {
-  const runGit = async (args: readonly string[], cwd: string, signal?: AbortSignal): Promise<string> => {
+  const runGit = async (args: readonly string[], cwd: string, signal?: AbortSignal): Promise<CommandResult> => {
     const result = await runner.run({
       executable: "git",
       args,
@@ -37,15 +79,39 @@ export const createGitAdapter = (runner: CommandRunner): GitAdapter => {
       timeoutMs: GIT_TIMEOUT_MS,
       maxOutputBytes: GIT_MAX_OUTPUT_BYTES,
     });
-    return requireSuccess(result);
+    requireSuccess(result);
+    return result;
   };
 
-  const gitPath = async (name: string, cwd: string, signal?: AbortSignal): Promise<string> => {
-    const reportedPath = await runGit(["rev-parse", "--git-path", name], cwd, signal);
-    return path.resolve(cwd, reportedPath);
+  const runGitLine = async (args: readonly string[], cwd: string, label: string, signal?: AbortSignal): Promise<string> =>
+    removeProtocolLineEnding((await runGit(args, cwd, signal)).stdout, label);
+
+  const runGitObject = async (args: readonly string[], cwd: string, label: string, signal?: AbortSignal): Promise<string> => {
+    const objectId = await runGitLine(args, cwd, label, signal);
+    validateObjectId(objectId, label);
+    return objectId;
+  };
+
+  const gitDirectory = async (cwd: string, signal?: AbortSignal): Promise<string> =>
+    normalizeDirectory(
+      await runGitLine(["rev-parse", "--path-format=absolute", "--git-dir"], cwd, "Git directory", signal),
+      "Git directory",
+    );
+
+  const operationPath = async (name: string, cwd: string, gitDir: string, signal?: AbortSignal): Promise<string> => {
+    const reportedPath = await runGitLine(["rev-parse", "--git-path", name], cwd, "operation path", signal);
+    const candidate = path.resolve(await realpath(cwd), reportedPath);
+    if (path.basename(candidate) !== name || !isWithin(candidate, gitDir)) {
+      throw new Error("Git returned an operation path outside its repository");
+    }
+    if ((await realpath(path.dirname(candidate))) !== gitDir) {
+      throw new Error("Git returned an operation path outside its repository");
+    }
+    return candidate;
   };
 
   const operationAt = async (cwd: string, signal?: AbortSignal): Promise<"rebase" | "merge" | "cherry-pick" | "revert" | null> => {
+    const gitDir = await gitDirectory(cwd, signal);
     for (const [operation, sentinels] of [
       ["rebase", ["rebase-merge", "rebase-apply"]],
       ["merge", ["MERGE_HEAD"]],
@@ -53,7 +119,12 @@ export const createGitAdapter = (runner: CommandRunner): GitAdapter => {
       ["revert", ["REVERT_HEAD"]],
     ] as const) {
       for (const sentinel of sentinels) {
-        if (await isPresent(await gitPath(sentinel, cwd, signal))) return operation;
+        const sentinelStats = await statIfPresent(await operationPath(sentinel, cwd, gitDir, signal));
+        if (sentinelStats === null) continue;
+        if ((operation === "rebase" && !sentinelStats.isDirectory()) || (operation !== "rebase" && !sentinelStats.isFile())) {
+          throw new Error(`Git returned a malformed ${operation} operation sentinel`);
+        }
+        return operation;
       }
     }
     return null;
@@ -61,34 +132,44 @@ export const createGitAdapter = (runner: CommandRunner): GitAdapter => {
 
   return {
     async identify(cwd: string, signal?: AbortSignal): Promise<RepositoryIdentity> {
-      const commonDir = await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd, signal);
-      const anchorCwd = await runGit(["rev-parse", "--path-format=absolute", "--show-toplevel"], cwd, signal);
-      const trunk = await runGit(["config", "--get", "spice.trunk"], cwd, signal);
-      if (!path.isAbsolute(commonDir) || !path.isAbsolute(anchorCwd) || trunk.length === 0) {
-        throw new Error("Git returned an incomplete repository identity");
-      }
-      const normalizedCommonDir = await realpath(commonDir);
-      const normalizedAnchorCwd = await realpath(anchorCwd);
+      const commonDir = await normalizeDirectory(
+        await runGitLine(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd, "Git common directory", signal),
+        "Git common directory",
+      );
+      const anchorCwd = await normalizeDirectory(
+        await runGitLine(["rev-parse", "--path-format=absolute", "--show-toplevel"], cwd, "worktree root", signal),
+        "worktree root",
+      );
+      const trunk = await runGitLine(["config", "--get", "spice.trunk"], cwd, "trunk branch", signal);
+      validateBranch(trunk, "Trunk branch");
+      await runGit(["check-ref-format", "--branch", trunk], cwd, signal);
       return {
-        key: createHash("sha256").update(normalizedCommonDir).digest("hex"),
-        commonDir: normalizedCommonDir,
-        anchorCwd: normalizedAnchorCwd,
+        key: createHash("sha256").update(commonDir).digest("hex"),
+        commonDir,
+        anchorCwd,
         trunk,
       };
     },
 
     async createBranch(branch: string, base: string, cwd: string, signal?: AbortSignal): Promise<void> {
-      validateBranch(branch);
+      validateBranch(branch, "Branch name");
+      validateBase(base);
       await runGit(["check-ref-format", "--branch", branch], cwd, signal);
-      await runGit(["branch", branch, base], cwd, signal);
+      const startPoint = await runGitObject(
+        ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`],
+        cwd,
+        "branch start point",
+        signal,
+      );
+      await runGit(["branch", "--", branch, startPoint], cwd, signal);
     },
 
     async inspectWorktree(pathname: string, signal?: AbortSignal) {
-      const head = await runGit(["rev-parse", "HEAD"], pathname, signal);
+      const head = await runGitObject(["rev-parse", "--verify", "HEAD^{commit}"], pathname, "HEAD", signal);
       const status = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], pathname, signal);
       return {
         head,
-        dirty: status.length > 0,
+        dirty: status.stdout.length > 0,
         operation: await operationAt(pathname, signal),
       };
     },

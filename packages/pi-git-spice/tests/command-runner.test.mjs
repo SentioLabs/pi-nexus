@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -118,6 +118,32 @@ test("timeout terminates the Unix process group", { skip: process.platform === "
   await assertProcessExited(Number(readFileSync(pidFile, "utf8")));
 });
 
+test("continues escalation after the group leader exits following termination", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-escalation-");
+  const pidFile = path.join(root, "child.pid");
+  const program = [
+    "const { spawn } = require('node:child_process');",
+    "const { writeFileSync } = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1_000)\"], { stdio: 'ignore' });",
+    `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+    "process.on('SIGTERM', () => process.exit(0));",
+    "setInterval(() => {}, 1_000);",
+  ].join("\n");
+  const runner = createCommandRunner();
+
+  const result = await runner.run({
+    executable: process.execPath,
+    args: ["-e", program],
+    cwd: root,
+    timeoutMs: 100,
+    maxOutputBytes: 1_024,
+  });
+
+  assert.equal(result.killed, true);
+  await waitFor(() => existsSync(pidFile));
+  await assertProcessExited(Number(readFileSync(pidFile, "utf8")));
+});
+
 test("AbortSignal terminates the Unix process group", { skip: process.platform === "win32" }, async () => {
   const root = makeTemporaryDirectory("pi-git-spice-runner-abort-");
   const pidFile = path.join(root, "child.pid");
@@ -137,6 +163,149 @@ test("AbortSignal terminates the Unix process group", { skip: process.platform =
 
   const result = await resultPromise;
   assert.equal(result.killed, true);
+  await assertProcessExited(Number(readFileSync(pidFile, "utf8")));
+});
+
+test("rejects a parent repository executable from a nested repository cwd", async () => {
+  const outer = makeTemporaryDirectory("pi-git-spice-runner-nested-repository-");
+  const inner = path.join(outer, "nested");
+  const executable = "outer-repository-fake";
+  mkdirSync(path.join(outer, ".git"));
+  mkdirSync(inner);
+  mkdirSync(path.join(inner, ".git"));
+  writeFileSync(path.join(outer, executable), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = outer;
+
+  try {
+    await assert.rejects(
+      createCommandRunner().run({
+        executable,
+        args: [],
+        cwd: inner,
+        timeoutMs: 1_000,
+        maxOutputBytes: 1_024,
+      }),
+      /repository-local|trusted executable/i,
+    );
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("rejects a repository-local executable resolved through a relative PATH entry", async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-relative-path-");
+  const executable = "relative-repository-fake";
+  mkdirSync(path.join(root, ".git"));
+  writeFileSync(path.join(root, executable), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = ".";
+
+  try {
+    await assert.rejects(
+      createCommandRunner().run({
+        executable,
+        args: [],
+        cwd: root,
+        timeoutMs: 1_000,
+        maxOutputBytes: 1_024,
+      }),
+      /repository-local/i,
+    );
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("rejects repository-local absolute and symlinked executable candidates", { skip: process.platform === "win32" }, async () => {
+  const outer = makeTemporaryDirectory("pi-git-spice-runner-linked-repository-");
+  const inner = path.join(outer, "nested");
+  const external = makeTemporaryDirectory("pi-git-spice-runner-external-link-");
+  const executable = "linked-repository-fake";
+  const repositoryExecutable = path.join(outer, executable);
+  mkdirSync(path.join(outer, ".git"));
+  mkdirSync(inner);
+  mkdirSync(path.join(inner, ".git"));
+  writeFileSync(repositoryExecutable, "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+  symlinkSync(repositoryExecutable, path.join(external, executable));
+
+  await assert.rejects(
+    createCommandRunner().run({
+      executable: repositoryExecutable,
+      args: [],
+      cwd: inner,
+      timeoutMs: 1_000,
+      maxOutputBytes: 1_024,
+    }),
+    /repository-local/i,
+  );
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = external;
+  try {
+    await assert.rejects(
+      createCommandRunner().run({
+        executable,
+        args: [],
+        cwd: inner,
+        timeoutMs: 1_000,
+        maxOutputBytes: 1_024,
+      }),
+      /repository-local/i,
+    );
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
+
+test("marks an already-aborted request as killed", async () => {
+  const controller = new AbortController();
+  controller.abort();
+
+  const result = await createCommandRunner().run({
+    executable: process.execPath,
+    args: ["-e", "setInterval(() => {}, 1_000)"],
+    cwd: process.cwd(),
+    signal: controller.signal,
+    timeoutMs: 1_000,
+    maxOutputBytes: 1_024,
+  });
+
+  assert.equal(result.killed, true);
+});
+
+test("settles close races without a later timeout termination", async () => {
+  const runner = createCommandRunner();
+  const result = await runner.run({
+    executable: process.execPath,
+    args: ["-e", "setTimeout(() => process.exit(0), 20)"],
+    cwd: process.cwd(),
+    timeoutMs: 100,
+    maxOutputBytes: 1_024,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(result.killed, false);
+  assert.equal(result.code, 0);
+});
+
+test("handles concurrent abort and timeout termination without leaving the process group", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-abort-timeout-race-");
+  const pidFile = path.join(root, "child.pid");
+  const controller = new AbortController();
+  const resultPromise = createCommandRunner().run({
+    executable: process.execPath,
+    args: ["-e", childTreeProgram(pidFile)],
+    cwd: root,
+    signal: controller.signal,
+    timeoutMs: 50,
+    maxOutputBytes: 1_024,
+  });
+  setTimeout(() => controller.abort(), 50);
+
+  const result = await resultPromise;
+  assert.equal(result.killed, true);
+  await waitFor(() => existsSync(pidFile));
   await assertProcessExited(Number(readFileSync(pidFile, "utf8")));
 });
 

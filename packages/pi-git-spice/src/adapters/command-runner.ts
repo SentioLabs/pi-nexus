@@ -45,17 +45,18 @@ const isWithin = (candidate: string, directory: string): boolean => {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 };
 
-const findRepositoryRoot = async (cwd: string): Promise<string | null> => {
+const findRepositoryRoots = async (cwd: string): Promise<readonly string[]> => {
+  const roots: string[] = [];
   let directory = await realpath(cwd);
   while (true) {
     try {
       await stat(path.join(directory, ".git"));
-      return directory;
+      roots.push(directory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     const parent = path.dirname(directory);
-    if (parent === directory) return null;
+    if (parent === directory) return roots;
     directory = parent;
   }
 };
@@ -64,7 +65,7 @@ const resolveCandidate = async (
   name: string,
   candidate: string,
   cwd: string,
-  repositoryRoot: string | null,
+  repositoryRoots: readonly string[],
 ): Promise<ResolvedExecutable | null> => {
   try {
     await access(candidate, constants.X_OK);
@@ -73,7 +74,7 @@ const resolveCandidate = async (
     throw error;
   }
   const absolutePath = await realpath(candidate);
-  if (isWithin(absolutePath, cwd) || (repositoryRoot !== null && isWithin(absolutePath, repositoryRoot))) {
+  if (isWithin(absolutePath, cwd) || repositoryRoots.some((repositoryRoot) => isWithin(absolutePath, repositoryRoot))) {
     throw new Error(`Trusted executable may not be repository-local: ${name}`);
   }
   return { name, absolutePath };
@@ -82,17 +83,17 @@ const resolveCandidate = async (
 const resolveTrustedExecutable = async (executable: string, cwd: string): Promise<ResolvedExecutable> => {
   if (executable.length === 0 || executable.includes("\0")) throw new Error("Invalid executable");
   const realCwd = await realpath(cwd);
-  const repositoryRoot = await findRepositoryRoot(realCwd);
+  const repositoryRoots = await findRepositoryRoots(realCwd);
   if (path.isAbsolute(executable)) {
-    const resolved = await resolveCandidate(path.basename(executable), executable, realCwd, repositoryRoot);
+    const resolved = await resolveCandidate(path.basename(executable), executable, realCwd, repositoryRoots);
     if (resolved !== null) return resolved;
     throw new Error(`Trusted executable is unavailable: ${executable}`);
   }
   if (path.basename(executable) !== executable) throw new Error(`Trusted executable must be a bare command name: ${executable}`);
   const pathEntries = (process.env.PATH ?? "").split(path.delimiter);
   for (const entry of pathEntries) {
-    if (entry.length === 0 || !path.isAbsolute(entry)) continue;
-    const resolved = await resolveCandidate(executable, path.join(entry, executable), realCwd, repositoryRoot);
+    const directory = path.isAbsolute(entry) ? entry : path.resolve(realCwd, entry || ".");
+    const resolved = await resolveCandidate(executable, path.join(directory, executable), realCwd, repositoryRoots);
     if (resolved !== null) return resolved;
   }
   throw new Error(`Trusted executable is unavailable: ${executable}`);
@@ -138,15 +139,24 @@ export const createCommandRunner = (): CommandRunner => ({
         if (killed) return;
         killed = true;
         signalProcessTree("SIGTERM");
-        killTimer = setTimeout(() => signalProcessTree("SIGKILL"), KILL_GRACE_MS);
-        killTimer.unref();
+        killTimer = setTimeout(() => {
+          signalProcessTree("SIGKILL");
+          killTimer = undefined;
+        }, KILL_GRACE_MS);
       };
 
       const timeout = setTimeout(terminate, request.timeoutMs);
       timeout.unref();
       const onAbort = (): void => terminate();
+      const clearRequestResources = (clearEscalation: boolean): void => {
+        clearTimeout(timeout);
+        request.signal?.removeEventListener("abort", onAbort);
+        if (clearEscalation && killTimer !== undefined) {
+          clearTimeout(killTimer);
+          killTimer = undefined;
+        }
+      };
       request.signal?.addEventListener("abort", onAbort, { once: true });
-      if (request.signal?.aborted) terminate();
 
       child.stdout.on("data", (chunk: Buffer) => {
         const bounded = output.append(chunk);
@@ -159,17 +169,13 @@ export const createCommandRunner = (): CommandRunner => ({
       child.once("error", (error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
-        if (killTimer !== undefined) clearTimeout(killTimer);
-        request.signal?.removeEventListener("abort", onAbort);
+        clearRequestResources(true);
         reject(error);
       });
       child.once("close", (code) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
-        if (killTimer !== undefined) clearTimeout(killTimer);
-        request.signal?.removeEventListener("abort", onAbort);
+        clearRequestResources(!killed || process.platform === "win32");
         resolve({
           code: code ?? 1,
           stdout: decodeOutput(stdout),
@@ -178,6 +184,7 @@ export const createCommandRunner = (): CommandRunner => ({
           truncated: output.truncated,
         });
       });
+      if (request.signal?.aborted) terminate();
     });
   },
 });
