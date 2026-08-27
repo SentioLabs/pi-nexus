@@ -30,6 +30,8 @@ class FakeRunner {
   }
 
   async run(request) {
+    assert.equal(request.timeoutMs, 30_000);
+    assert.equal(request.maxOutputBytes, 64 * 1024);
     this.calls.push(request);
     return this.respond(request);
   }
@@ -167,7 +169,7 @@ test("rejects malformed or non-directory repository identity output", async () =
 
 test("createBranch verifies the ref and creates it without checkout", async () => {
   const branch = "feature/argv;$(unsafe)";
-  const base = "base/with space";
+  const base = "base/valid";
   const startPoint = "0123456789abcdef0123456789abcdef01234567";
   const runner = new FakeRunner(({ args }) => result(args[0] === "rev-parse" ? `${startPoint}\n` : ""));
   const adapter = createGitAdapter(runner);
@@ -178,6 +180,11 @@ test("createBranch verifies the ref and creates it without checkout", async () =
     {
       executable: "git",
       args: ["check-ref-format", "--branch", branch],
+      cwd: "/repository path",
+    },
+    {
+      executable: "git",
+      args: ["check-ref-format", "--branch", base],
       cwd: "/repository path",
     },
     {
@@ -204,28 +211,13 @@ test("createBranch rejects empty or NUL branch names before running Git", async 
   }
 });
 
-test("createBranch rejects malformed bases and verifies an option-like base before branch creation", async () => {
-  for (const base of ["", "bad\0base"]) {
+test("createBranch rejects malformed and option-like base branch names before running Git", async () => {
+  for (const base of ["", "bad\0base", "--option-like", "bad..base"]) {
     const runner = new FakeRunner(() => result(""));
 
     await assert.rejects(createGitAdapter(runner).createBranch("feature/valid", base, "/repository"), /base|ref/i);
     assert.deepEqual(runner.calls, []);
   }
-
-  const runner = new FakeRunner(({ args }) => {
-    if (args[0] === "check-ref-format") return result("");
-    if (args[0] === "rev-parse") return result("0123456789abcdef0123456789abcdef01234567\n");
-    if (args[0] === "branch") return result("");
-    throw new Error(`Unexpected Git invocation: ${args.join(" ")}`);
-  });
-
-  await createGitAdapter(runner).createBranch("feature/valid", "--option-like", "/repository");
-
-  assert.deepEqual(runner.calls.map(({ args }) => args), [
-    ["check-ref-format", "--branch", "feature/valid"],
-    ["rev-parse", "--verify", "--end-of-options", "--option-like^{commit}"],
-    ["branch", "--", "feature/valid", "0123456789abcdef0123456789abcdef01234567"],
-  ]);
 });
 
 test("createBranch stops before branch creation when Git cannot verify the base", async () => {
@@ -234,6 +226,7 @@ test("createBranch stops before branch creation when Git cannot verify the base"
   await assert.rejects(createGitAdapter(runner).createBranch("feature/valid", "malformed-base", "/repository"), /incomplete result/i);
   assert.deepEqual(runner.calls.map(({ args }) => args), [
     ["check-ref-format", "--branch", "feature/valid"],
+    ["check-ref-format", "--branch", "malformed-base"],
     ["rev-parse", "--verify", "--end-of-options", "malformed-base^{commit}"],
   ]);
 });

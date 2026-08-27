@@ -41,6 +41,7 @@ const validateBranch = (branch: string, label: string): void => {
   if (
     branch.length === 0 ||
     branch.includes("\0") ||
+    branch.startsWith("-") ||
     branch === "@" ||
     branch.includes("..") ||
     branch.includes("@{") ||
@@ -50,10 +51,6 @@ const validateBranch = (branch: string, label: string): void => {
   ) {
     throw new Error(`${label} is malformed`);
   }
-};
-
-const validateBase = (base: string): void => {
-  if (base.length === 0 || base.includes("\0")) throw new Error("Base ref must not be empty or contain NUL");
 };
 
 const validateObjectId = (objectId: string, label: string): void => {
@@ -153,8 +150,9 @@ export const createGitAdapter = (runner: CommandRunner): GitAdapter => {
 
     async createBranch(branch: string, base: string, cwd: string, signal?: AbortSignal): Promise<void> {
       validateBranch(branch, "Branch name");
-      validateBase(base);
+      validateBranch(base, "Base ref");
       await runGit(["check-ref-format", "--branch", branch], cwd, signal);
+      await runGit(["check-ref-format", "--branch", base], cwd, signal);
       const startPoint = await runGitObject(
         ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`],
         cwd,
