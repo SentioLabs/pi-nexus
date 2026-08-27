@@ -2,8 +2,14 @@ import type {
   ActiveOperation,
   ArchivedSessionBinding,
   BranchSnapshot,
+  LeaseSnapshot,
+  OperationPlan,
   OperationRequest,
+  OperationResult,
+  RepositoryIdentity,
+  SessionBinding,
   StackSnapshot,
+  TaskReference,
   WorkflowEventMap,
   WorkflowState,
 } from "../src/core/contracts.ts";
@@ -21,6 +27,28 @@ import type {
   WorktrunkAdapter,
 } from "../src/core/ports.ts";
 
+const task = {
+  provider: "arc",
+  id: "pinexus-123",
+} satisfies TaskReference;
+
+const repository = {
+  key: "repo-1",
+  commonDir: "/repo/.git",
+  anchorCwd: "/repo",
+  trunk: "main",
+} satisfies RepositoryIdentity;
+
+const session = {
+  branch: "feat/parser",
+  worktreePath: "/worktrees/feat-parser",
+  sessionFile: "/sessions/feat-parser.jsonl",
+  sessionId: "session-1",
+  task,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  lastSeenAt: "2026-01-01T00:00:00.000Z",
+} satisfies SessionBinding;
+
 const request = {
   kind: "update",
   branch: "feat/parser",
@@ -36,9 +64,9 @@ const branch = {
   needsRestack: false,
   baseStale: false,
   worktree: null,
-  session: null,
+  session,
   lease: null,
-  task: null,
+  task,
   changeRequest: null,
 } satisfies BranchSnapshot;
 
@@ -49,9 +77,52 @@ const archived = {
   archiveSessionId: "archive-session",
   originalSessionFile: "/sessions/original.jsonl",
   trunkWorktreePath: "/worktrees/main",
-  task: { provider: "arc", id: "pinexus-123" },
+  task,
   retiredAt: "2026-01-01T00:00:00.000Z",
 } satisfies ArchivedSessionBinding;
+
+const lease = {
+  leaseId: "lease-1",
+  scope: "repository:topology",
+  resourceKey: "repo-1",
+  operation: "update",
+  owner: { kind: "pi-session", id: "session-1", sessionId: "session-1" },
+  acquiredAt: "2026-01-01T00:00:00.000Z",
+  renewedAt: "2026-01-01T00:00:00.000Z",
+  expiresAt: "2026-01-01T01:00:00.000Z",
+} satisfies LeaseSnapshot;
+
+const snapshot = {
+  schemaVersion: 1,
+  repository,
+  refreshedAt: "2026-01-01T00:00:00.000Z",
+  branches: [branch],
+} satisfies StackSnapshot;
+
+const plan = {
+  planId: "plan-1",
+  repositoryKey: repository.key,
+  kind: "update",
+  preconditionToken: "token-1",
+  requiresConfirmation: true,
+  steps: [
+    {
+      index: 0,
+      effect: "sync_repository",
+      branch: "feat/parser",
+      worktreePath: "/worktrees/main",
+    },
+  ],
+  warnings: [],
+} satisfies OperationPlan;
+
+const result = {
+  status: "completed",
+  snapshot,
+  enteredSessionFile: session.sessionFile,
+  conflict: null,
+  notices: [],
+} satisfies OperationResult;
 
 const active = {
   operationId: "operation-1",
@@ -76,7 +147,7 @@ const active = {
 const state = {
   schemaVersion: 1,
   repositoryKey: "repo-1",
-  bindings: {},
+  bindings: { "feat/parser": session },
   archivedBindings: [archived],
   activeOperation: active,
 } satisfies WorkflowState;
@@ -97,45 +168,197 @@ const commandResult = {
   truncated: false,
 } satisfies CommandResult;
 
-declare const snapshot: StackSnapshot;
-declare const commandRunner: CommandRunner;
-declare const git: GitAdapter;
-declare const spice: GitSpiceAdapter;
-declare const worktrunk: WorktrunkAdapter;
-declare const sessions: SessionAdapter;
-declare const stateStore: WorkflowStateStore;
-declare const leases: LeaseStore;
-declare const issueAdapter: IssueAdapter;
-declare const coordinator: WorkflowCoordinator;
+const commandRunner = {
+  async run(request) {
+    void request;
+    return commandResult;
+  },
+} satisfies CommandRunner;
+
+const git = {
+  async identify(cwd, signal) {
+    void cwd;
+    void signal;
+    return repository;
+  },
+  async createBranch(branch, base, cwd, signal) {
+    void branch;
+    void base;
+    void cwd;
+    void signal;
+  },
+  async inspectWorktree(path, signal) {
+    void path;
+    void signal;
+    return { head: "0123456789abcdef", dirty: false, operation: null };
+  },
+} satisfies GitAdapter;
+
+const spice = {
+  async isInitialized(cwd, signal) {
+    void cwd;
+    void signal;
+    return true;
+  },
+  async readTopology(cwd, includeChangeRequests, signal) {
+    void cwd;
+    void includeChangeRequests;
+    void signal;
+    return {
+      branches: [
+        {
+          name: branch.name,
+          base: branch.base,
+          up: branch.up,
+          needsRestack: branch.needsRestack,
+          worktreePath: "/worktrees/feat-parser",
+          changeRequest: branch.changeRequest,
+        },
+      ],
+    };
+  },
+  async trackBranch(branch, base, cwd, signal) {
+    void branch;
+    void base;
+    void cwd;
+    void signal;
+  },
+  async restackBranch(branch, worktreePath, signal) {
+    void branch;
+    void worktreePath;
+    void signal;
+  },
+  async syncRepository(trunkWorktree, signal) {
+    void trunkWorktree;
+    void signal;
+  },
+  async submitStack(branch, options, cwd, signal) {
+    void branch;
+    void options;
+    void cwd;
+    void signal;
+  },
+} satisfies GitSpiceAdapter;
+
+const worktrunk = {
+  async isAvailable(cwd, signal) {
+    void cwd;
+    void signal;
+    return true;
+  },
+  async list(cwd, signal) {
+    void cwd;
+    void signal;
+    return [{ branch: "feat/parser", path: "/worktrees/feat-parser", current: true }];
+  },
+  async ensureWorktree(branch, cwd, signal) {
+    void branch;
+    void cwd;
+    void signal;
+    return "/worktrees/feat-parser";
+  },
+  async removeWorktree(branch, cwd, signal) {
+    void branch;
+    void cwd;
+    void signal;
+  },
+} satisfies WorktrunkAdapter;
+
+const sessions = {
+  async validate(binding) {
+    void binding;
+    return true;
+  },
+  async forkCanonical(repository, branch, worktreePath, task) {
+    void repository;
+    void branch;
+    void worktreePath;
+    void task;
+    return session;
+  },
+  async archiveToTrunk(input) {
+    void input;
+    return archived;
+  },
+  async switchTo(sessionFile) {
+    void sessionFile;
+    return { cancelled: false };
+  },
+} satisfies SessionAdapter;
+
+const stateStore = {
+  async load(repository) {
+    void repository;
+    return state;
+  },
+  async save(repository, state) {
+    void repository;
+    void state;
+  },
+} satisfies WorkflowStateStore;
+
+const leases = {
+  async acquire(input) {
+    void input;
+    return lease;
+  },
+  async renew(lease, ttlMs) {
+    void lease;
+    void ttlMs;
+    return lease;
+  },
+  async release(lease) {
+    void lease;
+  },
+  async list(repository) {
+    void repository;
+    return [lease];
+  },
+} satisfies LeaseStore;
+
+const issueAdapter = {
+  provider: "arc",
+  async isAvailable(cwd) {
+    void cwd;
+    return true;
+  },
+  async resolve(reference, cwd) {
+    void reference;
+    void cwd;
+    return task;
+  },
+} satisfies IssueAdapter;
+
+const coordinator = {
+  async snapshot(signal) {
+    void signal;
+    return snapshot;
+  },
+  async plan(request, signal) {
+    void request;
+    void signal;
+    return plan;
+  },
+  async execute(plan, signal) {
+    void plan;
+    void signal;
+    return result;
+  },
+} satisfies WorkflowCoordinator;
 
 const _branches: readonly BranchSnapshot[] = snapshot.branches;
-const _plan: ReturnType<WorkflowCoordinator["plan"]> = coordinator.plan(request);
-const _commandRunner: CommandRunner = commandRunner;
-const _git: GitAdapter = git;
-const _spice: GitSpiceAdapter = spice;
-const _worktrunk: WorktrunkAdapter = worktrunk;
-const _sessions: SessionAdapter = sessions;
-const _stateStore: WorkflowStateStore = stateStore;
-const _leases: LeaseStore = leases;
-const _issueAdapter: IssueAdapter = issueAdapter;
 const _event: WorkflowEventMap["stack-workflow:snapshot-changed"] = snapshot;
 
-void branch;
-void archived;
-void active;
-void state;
-void commandRequest;
-void commandResult;
+void commandRunner;
+void git;
+void spice;
+void worktrunk;
+void sessions;
+void stateStore;
+void leases;
+void issueAdapter;
+void coordinator;
 void _branches;
-void _plan;
-void _commandRunner;
-void _git;
-void _spice;
-void _worktrunk;
-void _sessions;
-void _stateStore;
-void _leases;
-void _issueAdapter;
 void _event;
 
 // @ts-expect-error Raw CLI escape hatches are intentionally unsupported.
