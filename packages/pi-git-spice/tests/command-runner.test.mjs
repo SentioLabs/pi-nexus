@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +14,34 @@ const makeTemporaryDirectory = (prefix) => {
   const directory = mkdtempSync(path.join(os.tmpdir(), prefix));
   temporaryRoots.add(directory);
   return directory;
+};
+
+const withPlatform = async (platform, callback) => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+  try {
+    return await callback();
+  } finally {
+    Object.defineProperty(process, "platform", descriptor);
+  }
+};
+
+const withEnvironment = async (changes, callback) => {
+  const previous = new Map(Object.keys(changes).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, changes);
+  try {
+    return await callback();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+};
+
+const runGit = (...args) => {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 };
 
 const waitFor = async (predicate, timeoutMs = 2_000) => {
@@ -176,6 +205,150 @@ test("AbortSignal terminates the Unix process group", { skip: process.platform =
   const result = await resultPromise;
   assert.equal(result.killed, true);
   await assertProcessExited(Number(readFileSync(pidFile, "utf8")));
+});
+
+test("uses direct trusted Windows taskkill cleanup through forced escalation before settling", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-windows-cleanup-");
+  const systemRoot = path.join(root, "Windows");
+  const system32 = path.join(systemRoot, "System32");
+  const taskkillLog = path.join(root, "taskkill.log");
+  const cleanupFinished = path.join(root, "cleanup-finished");
+  const readyFile = path.join(root, "ready");
+  mkdirSync(system32, { recursive: true });
+  writeFileSync(
+    path.join(system32, "taskkill.exe"),
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' \"$*\" >> ${JSON.stringify(taskkillLog)}`,
+      "force=false",
+      "pid=''",
+      "expect_pid=false",
+      "for argument in \"$@\"; do",
+      "  if [ \"$expect_pid\" = true ]; then pid=\"$argument\"; expect_pid=false; fi",
+      "  if [ \"$argument\" = /PID ]; then expect_pid=true; fi",
+      "  if [ \"$argument\" = /F ]; then force=true; fi",
+      "done",
+      "if [ \"$force\" = true ]; then kill -KILL \"$pid\"; sleep 0.05; touch " + JSON.stringify(cleanupFinished) + "; fi",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const startedAt = Date.now();
+
+  const result = await withPlatform("win32", () =>
+    withEnvironment({ SystemRoot: systemRoot }, async () => {
+      const runner = createCommandRunner();
+      const resultPromise = runner.run({
+        executable: process.execPath,
+        args: [
+          "-e",
+          [
+            "const { writeFileSync } = require('node:fs');",
+            `writeFileSync(${JSON.stringify(readyFile)}, 'ready');`,
+            "process.on('SIGTERM', () => {});",
+            "setInterval(() => {}, 1_000);",
+          ].join("\n"),
+        ],
+        cwd: root,
+        timeoutMs: 50,
+        maxOutputBytes: 1_024,
+      });
+      await waitFor(() => existsSync(readyFile));
+      return resultPromise;
+    }),
+  );
+
+  assert.equal(result.killed, true);
+  assert.equal(existsSync(cleanupFinished), true);
+  assert.deepEqual(readFileSync(taskkillLog, "utf8").trim().split("\n"), [
+    "/PID " + /\d+/.exec(readFileSync(taskkillLog, "utf8"))[0] + " /T",
+    "/F /PID " + /\d+/.exec(readFileSync(taskkillLog, "utf8"))[0] + " /T",
+  ]);
+  assert.ok(Date.now() - startedAt >= 250);
+});
+
+test("uses the Windows taskkill tree path for cancellation", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-windows-abort-");
+  const systemRoot = path.join(root, "Windows");
+  const system32 = path.join(systemRoot, "System32");
+  const taskkillLog = path.join(root, "taskkill.log");
+  const readyFile = path.join(root, "ready");
+  mkdirSync(system32, { recursive: true });
+  writeFileSync(
+    path.join(system32, "taskkill.exe"),
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' \"$*\" >> ${JSON.stringify(taskkillLog)}`,
+      "if [ \"$1\" = /F ]; then kill -KILL \"$3\"; fi",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const controller = new AbortController();
+  const result = await withPlatform("win32", () =>
+    withEnvironment({ SystemRoot: systemRoot }, async () => {
+      const resultPromise = createCommandRunner().run({
+        executable: process.execPath,
+        args: [
+          "-e",
+          [
+            "const { writeFileSync } = require('node:fs');",
+            `writeFileSync(${JSON.stringify(readyFile)}, 'ready');`,
+            "process.on('SIGTERM', () => {});",
+            "setInterval(() => {}, 1_000);",
+          ].join("\n"),
+        ],
+        cwd: root,
+        signal: controller.signal,
+        timeoutMs: 5_000,
+        maxOutputBytes: 1_024,
+      });
+      await waitFor(() => existsSync(readyFile));
+      controller.abort();
+      return resultPromise;
+    }),
+  );
+
+  const taskkillCalls = readFileSync(taskkillLog, "utf8").trim().split("\n");
+  assert.equal(result.killed, true);
+  assert.equal(taskkillCalls.length, 2);
+  assert.match(taskkillCalls[0], /^\/PID \d+ \/T$/);
+  assert.match(taskkillCalls[1], /^\/F \/PID \d+ \/T$/);
+  await assertProcessExited(Number(/\d+/.exec(taskkillCalls[0])[0]));
+});
+
+test("does not terminate or await background descendants after a successful direct-child exit", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-background-success-");
+  const pidFile = path.join(root, "background.pid");
+  const result = await createCommandRunner().run({
+    executable: process.execPath,
+    args: [
+      "-e",
+      [
+        "const { spawn } = require('node:child_process');",
+        "const { writeFileSync } = require('node:fs');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1_000)'], { stdio: 'ignore' });",
+        "child.unref();",
+        `writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+      ].join("\n"),
+    ],
+    cwd: root,
+    timeoutMs: 1_000,
+    maxOutputBytes: 1_024,
+  });
+
+  await waitFor(() => existsSync(pidFile));
+  const backgroundPid = Number(readFileSync(pidFile, "utf8"));
+  try {
+    assert.equal(result.killed, false);
+    assert.equal(result.code, 0);
+    assert.doesNotThrow(() => process.kill(backgroundPid, 0));
+  } finally {
+    try {
+      process.kill(backgroundPid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    await assertProcessExited(backgroundPid);
+  }
 });
 
 test("rejects a parent repository executable from a nested repository cwd", async () => {
@@ -392,6 +565,68 @@ test("rejects executables in linked-worktree, main-worktree, sibling-worktree, a
   }
 });
 
+test("rejects executable forms across a real separate-git-dir linked-worktree repository", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-real-separate-git-dir-");
+  const commonDir = path.join(root, "metadata-store");
+  const main = path.join(root, "main");
+  const linked = path.join(root, "linked");
+  const sibling = path.join(root, "sibling");
+  runGit("-c", "commit.gpgsign=false", "init", "--initial-branch=main", "--separate-git-dir", commonDir, main);
+  runGit("-C", main, "config", "user.email", "runner@example.test");
+  runGit("-C", main, "config", "user.name", "Command Runner");
+  runGit("-C", main, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial");
+  runGit("-C", main, "worktree", "add", "-b", "linked", linked);
+  runGit("-C", main, "worktree", "add", "-b", "sibling", sibling);
+  appendFileSync(path.join(commonDir, "config"), `\n[core]\n\tworktree = ${main}\n`);
+
+  const executable = "separate-git-dir-fake";
+  const mainExecutable = path.join(main, executable);
+  const linkedExecutable = path.join(linked, executable);
+  const siblingExecutable = path.join(sibling, executable);
+  const metadataExecutable = path.join(commonDir, executable);
+  for (const candidate of [mainExecutable, linkedExecutable, siblingExecutable, metadataExecutable]) {
+    writeFileSync(candidate, "#!/bin/sh\nexit 99\n", { mode: 0o755 });
+  }
+  const external = makeTemporaryDirectory("pi-git-spice-runner-real-separate-git-dir-link-");
+  symlinkSync(mainExecutable, path.join(external, executable));
+  const request = (candidate) => ({ executable: candidate, args: [], cwd: linked, timeoutMs: 1_000, maxOutputBytes: 1_024 });
+
+  await assert.rejects(createCommandRunner().run(request(mainExecutable)), /repository-local/i);
+  await assert.rejects(createCommandRunner().run(request(linkedExecutable)), /repository-local/i);
+  await assert.rejects(createCommandRunner().run(request(siblingExecutable)), /repository-local/i);
+  await assert.rejects(createCommandRunner().run(request(metadataExecutable)), /repository-local/i);
+  await withEnvironment({ PATH: main }, async () => {
+    await assert.rejects(createCommandRunner().run(request(executable)), /repository-local/i);
+  });
+  await withEnvironment({ PATH: external }, async () => {
+    await assert.rejects(createCommandRunner().run(request(executable)), /repository-local/i);
+  });
+});
+
+test("fails closed when separate-git-dir main-worktree metadata is absent or malformed", { skip: process.platform === "win32" }, async () => {
+  const root = makeTemporaryDirectory("pi-git-spice-runner-separate-git-dir-malformed-");
+  const commonDir = path.join(root, "metadata-store");
+  const main = path.join(root, "main");
+  const linked = path.join(root, "linked");
+  const external = makeTemporaryDirectory("pi-git-spice-runner-separate-git-dir-external-");
+  const executable = "trusted-external-command";
+  runGit("init", "--separate-git-dir", commonDir, main);
+  runGit("-C", main, "config", "user.email", "runner@example.test");
+  runGit("-C", main, "config", "user.name", "Command Runner");
+  runGit("-C", main, "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial");
+  runGit("-C", main, "worktree", "add", "-b", "linked", linked);
+  writeFileSync(path.join(external, executable), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const request = { executable, args: [], cwd: linked, timeoutMs: 1_000, maxOutputBytes: 1_024 };
+
+  await withEnvironment({ PATH: external }, async () => {
+    await assert.rejects(createCommandRunner().run(request), /main worktree|Git metadata/i);
+  });
+  appendFileSync(path.join(commonDir, "config"), "\n[core]\n\tworktree = missing-directory\n");
+  await withEnvironment({ PATH: external }, async () => {
+    await assert.rejects(createCommandRunner().run(request), /main worktree|Git metadata/i);
+  });
+});
+
 test("fails closed for a malformed linked-worktree Git pointer", async () => {
   const root = makeTemporaryDirectory("pi-git-spice-runner-malformed-git-pointer-");
   const external = makeTemporaryDirectory("pi-git-spice-runner-trusted-external-");
@@ -434,36 +669,45 @@ test("fails closed when a linked-worktree pointer lacks its shared common direct
   }
 });
 
-test("uses deterministic PATHEXT lookup for Windows bare commands", async () => {
+test("uses production PATHEXT lookup for Windows bare commands without a public runtime override", { skip: process.platform === "win32" }, async () => {
   const binaryDirectory = makeTemporaryDirectory("pi-git-spice-runner-windows-path-");
-  copyFileSync(process.execPath, path.join(binaryDirectory, "git.EXE"));
-  copyFileSync(process.execPath, path.join(binaryDirectory, "git.CMD"));
+  writeFileSync(path.join(binaryDirectory, "git.EXE"), "#!/bin/sh\nprintf git.EXE\n", { mode: 0o755 });
+  writeFileSync(path.join(binaryDirectory, "git.CMD"), "#!/bin/sh\nprintf git.CMD\n", { mode: 0o755 });
 
-  const result = await createCommandRunner({ platform: "win32", path: binaryDirectory, pathExt: ".EXE;.CMD" }).run({
-    executable: "git",
-    args: ["-e", "process.stdout.write(require('node:path').basename(process.execPath))"],
-    cwd: process.cwd(),
-    timeoutMs: 1_000,
-    maxOutputBytes: 1_024,
-  });
+  const result = await withPlatform("win32", () =>
+    withEnvironment({ PATH: binaryDirectory, PATHEXT: ".EXE;.CMD" }, () =>
+      createCommandRunner().run({
+        executable: "git",
+        args: [],
+        cwd: process.cwd(),
+        timeoutMs: 1_000,
+        maxOutputBytes: 1_024,
+      }),
+    ),
+  );
 
+  assert.equal(createCommandRunner.length, 0);
   assert.equal(result.stdout, "git.EXE");
 });
 
-test("rejects a repository-local PATHEXT candidate", async () => {
+test("rejects a repository-local PATHEXT candidate", { skip: process.platform === "win32" }, async () => {
   const root = makeTemporaryDirectory("pi-git-spice-runner-windows-untrusted-");
   mkdirSync(path.join(root, ".git"));
-  copyFileSync(process.execPath, path.join(root, "git.EXE"));
+  writeFileSync(path.join(root, "git.EXE"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
 
-  await assert.rejects(
-    createCommandRunner({ platform: "win32", path: root, pathExt: ".EXE" }).run({
-      executable: "git",
-      args: ["--version"],
-      cwd: root,
-      timeoutMs: 1_000,
-      maxOutputBytes: 1_024,
+  await withPlatform("win32", () =>
+    withEnvironment({ PATH: root, PATHEXT: ".EXE" }, async () => {
+      await assert.rejects(
+        createCommandRunner().run({
+          executable: "git",
+          args: ["--version"],
+          cwd: root,
+          timeoutMs: 1_000,
+          maxOutputBytes: 1_024,
+        }),
+        /repository-local/i,
+      );
     }),
-    /repository-local/i,
   );
 });
 

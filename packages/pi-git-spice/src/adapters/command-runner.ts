@@ -10,12 +10,6 @@ interface ResolvedExecutable {
   readonly absolutePath: string;
 }
 
-interface CommandRunnerOptions {
-  readonly platform?: NodeJS.Platform;
-  readonly path?: string;
-  readonly pathExt?: string;
-}
-
 interface GitDirectory {
   readonly gitDir: string;
   readonly commonDir: string;
@@ -23,7 +17,9 @@ interface GitDirectory {
 
 const KILL_GRACE_MS = 250;
 const GROUP_POLL_MS = 10;
+const WINDOWS_TASKKILL_TIMEOUT_MS = 1_000;
 const GIT_POINTER_MAX_BYTES = 4 * 1024;
+const GIT_CONFIG_MAX_BYTES = 64 * 1024;
 
 class OutputAccumulator {
   #remaining: number;
@@ -60,7 +56,7 @@ const isWithin = (candidate: string, directory: string): boolean => {
 
 const isMissing = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === "ENOENT";
 
-const readBoundedRegularFile = async (filename: string, label: string): Promise<string> => {
+const readBoundedRegularFile = async (filename: string, label: string, maxBytes = GIT_POINTER_MAX_BYTES): Promise<string> => {
   const metadata = await lstat(filename);
   if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error(`Malformed ${label}`);
   if (constants.O_NOFOLLOW === undefined) throw new Error(`Cannot safely read ${label}`);
@@ -68,9 +64,9 @@ const readBoundedRegularFile = async (filename: string, label: string): Promise<
   try {
     const openedMetadata = await handle.stat();
     if (!openedMetadata.isFile()) throw new Error(`Malformed ${label}`);
-    const buffer = Buffer.alloc(GIT_POINTER_MAX_BYTES + 1);
+    const buffer = Buffer.alloc(maxBytes + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > GIT_POINTER_MAX_BYTES) throw new Error(`Malformed ${label}`);
+    if (bytesRead > maxBytes) throw new Error(`Malformed ${label}`);
     return new TextDecoder().decode(buffer.subarray(0, bytesRead));
   } finally {
     await handle.close();
@@ -142,6 +138,45 @@ const inspectGitDirectory = async (repositoryRoot: string): Promise<GitDirectory
   throw new Error("Malformed Git directory");
 };
 
+const configuredMainWorktreeRoot = async (commonDir: string): Promise<string> => {
+  const configPath = path.join(commonDir, "config");
+  let contents: string;
+  try {
+    contents = await readBoundedRegularFile(configPath, "Git config", GIT_CONFIG_MAX_BYTES);
+  } catch (error) {
+    if (isMissing(error)) throw new Error("Cannot determine main worktree from Git metadata");
+    throw error;
+  }
+  if (contents.includes("\0")) throw new Error("Malformed Git config");
+  let inCoreSection = false;
+  let worktree: string | null = null;
+  for (const line of contents.split("\n")) {
+    const section = /^\s*\[([A-Za-z][A-Za-z0-9-]*)\]\s*(?:[;#].*)?$/.exec(line);
+    if (section !== null) {
+      inCoreSection = section[1].toLowerCase() === "core";
+      continue;
+    }
+    if (!inCoreSection || /^\s*(?:[;#].*)?$/.test(line)) continue;
+    const setting = /^\s*([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*?)\s*$/.exec(line);
+    if (setting === null) throw new Error("Malformed Git config");
+    if (setting[1].toLowerCase() !== "worktree") continue;
+    if (worktree !== null || setting[2].length === 0 || setting[2].includes("\r")) throw new Error("Malformed Git config");
+    worktree = setting[2];
+  }
+  if (worktree === null) throw new Error("Cannot determine main worktree from Git metadata");
+  let root: string;
+  try {
+    root = await resolvePointerDirectory(configPath, worktree, "main worktree metadata");
+  } catch {
+    throw new Error("Malformed main worktree metadata");
+  }
+  const gitDirectory = await inspectGitDirectory(root);
+  if (gitDirectory === null || gitDirectory.gitDir !== commonDir || gitDirectory.commonDir !== commonDir) {
+    throw new Error("Malformed main worktree metadata");
+  }
+  return root;
+};
+
 const linkedWorktreeRoots = async (commonDir: string): Promise<readonly string[]> => {
   const worktreesDirectory = path.join(commonDir, "worktrees");
   let entries;
@@ -174,6 +209,7 @@ const linkedWorktreeRoots = async (commonDir: string): Promise<readonly string[]
 const findRepositoryRoots = async (cwd: string): Promise<readonly string[]> => {
   const roots = new Set<string>();
   const commonDirectories = new Set<string>();
+  const knownMainWorktrees = new Map<string, string>();
   let directory = await realpath(cwd);
   while (true) {
     const gitDirectory = await inspectGitDirectory(directory);
@@ -182,13 +218,16 @@ const findRepositoryRoots = async (cwd: string): Promise<readonly string[]> => {
       roots.add(gitDirectory.gitDir);
       roots.add(gitDirectory.commonDir);
       commonDirectories.add(gitDirectory.commonDir);
-      if (path.basename(gitDirectory.commonDir).toLowerCase() === ".git") roots.add(path.dirname(gitDirectory.commonDir));
+      if (gitDirectory.gitDir === gitDirectory.commonDir) knownMainWorktrees.set(gitDirectory.commonDir, directory);
     }
     const parent = path.dirname(directory);
     if (parent === directory) break;
     directory = parent;
   }
   for (const commonDir of commonDirectories) {
+    const mainWorktree = knownMainWorktrees.get(commonDir) ??
+      (path.basename(commonDir).toLowerCase() === ".git" ? path.dirname(commonDir) : await configuredMainWorktreeRoot(commonDir));
+    roots.add(mainWorktree);
     for (const worktreeRoot of await linkedWorktreeRoots(commonDir)) roots.add(worktreeRoot);
   }
   return [...roots];
@@ -222,7 +261,7 @@ const pathExtensions = (pathExt: string | undefined): readonly string[] => {
 const resolveTrustedExecutable = async (
   executable: string,
   cwd: string,
-  options: Required<Pick<CommandRunnerOptions, "platform">> & Pick<CommandRunnerOptions, "path" | "pathExt">,
+  runtime: { readonly platform: NodeJS.Platform },
 ): Promise<ResolvedExecutable> => {
   if (executable.length === 0 || executable.includes("\0")) throw new Error("Invalid executable");
   const realCwd = await realpath(cwd);
@@ -233,8 +272,8 @@ const resolveTrustedExecutable = async (
     throw new Error(`Trusted executable is unavailable: ${executable}`);
   }
   if (path.basename(executable) !== executable) throw new Error(`Trusted executable must be a bare command name: ${executable}`);
-  const pathEntries = (options.path ?? process.env.PATH ?? "").split(options.platform === "win32" ? ";" : path.delimiter);
-  const names = options.platform === "win32" && path.extname(executable) === "" ? pathExtensions(options.pathExt ?? process.env.PATHEXT) : [""];
+  const pathEntries = (process.env.PATH ?? "").split(runtime.platform === "win32" ? ";" : path.delimiter);
+  const names = runtime.platform === "win32" && path.extname(executable) === "" ? pathExtensions(process.env.PATHEXT) : [""];
   for (const entry of pathEntries) {
     const directory = path.isAbsolute(entry) ? entry : path.resolve(realCwd, entry || ".");
     for (const extension of names) {
@@ -247,12 +286,48 @@ const resolveTrustedExecutable = async (
 
 const decodeOutput = (chunks: readonly Buffer[]): string => new TextDecoder().decode(Buffer.concat(chunks), { stream: true });
 
-export const createCommandRunner = (options: CommandRunnerOptions = {}): CommandRunner => {
-  const runtime = {
-    platform: options.platform ?? process.platform,
-    path: options.path,
-    pathExt: options.pathExt,
-  };
+const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const runWindowsTaskkill = (pid: number, force: boolean): Promise<void> =>
+  new Promise((resolve) => {
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
+      resolve();
+    };
+    try {
+      const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+      const taskkill = spawn(
+        path.join(systemRoot, "System32", "taskkill.exe"),
+        force ? ["/F", "/PID", String(pid), "/T"] : ["/PID", String(pid), "/T"],
+        { shell: false, stdio: "ignore", windowsHide: true },
+      );
+      timeout = setTimeout(() => {
+        try {
+          taskkill.kill("SIGKILL");
+        } catch {
+          // The bounded cleanup helper may already have exited.
+        }
+        finish();
+      }, WINDOWS_TASKKILL_TIMEOUT_MS);
+      taskkill.once("error", finish);
+      taskkill.once("close", finish);
+    } catch {
+      finish();
+    }
+  });
+
+const terminateWindowsProcessTree = async (pid: number): Promise<void> => {
+  await runWindowsTaskkill(pid, false);
+  await wait(KILL_GRACE_MS);
+  await runWindowsTaskkill(pid, true);
+};
+
+export const createCommandRunner = (): CommandRunner => {
+  const runtime = { platform: process.platform };
 
   return {
     async run(request: CommandRequest): Promise<CommandResult> {
@@ -276,6 +351,7 @@ export const createCommandRunner = (options: CommandRunnerOptions = {}): Command
         let settled = false;
         let closing = false;
         let killTimer: NodeJS.Timeout | undefined;
+        let windowsCleanup: Promise<void> | undefined;
 
         const processGroupIsAbsent = (): boolean => {
           if (runtime.platform === "win32" || child.pid === undefined) return true;
@@ -302,6 +378,19 @@ export const createCommandRunner = (options: CommandRunnerOptions = {}): Command
         const terminate = (): void => {
           if (settled || killed) return;
           killed = true;
+          if (runtime.platform === "win32") {
+            if (child.pid === undefined) {
+              try {
+                child.kill("SIGTERM");
+              } catch {
+                // A failed spawn has no process tree to terminate.
+              }
+              windowsCleanup = Promise.resolve();
+            } else {
+              windowsCleanup = terminateWindowsProcessTree(child.pid);
+            }
+            return;
+          }
           signalProcessTree("SIGTERM");
           killTimer = setTimeout(() => {
             killTimer = undefined;
@@ -343,9 +432,18 @@ export const createCommandRunner = (options: CommandRunnerOptions = {}): Command
         });
         child.once("error", (error) => {
           if (settled || closing) return;
-          settled = true;
-          clearRequestResources();
-          reject(error);
+          const rejectRun = (): void => {
+            if (settled) return;
+            settled = true;
+            clearRequestResources();
+            reject(error);
+          };
+          if (runtime.platform === "win32" && killed && windowsCleanup !== undefined) {
+            closing = true;
+            void windowsCleanup.then(rejectRun, rejectRun);
+            return;
+          }
+          rejectRun();
         });
         child.once("close", (code) => {
           if (settled) return;
@@ -357,7 +455,20 @@ export const createCommandRunner = (options: CommandRunnerOptions = {}): Command
             killed,
             truncated: output.truncated,
           };
-          if (!killed || runtime.platform === "win32" || processGroupIsAbsent()) {
+          if (!killed) {
+            settle(result);
+            return;
+          }
+          if (runtime.platform === "win32") {
+            void (windowsCleanup ?? Promise.resolve()).then(() => settle(result), (error: unknown) => {
+              if (settled) return;
+              settled = true;
+              clearRequestResources();
+              reject(error);
+            });
+            return;
+          }
+          if (processGroupIsAbsent()) {
             settle(result);
             return;
           }
