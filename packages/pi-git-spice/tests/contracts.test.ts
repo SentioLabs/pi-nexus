@@ -2,6 +2,9 @@ import type {
   ActiveOperation,
   ArchivedSessionBinding,
   BranchSnapshot,
+  ChangeRequestSnapshot,
+  LeaseOwner,
+  LeaseScope,
   LeaseSnapshot,
   OperationPlan,
   OperationRequest,
@@ -27,6 +30,16 @@ import type {
   WorktrunkAdapter,
 } from "../src/core/ports.ts";
 
+type Equal<Actual, Expected> =
+  (<Value>() => Value extends Actual ? 1 : 2) extends
+  (<Value>() => Value extends Expected ? 1 : 2)
+    ? (<Value>() => Value extends Expected ? 1 : 2) extends
+      (<Value>() => Value extends Actual ? 1 : 2)
+      ? true
+      : false
+    : false;
+type Expect<Value extends true> = Value;
+
 const task = {
   provider: "arc",
   id: "pinexus-123",
@@ -49,8 +62,43 @@ const session = {
   lastSeenAt: "2026-01-01T00:00:00.000Z",
 } satisfies SessionBinding;
 
-const request = {
+const enterRequest = {
+  kind: "enter",
+  branch: "feat/parser",
+  createWorktree: true,
+} satisfies OperationRequest;
+
+const prepareBranchRequest = {
+  kind: "prepare_branch",
+  branch: "feat/parser",
+  base: "main",
+  task,
+} satisfies OperationRequest;
+
+const restackRequest = {
+  kind: "restack",
+  branch: null,
+} satisfies OperationRequest;
+
+const updateRequest = {
   kind: "update",
+  branch: "feat/parser",
+} satisfies OperationRequest;
+
+const submitRequest = {
+  kind: "submit",
+  branch: "feat/parser",
+  draft: true,
+  fillFromCommits: true,
+} satisfies OperationRequest;
+
+const continueRestackRequest = {
+  kind: "continue_restack",
+  branch: "feat/parser",
+} satisfies OperationRequest;
+
+const abortRestackRequest = {
+  kind: "abort_restack",
   branch: "feat/parser",
 } satisfies OperationRequest;
 
@@ -168,196 +216,191 @@ const commandResult = {
   truncated: false,
 } satisfies CommandResult;
 
-const commandRunner = {
-  async run(request) {
-    void request;
-    return commandResult;
-  },
-} satisfies CommandRunner;
-
-const git = {
-  async identify(cwd, signal) {
-    void cwd;
-    void signal;
-    return repository;
-  },
-  async createBranch(branch, base, cwd, signal) {
-    void branch;
-    void base;
-    void cwd;
-    void signal;
-  },
-  async inspectWorktree(path, signal) {
-    void path;
-    void signal;
-    return { head: "0123456789abcdef", dirty: false, operation: null };
-  },
-} satisfies GitAdapter;
-
-const spice = {
-  async isInitialized(cwd, signal) {
-    void cwd;
-    void signal;
-    return true;
-  },
-  async readTopology(cwd, includeChangeRequests, signal) {
-    void cwd;
-    void includeChangeRequests;
-    void signal;
-    return {
-      branches: [
-        {
-          name: branch.name,
-          base: branch.base,
-          up: branch.up,
-          needsRestack: branch.needsRestack,
-          worktreePath: "/worktrees/feat-parser",
-          changeRequest: branch.changeRequest,
-        },
-      ],
-    };
-  },
-  async trackBranch(branch, base, cwd, signal) {
-    void branch;
-    void base;
-    void cwd;
-    void signal;
-  },
-  async restackBranch(branch, worktreePath, signal) {
-    void branch;
-    void worktreePath;
-    void signal;
-  },
-  async syncRepository(trunkWorktree, signal) {
-    void trunkWorktree;
-    void signal;
-  },
-  async submitStack(branch, options, cwd, signal) {
-    void branch;
-    void options;
-    void cwd;
-    void signal;
-  },
-} satisfies GitSpiceAdapter;
-
-const worktrunk = {
-  async isAvailable(cwd, signal) {
-    void cwd;
-    void signal;
-    return true;
-  },
-  async list(cwd, signal) {
-    void cwd;
-    void signal;
-    return [{ branch: "feat/parser", path: "/worktrees/feat-parser", current: true }];
-  },
-  async ensureWorktree(branch, cwd, signal) {
-    void branch;
-    void cwd;
-    void signal;
-    return "/worktrees/feat-parser";
-  },
-  async removeWorktree(branch, cwd, signal) {
-    void branch;
-    void cwd;
-    void signal;
-  },
-} satisfies WorktrunkAdapter;
-
-const sessions = {
-  async validate(binding) {
-    void binding;
-    return true;
-  },
-  async forkCanonical(repository, branch, worktreePath, task) {
-    void repository;
-    void branch;
-    void worktreePath;
-    void task;
-    return session;
-  },
-  async archiveToTrunk(input) {
-    void input;
-    return archived;
-  },
-  async switchTo(sessionFile) {
-    void sessionFile;
-    return { cancelled: false };
-  },
-} satisfies SessionAdapter;
-
-const stateStore = {
-  async load(repository) {
-    void repository;
-    return state;
-  },
-  async save(repository, state) {
-    void repository;
-    void state;
-  },
-} satisfies WorkflowStateStore;
-
-const leases = {
-  async acquire(input) {
-    void input;
-    return lease;
-  },
-  async renew(lease, ttlMs) {
-    void lease;
-    void ttlMs;
-    return lease;
-  },
-  async release(lease) {
-    void lease;
-  },
-  async list(repository) {
-    void repository;
-    return [lease];
-  },
-} satisfies LeaseStore;
-
-const issueAdapter = {
-  provider: "arc",
-  async isAvailable(cwd) {
-    void cwd;
-    return true;
-  },
-  async resolve(reference, cwd) {
-    void reference;
-    void cwd;
-    return task;
-  },
-} satisfies IssueAdapter;
-
-const coordinator = {
-  async snapshot(signal) {
-    void signal;
-    return snapshot;
-  },
-  async plan(request, signal) {
-    void request;
-    void signal;
-    return plan;
-  },
-  async execute(plan, signal) {
-    void plan;
-    void signal;
-    return result;
-  },
-} satisfies WorkflowCoordinator;
+type _CommandRunnerRun = Expect<
+  Equal<CommandRunner["run"], (request: CommandRequest) => Promise<CommandResult>>
+>;
+type _GitIdentify = Expect<
+  Equal<GitAdapter["identify"], (cwd: string, signal?: AbortSignal) => Promise<RepositoryIdentity>>
+>;
+type _GitCreateBranch = Expect<
+  Equal<
+    GitAdapter["createBranch"],
+    (branch: string, base: string, cwd: string, signal?: AbortSignal) => Promise<void>
+  >
+>;
+type _GitInspectWorktree = Expect<
+  Equal<
+    GitAdapter["inspectWorktree"],
+    (path: string, signal?: AbortSignal) => Promise<{
+      readonly head: string;
+      readonly dirty: boolean;
+      readonly operation: "rebase" | "merge" | "cherry-pick" | "revert" | null;
+    }>
+  >
+>;
+type _GitSpiceIsInitialized = Expect<
+  Equal<GitSpiceAdapter["isInitialized"], (cwd: string, signal?: AbortSignal) => Promise<boolean>>
+>;
+type _GitSpiceReadTopology = Expect<
+  Equal<
+    GitSpiceAdapter["readTopology"],
+    (
+      cwd: string,
+      includeChangeRequests: boolean,
+      signal?: AbortSignal,
+    ) => Promise<{
+      readonly branches: readonly {
+        readonly name: string;
+        readonly base: string | null;
+        readonly up: readonly string[];
+        readonly needsRestack: boolean;
+        readonly worktreePath: string | null;
+        readonly changeRequest: ChangeRequestSnapshot | null;
+      }[];
+    }>
+  >
+>;
+type _GitSpiceTrackBranch = Expect<
+  Equal<
+    GitSpiceAdapter["trackBranch"],
+    (branch: string, base: string, cwd: string, signal?: AbortSignal) => Promise<void>
+  >
+>;
+type _GitSpiceRestackBranch = Expect<
+  Equal<
+    GitSpiceAdapter["restackBranch"],
+    (branch: string, worktreePath: string, signal?: AbortSignal) => Promise<void>
+  >
+>;
+type _GitSpiceSyncRepository = Expect<
+  Equal<GitSpiceAdapter["syncRepository"], (trunkWorktree: string, signal?: AbortSignal) => Promise<void>>
+>;
+type _GitSpiceSubmitStack = Expect<
+  Equal<
+    GitSpiceAdapter["submitStack"],
+    (
+      branch: string | null,
+      options: { readonly draft: boolean; readonly fillFromCommits: boolean },
+      cwd: string,
+      signal?: AbortSignal,
+    ) => Promise<void>
+  >
+>;
+type _WorktrunkIsAvailable = Expect<
+  Equal<WorktrunkAdapter["isAvailable"], (cwd: string, signal?: AbortSignal) => Promise<boolean>>
+>;
+type _WorktrunkList = Expect<
+  Equal<
+    WorktrunkAdapter["list"],
+    (
+      cwd: string,
+      signal?: AbortSignal,
+    ) => Promise<readonly { readonly branch: string | null; readonly path: string; readonly current: boolean }[]>
+  >
+>;
+type _WorktrunkEnsureWorktree = Expect<
+  Equal<
+    WorktrunkAdapter["ensureWorktree"],
+    (branch: string, cwd: string, signal?: AbortSignal) => Promise<string>
+  >
+>;
+type _WorktrunkRemoveWorktree = Expect<
+  Equal<
+    WorktrunkAdapter["removeWorktree"],
+    (branch: string, cwd: string, signal?: AbortSignal) => Promise<void>
+  >
+>;
+type _SessionValidate = Expect<Equal<SessionAdapter["validate"], (binding: SessionBinding) => Promise<boolean>>>;
+type _SessionForkCanonical = Expect<
+  Equal<
+    SessionAdapter["forkCanonical"],
+    (
+      repository: RepositoryIdentity,
+      branch: string,
+      worktreePath: string,
+      task: TaskReference | null,
+    ) => Promise<SessionBinding>
+  >
+>;
+type _SessionArchiveToTrunk = Expect<
+  Equal<
+    SessionAdapter["archiveToTrunk"],
+    (input: {
+      readonly binding: SessionBinding;
+      readonly retiredHead: string;
+      readonly trunkWorktreePath: string;
+    }) => Promise<ArchivedSessionBinding>
+  >
+>;
+type _SessionSwitchTo = Expect<
+  Equal<SessionAdapter["switchTo"], (sessionFile: string) => Promise<{ readonly cancelled: boolean }>>
+>;
+type _WorkflowStateStoreLoad = Expect<
+  Equal<WorkflowStateStore["load"], (repository: RepositoryIdentity) => Promise<WorkflowState>>
+>;
+type _WorkflowStateStoreSave = Expect<
+  Equal<
+    WorkflowStateStore["save"],
+    (repository: RepositoryIdentity, state: WorkflowState) => Promise<void>
+  >
+>;
+type _LeaseStoreAcquire = Expect<
+  Equal<
+    LeaseStore["acquire"],
+    (input: {
+      readonly repository: RepositoryIdentity;
+      readonly scope: LeaseScope;
+      readonly resourceKey: string;
+      readonly operation: string;
+      readonly owner: LeaseOwner;
+      readonly ttlMs: number;
+    }) => Promise<LeaseSnapshot>
+  >
+>;
+type _LeaseStoreRenew = Expect<
+  Equal<LeaseStore["renew"], (lease: LeaseSnapshot, ttlMs: number) => Promise<LeaseSnapshot>>
+>;
+type _LeaseStoreRelease = Expect<Equal<LeaseStore["release"], (lease: LeaseSnapshot) => Promise<void>>>;
+type _LeaseStoreList = Expect<
+  Equal<LeaseStore["list"], (repository: RepositoryIdentity) => Promise<readonly LeaseSnapshot[]>>
+>;
+type _IssueAdapterProvider = Expect<Equal<IssueAdapter["provider"], string>>;
+type _IssueAdapterIsAvailable = Expect<Equal<IssueAdapter["isAvailable"], (cwd: string) => Promise<boolean>>>;
+type _IssueAdapterResolve = Expect<
+  Equal<
+    IssueAdapter["resolve"],
+    (reference: TaskReference, cwd: string) => Promise<TaskReference | null>
+  >
+>;
+type _WorkflowCoordinatorSnapshot = Expect<
+  Equal<WorkflowCoordinator["snapshot"], (signal?: AbortSignal) => Promise<StackSnapshot>>
+>;
+type _WorkflowCoordinatorPlan = Expect<
+  Equal<
+    WorkflowCoordinator["plan"],
+    (request: OperationRequest, signal?: AbortSignal) => Promise<OperationPlan>
+  >
+>;
+type _WorkflowCoordinatorExecute = Expect<
+  Equal<
+    WorkflowCoordinator["execute"],
+    (plan: OperationPlan, signal?: AbortSignal) => Promise<OperationResult>
+  >
+>;
 
 const _branches: readonly BranchSnapshot[] = snapshot.branches;
 const _event: WorkflowEventMap["stack-workflow:snapshot-changed"] = snapshot;
 
-void commandRunner;
-void git;
-void spice;
-void worktrunk;
-void sessions;
-void stateStore;
-void leases;
-void issueAdapter;
-void coordinator;
+void enterRequest;
+void prepareBranchRequest;
+void restackRequest;
+void updateRequest;
+void submitRequest;
+void continueRestackRequest;
+void abortRestackRequest;
+void state;
+void commandRequest;
+void commandResult;
 void _branches;
 void _event;
 
