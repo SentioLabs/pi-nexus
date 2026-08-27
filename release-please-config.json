@@ -46,6 +46,20 @@
         }
       ]
     },
+    "packages/pi-git-spice": {
+      "component": "pi-git-spice",
+      "package-name": "@sentiolabs/pi-git-spice",
+      "release-type": "node",
+      "initial-version": "0.1.0",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/package-lock.json",
+          "jsonpath": "$.packages['packages/pi-git-spice'].version"
+        }
+      ]
+    },
     "packages/pi-scriptable-statusline": {
       "component": "pi-scriptable-statusline",
       "package-name": "@sentiolabs/pi-scriptable-statusline",

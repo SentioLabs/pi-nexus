@@ -102,6 +102,7 @@ test("package exposes the exact Pi git-spice runtime", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "@sentiolabs/pi-git-spice");
   assert.deepEqual(pkg.pi, {
+    extensions: ["./extensions/git-spice-workflow.ts"],
     skills: ["./skills"],
     prompts: ["./prompts/*.md"],
     subagents: { agents: ["./agents"] },
@@ -117,7 +118,27 @@ test("package metadata is publishable Pi package metadata", () => {
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.repository.directory, "packages/pi-git-spice");
   assert.ok(pkg.keywords.includes("pi-package"));
-  assert.deepEqual(pkg.files, ["agents/", "prompts/", "skills/", "README.md", "CHANGELOG.md", "LICENSE"]);
+  assert.deepEqual(pkg.scripts, {
+    test: "node --test tests/*.test.mjs && npm run typecheck",
+    typecheck: "tsc -p tsconfig.json",
+    "pack:dry-run": "npm pack --dry-run",
+    prepublishOnly: "npm test && npm run pack:dry-run",
+  });
+  assert.deepEqual(pkg.files, ["agents/", "extensions/", "prompts/", "skills/", "src/", "README.md", "CHANGELOG.md", "LICENSE"]);
+  assert.deepEqual(pkg.peerDependencies, {
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
+    typebox: "^1.3.7",
+  });
+  assert.deepEqual(pkg.devDependencies, {
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
+    "@types/node": "^24.13.3",
+    typebox: "^1.3.7",
+    typescript: "^5.9.3",
+  });
+  assert.equal(pkg.scripts.prepare, undefined);
+  assert.equal(pkg.scripts.postinstall, undefined);
 });
 
 test("prompts retain arguments and make every mutation non-interactive", () => {
@@ -242,6 +263,13 @@ test("npm pack contains the exact generated runtime and no maintainer tooling", 
   assert.equal(packed.length, 1);
   const paths = new Set(packed[0].files.map(({ path }) => path));
   for (const runtimePath of runtimeManifest) {
+    assert.equal(paths.has(runtimePath), true, `${runtimePath} should be packed`);
+  }
+  for (const runtimePath of [
+    "extensions/git-spice-workflow.ts",
+    "src/core/contracts.ts",
+    "src/core/ports.ts",
+  ]) {
     assert.equal(paths.has(runtimePath), true, `${runtimePath} should be packed`);
   }
   assert.equal([...paths].some((p) => p.startsWith("scripts/") || p.startsWith("tests/") || p.startsWith(".pi/")), false);

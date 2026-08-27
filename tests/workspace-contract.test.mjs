@@ -78,6 +78,39 @@ test("pi-arc package metadata points at the workspace package", () => {
   assert.ok(!pkg.bundledDependencies.includes("pi-subagents"));
 });
 
+test("release-please tracks pi-git-spice as an independent package", () => {
+  const config = readJson("release-please-config.json");
+  const gitSpice = config.packages["packages/pi-git-spice"];
+
+  assert.ok(gitSpice);
+  assert.equal(gitSpice.component, "pi-git-spice");
+  assert.equal(gitSpice["package-name"], "@sentiolabs/pi-git-spice");
+  assert.equal(gitSpice["release-type"], "node");
+  assert.equal(gitSpice["initial-version"], "0.1.0");
+  assert.equal(gitSpice["changelog-path"], "CHANGELOG.md");
+  assert.deepEqual(gitSpice["extra-files"], [
+    {
+      type: "json",
+      path: "/package-lock.json",
+      jsonpath: "$.packages['packages/pi-git-spice'].version",
+    },
+  ]);
+  assertReleaseManifestTracksPackage("packages/pi-git-spice");
+});
+
+test("pi-git-spice package metadata points at the workspace package", () => {
+  const pkg = readJson("packages/pi-git-spice/package.json");
+
+  assert.equal(pkg.name, "@sentiolabs/pi-git-spice");
+  assertReleaseManifestTracksPackage("packages/pi-git-spice");
+  assert.equal(pkg.repository.directory, "packages/pi-git-spice");
+  assert.equal(pkg.repository.url, "git+ssh://git@github.com/SentioLabs/pi-nexus.git");
+  assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-git-spice#readme");
+  assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
+  assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.deepEqual(pkg.pi.extensions, ["./extensions/git-spice-workflow.ts"]);
+});
+
 test("pi-code-quality package metadata points at the workspace package", () => {
   const pkg = readJson("packages/pi-code-quality/package.json");
 
@@ -136,6 +169,7 @@ test("release workflow uses idempotent npm publishing helper", () => {
 
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-arc/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
+  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-git-spice/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-code-quality/);
   assert.doesNotMatch(workflow, /npm publish --workspace/);
