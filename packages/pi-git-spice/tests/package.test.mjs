@@ -130,7 +130,32 @@ test("committed runtime occurrence inventories reconcile and validate independen
     assert.equal(result.inventory, result.references + result.executables, `${relative} reconciles every occurrence`);
     assert.ok(result.executables > 0, `${relative} validates executable guidance`);
     assert.ok(result.reasons.every((reason) => reason.length > 0), `${relative} records every classification reason`);
-    assert.ok(result.reasons.every((reason) => !/capitalized|tabular|Markdown-formatted|cue word/i.test(reason)), `${relative} uses structural classification reasons`);
+    assert.ok(result.reasons.every((reason) => !/capitalized|tabular|Markdown-formatted|cue word|frontmatter|heading|punctuation/i.test(reason)), `${relative} uses mechanical or manifest-backed classification reasons`);
+  }
+});
+
+test("committed runtime uses every static prose manifest entry at exact cardinality", () => {
+  const probe = [
+    "import collections, importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "root = pathlib.Path(sys.argv[2])",
+    "result = {}",
+    "for relative in sys.argv[3:]:",
+    "    occurrences = module.audit_git_spice_occurrences(pathlib.Path(relative), (root / relative).read_text(encoding='utf8'))",
+    "    used = collections.Counter(item.physical_line for item in occurrences if item.reason == module.PROSE_REFERENCE_REASON)",
+    "    result[relative] = [{'line': entry.exact_physical_line, 'expected': entry.expected_count, 'actual': used[entry.exact_physical_line]} for entry in module.PROSE_REFERENCE_MANIFEST[relative]]",
+    "print(json.dumps(result))",
+  ].join("\n");
+  const audit = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, packageRoot, ...runtimePaths], { encoding: "utf8" }));
+  assert.deepEqual(Object.keys(audit).sort(), [...runtimePaths].sort());
+  for (const relative of runtimePaths) {
+    for (const entry of audit[relative]) {
+      assert.ok(entry.line.includes("git-spice"), `${relative} manifest entry contains the literal token`);
+      assert.ok(entry.expected > 0, `${relative} manifest cardinality is positive`);
+      assert.equal(entry.actual, entry.expected, `${relative} uses ${JSON.stringify(entry.line)} exactly`);
+    }
   }
 });
 
