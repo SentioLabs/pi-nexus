@@ -2,6 +2,7 @@
 """Regenerate Pi git-spice resources from the Claude plugin source."""
 
 import argparse
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -743,27 +744,404 @@ def build_generated_tree(source: Path, temporary_root: Path) -> Path:
     return generated
 
 
-def executable_snippets(text: str) -> list[str]:
-    inline_code = re.compile(r"(?<!`)(?P<delimiter>`+)(?!`)(?P<code>[^\n]*?)(?<!`)(?P=delimiter)(?!`)")
-    snippets = [
-        code
-        for match in inline_code.finditer(text)
-        if (code := match.group("code").strip()) and code != "git-spice"
-    ]
-    fenced_code = re.compile(
-        r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)\r?\n(?P<code>[\s\S]*?)^[ ]{0,3}(?P=fence)[ \t]*$",
-        re.MULTILINE,
+@dataclass
+class MarkdownRegion:
+    kind: str
+    start: int
+    end: int
+    line: int
+    content_start: int
+    content_end: int
+    fence_character: str | None = None
+    opening_fence_length: int | None = None
+    info_string: str | None = None
+    malformed_reason: str | None = None
+
+
+@dataclass
+class GitSpiceOccurrence:
+    start: int
+    end: int
+    line: int
+    column: int
+    region: MarkdownRegion
+    physical_line: str
+    classification: str | None = None
+    reason: str | None = None
+
+
+def _line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _append_prose_region(regions: list[MarkdownRegion], text: str, start: int, end: int) -> None:
+    if start < end:
+        regions.append(MarkdownRegion("prose", start, end, _line_number(text, start), start, end))
+
+
+def _escaped_delimiter(line: str, index: int) -> bool:
+    backslashes = 0
+    index -= 1
+    while index >= 0 and line[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def _scan_inline_regions(text: str, line_start: int, line_end: int, regions: list[MarkdownRegion]) -> None:
+    physical_end = line_end
+    while physical_end > line_start and text[physical_end - 1] in "\r\n":
+        physical_end -= 1
+    line = text[line_start:physical_end]
+    cursor = 0
+    search = 0
+    while search < len(line):
+        opener = re.search(r"`+", line[search:])
+        if not opener:
+            break
+        opening_start = search + opener.start()
+        opening_end = search + opener.end()
+        if _escaped_delimiter(line, opening_start):
+            search = opening_end
+            continue
+        delimiter_length = opening_end - opening_start
+        closing_start = None
+        closing_end = None
+        for candidate in re.finditer(r"`+", line[opening_end:]):
+            candidate_start = opening_end + candidate.start()
+            candidate_end = opening_end + candidate.end()
+            if candidate_end - candidate_start == delimiter_length and not _escaped_delimiter(line, candidate_start):
+                closing_start = candidate_start
+                closing_end = candidate_end
+                break
+        _append_prose_region(regions, text, line_start + cursor, line_start + opening_start)
+        if closing_start is None or closing_end is None:
+            malformed = "unterminated inline code span" if "git-spice" in line[opening_start:] else None
+            regions.append(MarkdownRegion(
+                "inline_code",
+                line_start + opening_start,
+                line_end,
+                _line_number(text, line_start + opening_start),
+                line_start + opening_end,
+                physical_end,
+                malformed_reason=malformed,
+            ))
+            return
+        regions.append(MarkdownRegion(
+            "inline_code",
+            line_start + opening_start,
+            line_start + closing_end,
+            _line_number(text, line_start + opening_start),
+            line_start + opening_end,
+            line_start + closing_start,
+        ))
+        cursor = closing_end
+        search = closing_end
+    _append_prose_region(regions, text, line_start + cursor, line_end)
+
+
+def scan_markdown_regions(text: str) -> list[MarkdownRegion]:
+    """Partition Markdown with an offset-preserving deterministic state machine."""
+    regions = []
+    lines = text.splitlines(keepends=True)
+    if not lines and text:
+        lines = [text]
+    offset = 0
+    fence_start = None
+    fence_line = None
+    fence_character = None
+    fence_length = None
+    fence_info = None
+    fence_content_start = None
+    fence_problem = None
+    opener_pattern = re.compile(r" {0,3}(`{3,}|~{3,})([^\n]*)")
+
+    for raw_line in lines:
+        line_start = offset
+        line_end = offset + len(raw_line)
+        physical_line = raw_line.rstrip("\r\n")
+        if fence_start is None:
+            opener = opener_pattern.fullmatch(physical_line)
+            if opener:
+                fence_start = line_start
+                fence_line = _line_number(text, line_start)
+                fence_character = opener.group(1)[0]
+                fence_length = len(opener.group(1))
+                fence_info = opener.group(2).strip()
+                fence_content_start = line_end
+                fence_problem = None
+            else:
+                _scan_inline_regions(text, line_start, line_end, regions)
+        else:
+            closer = re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_character)}{{{fence_length},}}[ \t]*",
+                physical_line,
+            )
+            if closer:
+                regions.append(MarkdownRegion(
+                    "fenced_code",
+                    fence_start,
+                    line_end,
+                    fence_line,
+                    fence_content_start,
+                    line_start,
+                    fence_character=fence_character,
+                    opening_fence_length=fence_length,
+                    info_string=fence_info,
+                    malformed_reason=fence_problem,
+                ))
+                fence_start = None
+            else:
+                apparent_closer = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", physical_line)
+                if apparent_closer and fence_problem is None:
+                    run = apparent_closer.group(1)
+                    if run[0] != fence_character:
+                        fence_problem = "mismatched closing fence character"
+                    elif len(run) < fence_length:
+                        fence_problem = "closing fence is shorter than its opener"
+        offset = line_end
+
+    if fence_start is not None:
+        regions.append(MarkdownRegion(
+            "fenced_code",
+            fence_start,
+            len(text),
+            fence_line,
+            fence_content_start,
+            len(text),
+            fence_character=fence_character,
+            opening_fence_length=fence_length,
+            info_string=fence_info,
+            malformed_reason=fence_problem or "unterminated fenced code block",
+        ))
+    regions.sort(key=lambda region: region.start)
+    return regions
+
+
+def inventory_git_spice_occurrences(text: str, regions: list[MarkdownRegion]) -> list[GitSpiceOccurrence]:
+    occurrences = []
+    for match in re.finditer(re.escape("git-spice"), text):
+        containing = [region for region in regions if region.start <= match.start() and match.end() <= region.end]
+        if len(containing) != 1:
+            raise RuntimeError("git-spice occurrence inventory did not map to exactly one Markdown region")
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        if line_end == -1:
+            line_end = len(text)
+        physical_line = text[line_start:line_end].removesuffix("\r")
+        occurrences.append(GitSpiceOccurrence(
+            match.start(),
+            match.end(),
+            _line_number(text, match.start()),
+            match.start() - line_start + 1,
+            containing[0],
+            physical_line,
+        ))
+    return occurrences
+
+
+def _frontmatter_line(text: str, line_number: int) -> bool:
+    if not text.startswith("---\n"):
+        return False
+    closing = text.find("\n---\n", 4)
+    if closing == -1:
+        return False
+    return line_number <= _line_number(text, closing)
+
+
+def _structured_identifier_reference(text: str, occurrence: GitSpiceOccurrence) -> bool:
+    identifier_characters = "._:/-"
+    before = text[occurrence.start - 1] if occurrence.start else ""
+    after = text[occurrence.end] if occurrence.end < len(text) else ""
+    return bool(
+        (before and (before.isalnum() or before in identifier_characters))
+        or (after and (after.isalnum() or after in identifier_characters))
     )
-    for match in fenced_code.finditer(text):
-        info = match.group("info").strip()
-        language = info.split(maxsplit=1)[0] if info else ""
-        if language in {"bash", "sh", "shell", "zsh"}:
-            snippets.append(match.group("code"))
-    for line in text.splitlines():
-        stripped = line.strip().removeprefix("(").lstrip()
-        if re.match(r"git-spice(?:\s|$)", stripped):
-            snippets.append(line.strip())
-    return [snippet for snippet in snippets if "git-spice" in snippet]
+
+
+def _unquoted_comment_index(line: str) -> int | None:
+    quote = None
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote == "'":
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if character == "\\" and index + 1 < len(line):
+                index += 2
+                continue
+            if character == '"':
+                quote = None
+            index += 1
+            continue
+        if character == "\\" and index + 1 < len(line):
+            index += 2
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character == "#" and (index == 0 or line[index - 1].isspace() or line[index - 1] in ";&|()"):
+            return index
+        index += 1
+    return None
+
+
+def _markdown_content_start(line: str) -> int:
+    index = 0
+    for _ in range(8):
+        match = re.match(r" {0,3}>[ \t]?", line[index:])
+        if not match:
+            break
+        index += match.end()
+    list_prefix = re.match(r" {0,3}(?:[-+*]|\d+[.)])[ \t]+", line[index:])
+    if list_prefix:
+        index += list_prefix.end()
+        task_prefix = re.match(r"\[[ xX]\][ \t]+", line[index:])
+        if task_prefix:
+            index += task_prefix.end()
+    else:
+        leading = re.match(r" {0,3}", line[index:])
+        index += leading.end()
+    return index
+
+
+def _shell_position_reason(line: str, occurrence_column: int) -> str | None:
+    content_start = _markdown_content_start(line)
+    if occurrence_column < content_start:
+        return None
+    prefix = line[content_start:occurrence_column]
+    quote = None
+    escaped = False
+    boundary = 0
+    index = 0
+    while index < len(prefix):
+        character = prefix[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+            index += 1
+            continue
+        if character in ";&|":
+            boundary = index + 1
+            while boundary < len(prefix) and prefix[boundary] in ";&|":
+                boundary += 1
+            index = boundary
+            continue
+        if character == "(":
+            before_parenthesis = prefix[:index].rstrip()
+            if not before_parenthesis or before_parenthesis[-1] in ";&|)(":
+                boundary = index + 1
+            index += 1
+            continue
+        index += 1
+    if quote:
+        return None
+    segment = prefix[boundary:].strip()
+    if not segment:
+        return "shell command position after a Markdown prefix or control boundary"
+    try:
+        segment_tokens = shlex.split(segment, posix=True)
+    except ValueError:
+        return None
+    if segment_tokens and all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token) for token in segment_tokens):
+        return "shell command position after environment assignments"
+    return None
+
+
+def _has_argument_text(line: str, occurrence: GitSpiceOccurrence) -> bool:
+    suffix = line[occurrence.column - 1 + len("git-spice"):]
+    comment = _unquoted_comment_index(suffix)
+    if comment is not None:
+        suffix = suffix[:comment]
+    suffix = suffix.strip()
+    return bool(suffix and suffix[0] not in ".,!?)]}")
+
+
+def _classify(occurrence: GitSpiceOccurrence, classification: str, reason: str) -> GitSpiceOccurrence:
+    if occurrence.classification is not None or occurrence.reason is not None:
+        raise RuntimeError("git-spice occurrence was classified more than once")
+    occurrence.classification = classification
+    occurrence.reason = reason
+    return occurrence
+
+
+def classify_occurrence(text: str, occurrence: GitSpiceOccurrence) -> GitSpiceOccurrence:
+    if occurrence.region.malformed_reason:
+        raise ValueError(occurrence.region.malformed_reason)
+    if _structured_identifier_reference(text, occurrence):
+        return _classify(occurrence, "reference", "identifier-adjacent git-spice reference")
+    if _frontmatter_line(text, occurrence.line):
+        return _classify(occurrence, "reference", "frontmatter metadata reference")
+    if re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", occurrence.physical_line):
+        return _classify(occurrence, "reference", "Markdown heading reference")
+
+    line_offset = occurrence.column - 1
+    comment = _unquoted_comment_index(occurrence.physical_line)
+    if comment is not None and comment <= line_offset:
+        return _classify(occurrence, "reference", "shell comment reference")
+
+    region = occurrence.region
+    if region.kind in {"inline_code", "fenced_code"}:
+        if not (region.content_start <= occurrence.start and occurrence.end <= region.content_end):
+            return _classify(occurrence, "reference", "Markdown code delimiter or fence info-string reference")
+        if region.kind == "inline_code":
+            region_text = text[region.content_start:region.content_end].strip()
+            if region_text == "git-spice":
+                return _classify(occurrence, "reference", "standalone inline code reference")
+        uncommented_line = occurrence.physical_line
+        line_comment = _unquoted_comment_index(uncommented_line)
+        if line_comment is not None:
+            uncommented_line = uncommented_line[:line_comment]
+        if uncommented_line.strip() == "git-spice":
+            return _classify(occurrence, "reference", "standalone fenced code reference")
+        if _has_argument_text(occurrence.physical_line, occurrence):
+            return _classify(occurrence, "executable", "argument-bearing occurrence in a Markdown code region")
+        return _classify(occurrence, "reference", "non-argument-bearing Markdown code reference")
+
+    content_start = _markdown_content_start(occurrence.physical_line)
+    prose_prefix = occurrence.physical_line[content_start:line_offset].lstrip()
+    if (
+        prose_prefix
+        and prose_prefix[0].isupper()
+        and not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", prose_prefix)
+        and any(marker in prose_prefix for marker in ("`", "*", "_"))
+    ):
+        return _classify(occurrence, "reference", "Markdown-formatted prose clause outside a shell command")
+
+    shell_reason = _shell_position_reason(occurrence.physical_line, line_offset)
+    if shell_reason:
+        return _classify(occurrence, "executable", shell_reason)
+    if not _has_argument_text(occurrence.physical_line, occurrence):
+        return _classify(occurrence, "reference", "ordinary non-argument-bearing prose reference")
+
+    content = occurrence.physical_line[content_start:].lstrip()
+    first_letter = re.search(r"[A-Za-z]", content)
+    if content.startswith("|") or (first_letter and first_letter.group(0).isupper()):
+        return _classify(occurrence, "reference", "ordinary capitalized or tabular prose outside shell command position")
+    prefix = occurrence.physical_line[content_start:line_offset].strip()
+    raise ValueError(f"ambiguous argument-bearing occurrence outside shell command position after {prefix!r}")
+
+
+def classify_git_spice_occurrences(text: str, occurrences: list[GitSpiceOccurrence]) -> list[GitSpiceOccurrence]:
+    for occurrence in occurrences:
+        classify_occurrence(text, occurrence)
+    return occurrences
 
 
 def strip_shell_comments(snippet: str) -> str:
@@ -822,18 +1200,37 @@ def is_shell_control_token(token: str) -> bool:
     return bool(token) and all(character in ";&|()" for character in token)
 
 
-def executable_git_spice_invocations(text: str) -> list[list[str]]:
+def _occurrence_source_end(text: str, occurrence: GitSpiceOccurrence) -> int:
+    if occurrence.region.kind in {"inline_code", "fenced_code"}:
+        return occurrence.region.content_end
+    line_end = text.find("\n", occurrence.end)
+    return len(text) if line_end == -1 else line_end
+
+
+def extract_shell_invocations(text: str, executable_occurrences: list[GitSpiceOccurrence]) -> list[list[str]]:
     invocations = []
-    for snippet in executable_snippets(text):
+    for occurrence in executable_occurrences:
+        physical = occurrence.physical_line.strip()
+        if physical.startswith("<") and physical.endswith(">"):
+            snippet = occurrence.physical_line[occurrence.column - 1:].rstrip()[:-1]
+        else:
+            snippet = text[occurrence.start:_occurrence_source_end(text, occurrence)]
         tokens = tokenize_executable_snippet(snippet)
-        for index, token in enumerate(tokens):
-            if token != "git-spice":
-                continue
-            end = index + 1
-            while end < len(tokens) and not is_shell_control_token(tokens[end]):
-                end += 1
-            invocations.append(tokens[index:end])
+        if not tokens or tokens[0] != "git-spice":
+            raise ValueError("argument-bearing git-spice occurrence could not be shell-tokenized as an invocation")
+        end = 1
+        while end < len(tokens) and not is_shell_control_token(tokens[end]):
+            end += 1
+        invocations.append(tokens[:end])
     return invocations
+
+
+def executable_git_spice_invocations(text: str) -> list[list[str]]:
+    regions = scan_markdown_regions(text)
+    occurrences = inventory_git_spice_occurrences(text, regions)
+    classify_git_spice_occurrences(text, occurrences)
+    executable = [occurrence for occurrence in occurrences if occurrence.classification == "executable"]
+    return extract_shell_invocations(text, executable)
 
 
 def executable_git_spice_commands(text: str) -> list[str]:
@@ -882,54 +1279,90 @@ def has_message_argument(arguments: list[str]) -> bool:
     return "--no-commit" in arguments
 
 
-def validate_generated_commands(path: Path, text: str) -> None:
+def validate_git_spice_invocation(raw_arguments: list[str], path: Path | None = None) -> None:
+    arguments, global_flags = parse_git_spice_arguments(raw_arguments)
+    _, signature = classify_git_spice_command(arguments)
+    if "--no-prompt" not in global_flags:
+        raise ValueError("mutation and read-only guidance must be explicitly non-interactive")
+    if signature in {("repo", "init"), ("r", "i")}:
+        if not any(re.fullmatch(r"--trunk=<[^>]+>", argument) for argument in arguments):
+            raise ValueError("repo init requires an explicit trunk")
+        if not any(re.fullmatch(r"--remote=<[^>]+>", argument) for argument in arguments):
+            raise ValueError("repo init requires an explicit remote")
+    if signature in {("branch", "create"), ("bc",)} and not has_message_argument(arguments):
+        raise ValueError("branch creation requires a populated or clean-tree mode")
+    if signature in {("rebase", "continue"), ("rbc",)} and "--no-edit" not in arguments:
+        raise ValueError("rebase continuation requires --no-edit")
+    if signature in {
+        ("branch", "submit"),
+        ("upstack", "submit"),
+        ("downstack", "submit"),
+        ("stack", "submit"),
+        ("<scope>", "submit"),
+        ("bs",),
+        ("dss",),
+        ("uss",),
+        ("ss",),
+    } and "--update-only" not in arguments:
+        if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in arguments):
+            raise ValueError("create-capable submit requires an explicit draft state")
+    if path is not None and path.as_posix() == "agents/stack-doctor.md":
+        required_tracking_targets = {
+            ("branch", "track"): "<branch>",
+            ("downstack", "track"): "<top-branch>",
+        }
+        if signature in required_tracking_targets and required_tracking_targets[signature] not in arguments[len(signature):]:
+            raise ValueError("stack-doctor tracking guidance requires an explicit target")
+    if signature in {("repo", "sync"), ("rs",)}:
+        if not any(argument == "--restack" or re.fullmatch(r"--restack=\S+", argument) for argument in arguments):
+            raise ValueError("repo sync requires an explicit non-empty restack mode")
+
+
+def _occurrence_diagnostic(path: Path, occurrence: GitSpiceOccurrence, detail: str) -> str:
+    excerpt = occurrence.physical_line.strip()
+    if len(excerpt) > 160:
+        excerpt = excerpt[:157] + "..."
+    return (
+        f"Unsafe generated executable git-spice command in {path.as_posix()} "
+        f"at line {occurrence.line}, column {occurrence.column}: {detail}; excerpt={excerpt!r}"
+    )
+
+
+def audit_git_spice_occurrences(path: Path, text: str) -> list[GitSpiceOccurrence]:
+    regions = scan_markdown_regions(text)
     try:
-        invocations = executable_git_spice_invocations(text)
-    except ValueError as error:
-        raise RuntimeError(f"Unsafe generated executable git-spice command in {path.as_posix()}: malformed executable snippet: {error}") from error
-    for tokens in invocations:
-        command = " ".join(tokens)
-        diagnostic = f"Unsafe generated executable git-spice command in {path.as_posix()}: {command!r}"
-        raw_arguments = tokens[1:]
+        occurrences = inventory_git_spice_occurrences(text, regions)
+    except RuntimeError as error:
+        raise RuntimeError(f"git-spice occurrence inventory did not reconcile in {path.as_posix()}: {error}") from error
+
+    for occurrence in occurrences:
         try:
-            arguments, global_flags = parse_git_spice_arguments(raw_arguments)
-            _, signature = classify_git_spice_command(arguments)
+            classify_occurrence(text, occurrence)
         except ValueError as error:
-            raise RuntimeError(diagnostic) from error
-        if "--no-prompt" not in global_flags:
-            raise RuntimeError(diagnostic)
-        if signature in {("repo", "init"), ("r", "i")}:
-            if not any(re.fullmatch(r"--trunk=<[^>]+>", argument) for argument in arguments):
-                raise RuntimeError(diagnostic)
-            if not any(re.fullmatch(r"--remote=<[^>]+>", argument) for argument in arguments):
-                raise RuntimeError(diagnostic)
-        if signature in {("branch", "create"), ("bc",)} and not has_message_argument(arguments):
-            raise RuntimeError(diagnostic)
-        if signature in {("rebase", "continue"), ("rbc",)} and "--no-edit" not in arguments:
-            raise RuntimeError(diagnostic)
-        if signature in {
-            ("branch", "submit"),
-            ("upstack", "submit"),
-            ("downstack", "submit"),
-            ("stack", "submit"),
-            ("<scope>", "submit"),
-            ("bs",),
-            ("dss",),
-            ("uss",),
-            ("ss",),
-        } and "--update-only" not in arguments:
-            if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in arguments):
-                raise RuntimeError(diagnostic)
-        if path.as_posix() == "agents/stack-doctor.md":
-            required_tracking_targets = {
-                ("branch", "track"): "<branch>",
-                ("downstack", "track"): "<top-branch>",
-            }
-            if signature in required_tracking_targets and required_tracking_targets[signature] not in arguments[len(signature):]:
-                raise RuntimeError(diagnostic)
-        if signature in {("repo", "sync"), ("rs",)}:
-            if not any(argument == "--restack" or re.fullmatch(r"--restack=\S+", argument) for argument in arguments):
-                raise RuntimeError(diagnostic)
+            raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"ambiguous occurrence: {error}")) from error
+
+    reference_occurrences = [item for item in occurrences if item.classification == "reference"]
+    executable_occurrences = [item for item in occurrences if item.classification == "executable"]
+    if len(occurrences) != len(reference_occurrences) + len(executable_occurrences):
+        raise RuntimeError(f"git-spice occurrence inventory did not reconcile in {path.as_posix()}")
+    if any(not occurrence.reason for occurrence in occurrences):
+        raise RuntimeError(f"git-spice occurrence classification is missing a reason in {path.as_posix()}")
+
+    for occurrence in executable_occurrences:
+        try:
+            invocation = extract_shell_invocations(text, [occurrence])[0]
+        except (IndexError, ValueError) as error:
+            raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"malformed executable occurrence: {error}")) from error
+        command = " ".join(invocation)
+        try:
+            validate_git_spice_invocation(invocation[1:], path)
+        except ValueError as error:
+            raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"{command!r}: {error}")) from error
+    return occurrences
+
+
+def validate_generated_commands(path: Path, text: str) -> None:
+    audit_git_spice_occurrences(path, text)
 
 
 def validate_generated_tree(temporary_root: Path) -> None:

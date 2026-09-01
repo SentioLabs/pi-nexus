@@ -98,6 +98,29 @@ test("package command audit extracts bare unknown commands without known-prefix 
   assert.deepEqual(executableGitSpiceCommands("git-spice --verbose future mutate"), ["git-spice --verbose future mutate"]);
 });
 
+test("committed runtime occurrence inventories reconcile and validate independently", () => {
+  const probe = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "root = pathlib.Path(sys.argv[2])",
+    "result = {}",
+    "for relative in sys.argv[3:]:",
+    "    occurrences = module.audit_git_spice_occurrences(pathlib.Path(relative), (root / relative).read_text(encoding='utf8'))",
+    "    result[relative] = {'inventory': len(occurrences), 'references': sum(item.classification == 'reference' for item in occurrences), 'executables': sum(item.classification == 'executable' for item in occurrences), 'reasons': [item.reason for item in occurrences]}",
+    "print(json.dumps(result))",
+  ].join("\n");
+  const audit = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, packageRoot, ...runtimePaths], { encoding: "utf8" }));
+  for (const relative of runtimePaths) {
+    const result = audit[relative];
+    assert.ok(result.inventory > 0, `${relative} inventories git-spice occurrences`);
+    assert.equal(result.inventory, result.references + result.executables, `${relative} reconciles every occurrence`);
+    assert.ok(result.executables > 0, `${relative} validates executable guidance`);
+    assert.ok(result.reasons.every((reason) => reason.length > 0), `${relative} records every classification reason`);
+  }
+});
+
 test("package exposes the exact Pi git-spice runtime", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "@sentiolabs/pi-git-spice");

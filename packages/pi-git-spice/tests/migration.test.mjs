@@ -594,6 +594,118 @@ const generatedTreeProbe = (body) => [
   "module.validate_generated_tree(generated)",
 ].join("\n");
 
+const unsafeContextCases = [
+  ["bare line", "git-spice future mutate"],
+  ["list prefix", "- git-spice future mutate"],
+  ["quote prefix", "> git-spice future mutate"],
+  ["and chain", "true && git-spice future mutate"],
+  ["uppercase arbitrary shell text", "TRUE && git-spice future mutate"],
+  ["or chain", "false || git-spice future mutate"],
+  ["semicolon", "true; git-spice future mutate"],
+  ["pipeline", "printf x | git-spice future mutate"],
+  ["subshell", "(git-spice future mutate)"],
+  ["environment", "MODE=test git-spice future mutate"],
+  ["environment with Markdown-like value", "MODE=some_value git-spice future mutate"],
+  ["inline one tick", "`git-spice future mutate`"],
+  ["inline two ticks", "``git-spice future mutate``"],
+  ["unlabeled fence", "```\ngit-spice future mutate\n```"],
+  ["text fence", "```text\ngit-spice future mutate\n```"],
+  ["misleading fence", "```json\ngit-spice future mutate\n```"],
+  ["longer closer", "```bash\ntrue && git-spice future mutate\n````"],
+  ["tilde fence", "~~~text\ngit-spice future mutate\n~~~~"],
+  ["comment prior line", "# ignored\ngit-spice future mutate"],
+  ["inline comment then later", "true # ignored\ngit-spice future mutate"],
+];
+
+const runUnsafeSourceMigration = (snippet) => {
+  const relative = "commands/stack.md";
+  const source = createSourceFixture({ [relative]: `${sourceFiles()[relative]}\n${snippet}\n` });
+  const packageCopy = createTemporaryPackage();
+  const sentinels = installedSentinels(packageCopy.root);
+  return { packageCopy, result: runMigration(packageCopy.script, source, packageCopy.root), sentinels };
+};
+
+const assertDiscoveryFailureBeforeMutation = (snippet) => {
+  const { packageCopy, result, sentinels } = runUnsafeSourceMigration(snippet);
+  assert.notEqual(result.status, 0, `unsafe snippet unexpectedly passed:\n${snippet}`);
+  assert.match(result.stderr, /prompts\/git-spice-stack\.md/);
+  assert.match(result.stderr, /line \d+, column \d+/);
+  assert.match(result.stderr, /excerpt=.*git-spice/);
+  assertRollback(packageCopy.root, sentinels);
+};
+
+for (const [name, snippet] of unsafeContextCases) {
+  test(`whole-document inventory rejects unsafe ${name} context before mutation`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet);
+  });
+}
+
+test("review blocker: command after arbitrary shell text is inventoried", () => {
+  assertDiscoveryFailureBeforeMutation("true && git-spice future mutate");
+});
+
+test("review blocker: longer closing fence retains unsafe fenced command", () => {
+  assertDiscoveryFailureBeforeMutation("```bash\ntrue && git-spice future mutate\n````");
+});
+
+const totalAccountingUnsafeCases = [
+  ["unsafe before safe invocation", "`git-spice future mutate && git-spice --no-prompt log long`"],
+  ["unsafe after safe invocation", "`git-spice --no-prompt log long && git-spice future mutate`"],
+  ["unknown with global flag before command", "`git-spice --verbose --no-prompt future mutate`"],
+  ["unknown with global flags interspersed", "`git-spice --verbose future --no-prompt mutate`"],
+  ["unknown with no-prompt final", "`git-spice --verbose future mutate --no-prompt`"],
+  ["first invocation in snippet", "`git-spice future mutate; git-spice --no-prompt log long; git-spice --no-prompt auth status`"],
+  ["middle invocation in snippet", "`git-spice --no-prompt log long; git-spice future mutate; git-spice --no-prompt auth status`"],
+  ["final invocation in snippet", "`git-spice --no-prompt log long; git-spice --no-prompt auth status; git-spice future mutate`"],
+  ["multiple inline and fenced regions", "`git-spice --no-prompt log long`\n\n```text\ngit-spice --no-prompt auth status\n```\n\n``git-spice future mutate``"],
+  ["quoted comment marker", "```bash\nprintf '%s\\n' '# still data' && git-spice future mutate\n```"],
+  ["comment-only prior line", "```bash\n# git-spice future mutate is ignored in this comment\ngit-spice future mutate\n```"],
+  ["pipeline and subshell", "```bash\nprintf x | (git-spice future mutate)\n```"],
+  ["continued command", "```bash\ntrue && \\\n  git-spice future mutate\n```"],
+  ["shorter closing fence", "````text\ngit-spice future mutate\n```"],
+  ["mismatched closing fence", "```text\ngit-spice future mutate\n~~~"],
+  ["unterminated fence", "```text\ngit-spice future mutate"],
+  ["ambiguous wrapper", "sudo git-spice future mutate"],
+  ["ambiguous multi-token wrapper", "sudo -u root git-spice future mutate"],
+];
+
+for (const [name, snippet] of totalAccountingUnsafeCases) {
+  test(`occurrence accounting rejects ${name} before mutation`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet);
+  });
+}
+
+test("inventory classifies every reference and executable occurrence exactly once with a reason", () => {
+  const packageCopy = createTemporaryPackage();
+  const text = [
+    "---",
+    "name: git-spice",
+    "---",
+    "# git-spice",
+    "The git-spice CLI tracks stacks.",
+    "`git-spice`",
+    "`git-spice --no-prompt log long`",
+    "Dispatch git-spice.stacker.",
+    "Use /git-spice-stack.",
+  ].join("\n");
+  const python = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    `text = ${JSON.stringify(text)}`,
+    "occurrences = module.audit_git_spice_occurrences(pathlib.Path('prompts/accounting.md'), text)",
+    "print(json.dumps([{'classification': item.classification, 'reason': item.reason, 'line': item.line, 'column': item.column} for item in occurrences]))",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const occurrences = JSON.parse(result.stdout);
+  assert.equal(occurrences.length, 7);
+  assert.equal(occurrences.filter(({ classification }) => classification === "reference").length, 6);
+  assert.equal(occurrences.filter(({ classification }) => classification === "executable").length, 1);
+  assert.ok(occurrences.every(({ classification, reason }) => ["reference", "executable"].includes(classification) && reason.length > 0));
+});
+
 for (const [name, unsafeCommand] of [
   ["bare mutation", "git-spice branch restack"],
   ["branch creation without commit mode", "git-spice --no-prompt branch create <name>"],
