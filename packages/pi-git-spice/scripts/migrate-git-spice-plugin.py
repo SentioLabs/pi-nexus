@@ -670,6 +670,7 @@ def transform_git_spice_skill(text: str) -> str:
     body = require_replace(body, "git-spice is a CLI for managing **stacks of dependent Git branches**.", "The git-spice CLI manages **stacks of dependent Git branches**.", context)
     body = require_replace(body, "git-spice operations are *local-first*.", "The git-spice CLI's operations are *local-first*.", context)
     body = require_replace(body, "git-spice rebases run `git rebase` under the hood.", "The git-spice CLI runs `git rebase` under the hood.", context)
+    body = body.replace("git-spice won't auto-advance", "`git-spice` won't auto-advance")
     body = transform_prompt_references(body, context)
     body = transform_executable_guidance(body, context)
     body = body.rstrip() + "\n\n" + INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + SUBMIT_DRAFT_CONTRACT.rstrip()
@@ -959,6 +960,10 @@ def _structured_identifier_reference(text: str, occurrence: GitSpiceOccurrence) 
     )
 
 
+def _possessive_reference(text: str, occurrence: GitSpiceOccurrence) -> bool:
+    return text[occurrence.end:occurrence.end + 2] in {"'s", "’s"}
+
+
 def _unquoted_comment_index(line: str) -> int | None:
     quote = None
     index = 0
@@ -1073,6 +1078,40 @@ def _has_argument_text(line: str, occurrence: GitSpiceOccurrence) -> bool:
     return bool(suffix and suffix[0] not in ".,!?)]}")
 
 
+def _contains_shell_wrapper(prefix: str) -> bool:
+    wrapper_tokens = {"command", "env", "exec", "nohup", "sudo", "time", "xargs"}
+    words = re.findall(r"(?<![A-Za-z0-9_-])[A-Za-z][A-Za-z0-9_-]*(?![A-Za-z0-9_-])", prefix)
+    return any(word in wrapper_tokens for word in words)
+
+
+def _prose_reference_reason(text: str, occurrence: GitSpiceOccurrence) -> str | None:
+    line = occurrence.physical_line
+    line_offset = occurrence.column - 1
+    content_start = _markdown_content_start(line)
+    prefix = line[content_start:line_offset]
+    if _contains_shell_wrapper(prefix):
+        return None
+
+    line_start = occurrence.start - line_offset
+    region_suffix = text[occurrence.end:occurrence.region.end]
+    if (
+        line[content_start:].startswith("|")
+        and region_suffix.rstrip().endswith("|")
+        and occurrence.region.end < line_start + len(line)
+        and text[occurrence.region.end] == "`"
+    ):
+        return "descriptive Markdown table cell separated from an inline code region"
+
+    uncommented = line
+    comment = _unquoted_comment_index(uncommented)
+    if comment is not None:
+        uncommented = uncommented[:comment]
+    sentence_end = uncommented.rstrip().rstrip("`*_~")
+    if sentence_end.endswith((".", "!", "?", ":")):
+        return "complete prose sentence outside shell command position"
+    return None
+
+
 def _classify(occurrence: GitSpiceOccurrence, classification: str, reason: str) -> GitSpiceOccurrence:
     if occurrence.classification is not None or occurrence.reason is not None:
         raise RuntimeError("git-spice occurrence was classified more than once")
@@ -1086,10 +1125,15 @@ def classify_occurrence(text: str, occurrence: GitSpiceOccurrence) -> GitSpiceOc
         raise ValueError(occurrence.region.malformed_reason)
     if _structured_identifier_reference(text, occurrence):
         return _classify(occurrence, "reference", "identifier-adjacent git-spice reference")
+    if _possessive_reference(text, occurrence):
+        return _classify(occurrence, "reference", "grammatical possessive git-spice reference")
     if _frontmatter_line(text, occurrence.line):
         return _classify(occurrence, "reference", "frontmatter metadata reference")
-    if re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", occurrence.physical_line):
-        return _classify(occurrence, "reference", "Markdown heading reference")
+    if (
+        re.match(r" {0,3}#{1,6}(?:[ \t]+|$)", occurrence.physical_line)
+        and not _has_argument_text(occurrence.physical_line, occurrence)
+    ):
+        return _classify(occurrence, "reference", "standalone Markdown heading reference")
 
     line_offset = occurrence.column - 1
     comment = _unquoted_comment_index(occurrence.physical_line)
@@ -1115,25 +1159,15 @@ def classify_occurrence(text: str, occurrence: GitSpiceOccurrence) -> GitSpiceOc
         return _classify(occurrence, "reference", "non-argument-bearing Markdown code reference")
 
     content_start = _markdown_content_start(occurrence.physical_line)
-    prose_prefix = occurrence.physical_line[content_start:line_offset].lstrip()
-    if (
-        prose_prefix
-        and prose_prefix[0].isupper()
-        and not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", prose_prefix)
-        and any(marker in prose_prefix for marker in ("`", "*", "_"))
-    ):
-        return _classify(occurrence, "reference", "Markdown-formatted prose clause outside a shell command")
-
     shell_reason = _shell_position_reason(occurrence.physical_line, line_offset)
     if shell_reason:
         return _classify(occurrence, "executable", shell_reason)
     if not _has_argument_text(occurrence.physical_line, occurrence):
         return _classify(occurrence, "reference", "ordinary non-argument-bearing prose reference")
 
-    content = occurrence.physical_line[content_start:].lstrip()
-    first_letter = re.search(r"[A-Za-z]", content)
-    if content.startswith("|") or (first_letter and first_letter.group(0).isupper()):
-        return _classify(occurrence, "reference", "ordinary capitalized or tabular prose outside shell command position")
+    prose_reason = _prose_reference_reason(text, occurrence)
+    if prose_reason:
+        return _classify(occurrence, "reference", prose_reason)
     prefix = occurrence.physical_line[content_start:line_offset].strip()
     raise ValueError(f"ambiguous argument-bearing occurrence outside shell command position after {prefix!r}")
 
@@ -1200,11 +1234,30 @@ def is_shell_control_token(token: str) -> bool:
     return bool(token) and all(character in ";&|()" for character in token)
 
 
+def _physical_line_continues(line: str) -> bool:
+    comment = _unquoted_comment_index(line)
+    if comment is not None:
+        line = line[:comment]
+    trailing_backslashes = len(line) - len(line.rstrip("\\"))
+    return trailing_backslashes % 2 == 1
+
+
+def _continued_prose_source_end(text: str, occurrence: GitSpiceOccurrence) -> int:
+    line_start = occurrence.start - (occurrence.column - 1)
+    while True:
+        line_end = text.find("\n", line_start)
+        if line_end == -1:
+            return len(text)
+        physical_line = text[line_start:line_end].removesuffix("\r")
+        if not _physical_line_continues(physical_line):
+            return line_end
+        line_start = line_end + 1
+
+
 def _occurrence_source_end(text: str, occurrence: GitSpiceOccurrence) -> int:
     if occurrence.region.kind in {"inline_code", "fenced_code"}:
         return occurrence.region.content_end
-    line_end = text.find("\n", occurrence.end)
-    return len(text) if line_end == -1 else line_end
+    return _continued_prose_source_end(text, occurrence)
 
 
 def extract_shell_invocations(text: str, executable_occurrences: list[GitSpiceOccurrence]) -> list[list[str]]:
@@ -1318,14 +1371,43 @@ def validate_git_spice_invocation(raw_arguments: list[str], path: Path | None = 
             raise ValueError("repo sync requires an explicit non-empty restack mode")
 
 
-def _occurrence_diagnostic(path: Path, occurrence: GitSpiceOccurrence, detail: str) -> str:
-    excerpt = occurrence.physical_line.strip()
+def _trimmed_excerpt(text: str) -> str:
+    excerpt = text.strip()
     if len(excerpt) > 160:
         excerpt = excerpt[:157] + "..."
+    return excerpt
+
+
+def _occurrence_diagnostic(path: Path, occurrence: GitSpiceOccurrence, detail: str) -> str:
     return (
         f"Unsafe generated executable git-spice command in {path.as_posix()} "
-        f"at line {occurrence.line}, column {occurrence.column}: {detail}; excerpt={excerpt!r}"
+        f"at line {occurrence.line}, column {occurrence.column}: {detail}; "
+        f"excerpt={_trimmed_excerpt(occurrence.physical_line)!r}"
     )
+
+
+def _inventory_diagnostic(
+    path: Path,
+    text: str,
+    detail: str,
+    occurrence: GitSpiceOccurrence | None = None,
+) -> str:
+    if occurrence is not None:
+        return (
+            f"{detail} in {path.as_posix()} at line {occurrence.line}, column {occurrence.column}; "
+            f"excerpt={_trimmed_excerpt(occurrence.physical_line)!r}"
+        )
+    offset = text.find("git-spice")
+    if offset != -1:
+        line_start = text.rfind("\n", 0, offset) + 1
+        line_end = text.find("\n", offset)
+        if line_end == -1:
+            line_end = len(text)
+        return (
+            f"{detail} in {path.as_posix()} at line {_line_number(text, offset)}, "
+            f"column {offset - line_start + 1}; excerpt={_trimmed_excerpt(text[line_start:line_end])!r}"
+        )
+    return f"{detail} in {path.as_posix()}; excerpt={_trimmed_excerpt(text)!r}"
 
 
 def audit_git_spice_occurrences(path: Path, text: str) -> list[GitSpiceOccurrence]:
@@ -1333,20 +1415,39 @@ def audit_git_spice_occurrences(path: Path, text: str) -> list[GitSpiceOccurrenc
     try:
         occurrences = inventory_git_spice_occurrences(text, regions)
     except RuntimeError as error:
-        raise RuntimeError(f"git-spice occurrence inventory did not reconcile in {path.as_posix()}: {error}") from error
+        raise RuntimeError(_inventory_diagnostic(
+            path,
+            text,
+            f"git-spice occurrence inventory did not reconcile: {error}",
+        )) from error
 
     for occurrence in occurrences:
         try:
             classify_occurrence(text, occurrence)
-        except ValueError as error:
+        except (RuntimeError, ValueError) as error:
             raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"ambiguous occurrence: {error}")) from error
 
     reference_occurrences = [item for item in occurrences if item.classification == "reference"]
     executable_occurrences = [item for item in occurrences if item.classification == "executable"]
     if len(occurrences) != len(reference_occurrences) + len(executable_occurrences):
-        raise RuntimeError(f"git-spice occurrence inventory did not reconcile in {path.as_posix()}")
-    if any(not occurrence.reason for occurrence in occurrences):
-        raise RuntimeError(f"git-spice occurrence classification is missing a reason in {path.as_posix()}")
+        unaccounted = next(
+            (item for item in occurrences if item.classification not in {"reference", "executable"}),
+            occurrences[0] if occurrences else None,
+        )
+        raise RuntimeError(_inventory_diagnostic(
+            path,
+            text,
+            "git-spice occurrence inventory did not reconcile",
+            unaccounted,
+        ))
+    missing_reason = next((occurrence for occurrence in occurrences if not occurrence.reason), None)
+    if missing_reason is not None:
+        raise RuntimeError(_inventory_diagnostic(
+            path,
+            text,
+            "git-spice occurrence classification is missing a reason",
+            missing_reason,
+        ))
 
     for occurrence in executable_occurrences:
         try:

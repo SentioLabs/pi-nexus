@@ -170,7 +170,7 @@ Workflow during a conflict:
 1. Edit conflicted files, `git add` them.
 2. Run `git-spice --no-prompt rebase continue --no-edit`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).
 
-Using raw `git rebase --continue` works for the *current* rebase only; git-spice won't auto-advance to the next branch in a multi-step operation.
+Using raw `git rebase --continue` works for the *current* rebase only; `git-spice` won't auto-advance to the next branch in a multi-step operation.
 
 ## Common workflows
 

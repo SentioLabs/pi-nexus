@@ -606,6 +606,10 @@ const unsafeContextCases = [
   ["subshell", "(git-spice future mutate)"],
   ["environment", "MODE=test git-spice future mutate"],
   ["environment with Markdown-like value", "MODE=some_value git-spice future mutate"],
+  ["capitalized wrapper", "Use sudo git-spice future mutate"],
+  ["capitalized wrapper in a list", "- Use sudo git-spice future mutate"],
+  ["Markdown-formatted capitalized wrapper", "Use **sudo** git-spice future mutate"],
+  ["tabular capitalized wrapper", "| Use sudo git-spice future mutate |"],
   ["inline one tick", "`git-spice future mutate`"],
   ["inline two ticks", "``git-spice future mutate``"],
   ["unlabeled fence", "```\ngit-spice future mutate\n```"],
@@ -648,6 +652,10 @@ test("review blocker: longer closing fence retains unsafe fenced command", () =>
   assertDiscoveryFailureBeforeMutation("```bash\ntrue && git-spice future mutate\n````");
 });
 
+test("review blocker: capitalized prose cannot hide an ambiguous wrapper invocation", () => {
+  assertDiscoveryFailureBeforeMutation("Use sudo git-spice future mutate");
+});
+
 const totalAccountingUnsafeCases = [
   ["unsafe before safe invocation", "`git-spice future mutate && git-spice --no-prompt log long`"],
   ["unsafe after safe invocation", "`git-spice --no-prompt log long && git-spice future mutate`"],
@@ -662,6 +670,8 @@ const totalAccountingUnsafeCases = [
   ["comment-only prior line", "```bash\n# git-spice future mutate is ignored in this comment\ngit-spice future mutate\n```"],
   ["pipeline and subshell", "```bash\nprintf x | (git-spice future mutate)\n```"],
   ["continued command", "```bash\ntrue && \\\n  git-spice future mutate\n```"],
+  ["own arguments continued to an unknown command", "git-spice --no-prompt branch \\\n  future mutate"],
+  ["continued safe command followed by an unknown invocation after a comment", "git-spice --no-prompt branch \\\n  restack # safe first invocation\ngit-spice --no-prompt future mutate"],
   ["shorter closing fence", "````text\ngit-spice future mutate\n```"],
   ["mismatched closing fence", "```text\ngit-spice future mutate\n~~~"],
   ["unterminated fence", "```text\ngit-spice future mutate"],
@@ -687,6 +697,8 @@ test("inventory classifies every reference and executable occurrence exactly onc
     "`git-spice --no-prompt log long`",
     "Dispatch git-spice.stacker.",
     "Use /git-spice-stack.",
+    "Initialize git-spice for this repository.",
+    "git-spice's tracking metadata remains local.",
   ].join("\n");
   const python = [
     "import importlib.util, json, pathlib, sys",
@@ -700,11 +712,38 @@ test("inventory classifies every reference and executable occurrence exactly onc
   const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   const occurrences = JSON.parse(result.stdout);
-  assert.equal(occurrences.length, 7);
-  assert.equal(occurrences.filter(({ classification }) => classification === "reference").length, 6);
+  assert.equal(occurrences.length, 9);
+  assert.equal(occurrences.filter(({ classification }) => classification === "reference").length, 8);
   assert.equal(occurrences.filter(({ classification }) => classification === "executable").length, 1);
   assert.ok(occurrences.every(({ classification, reason }) => ["reference", "executable"].includes(classification) && reason.length > 0));
+  assert.ok(occurrences.every(({ reason }) => !/capitalized|tabular|Markdown-formatted|cue word/i.test(reason)), "classification reasons are structural");
 });
+
+for (const [failure, classifyBody, diagnostic] of [
+  ["inventory mapping", "raise RuntimeError('forced inventory mapping failure')", /inventory did not reconcile/],
+  ["reconciliation invariant", "result = original(text, occurrences); result.classification = 'other'; result.reason = 'forced accounting gap'; return result", /inventory did not reconcile/],
+  ["missing-reason invariant", "result = original(text, occurrences); result.reason = None; return result", /classification is missing a reason/],
+]) {
+  test(`${failure} diagnostics include target path and source location`, () => {
+    const packageCopy = createTemporaryPackage();
+    const python = [
+      "import importlib.util, pathlib, sys",
+      "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+      "module = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(module)",
+      "text = 'git-spice --no-prompt log long\\n'",
+      failure === "inventory mapping"
+        ? "def forced_inventory(text, regions):\n    raise RuntimeError('forced inventory mapping failure')\nmodule.inventory_git_spice_occurrences = forced_inventory"
+        : `original = module.classify_occurrence\ndef forced_classify(text, occurrences):\n    ${classifyBody}\nmodule.classify_occurrence = forced_classify`,
+      "module.audit_git_spice_occurrences(pathlib.Path('prompts/diagnostic.md'), text)",
+    ].join("\n");
+    const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, diagnostic);
+    assert.match(result.stderr, /prompts\/diagnostic\.md/);
+    assert.match(result.stderr, /line 1, column 1|excerpt=.*git-spice/);
+  });
+}
 
 for (const [name, unsafeCommand] of [
   ["bare mutation", "git-spice branch restack"],
@@ -735,6 +774,8 @@ const adversarialGeneratedSnippets = [
   ["bare unknown command after global option", "prompts/git-spice-stack.md", "git-spice --verbose future mutate"],
   ["bare unknown command with no-prompt after command", "prompts/git-spice-stack.md", "git-spice future --no-prompt mutate"],
   ["bare unknown command already containing no-prompt", "prompts/git-spice-stack.md", "git-spice --no-prompt future mutate"],
+  ["capitalized wrapper unknown invocation", "prompts/git-spice-stack.md", "Use sudo git-spice future mutate"],
+  ["own arguments continuation unknown invocation", "prompts/git-spice-stack.md", "git-spice --no-prompt branch \\\n  future mutate"],
   ["prompt && unknown second invocation", "prompts/git-spice-stack.md", "`git-spice --no-prompt log long && git-spice --no-prompt future mutate`"],
   ["prompt || unsafe second invocation", "prompts/git-spice-stack.md", "`git-spice --no-prompt log long || git-spice branch restack`"],
   ["prompt multi-backtick unknown later invocation", "prompts/git-spice-stack.md", "``git-spice --no-prompt log long && git-spice --no-prompt future mutate``"],
@@ -771,6 +812,19 @@ test("generated runtime validation classifies commands with interspersed global 
   const result = runProbe(generatedTreeProbe(`target = generated / 'prompts/git-spice-stack.md'\ntarget.write_text(target.read_text() + ${fragment})`), packageCopy, source);
   assert.equal(result.status, 0, result.stderr);
 });
+
+for (const [name, snippet] of [
+  ["own arguments continuation", "git-spice --no-prompt branch \\\n  restack"],
+  ["own arguments continuation with physical-line comments", "# comment before the invocation\ngit-spice --no-prompt branch \\\n  restack # trailing comment"],
+]) {
+  test(`generated runtime validation accepts safe ${name}`, () => {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const fragment = JSON.stringify(`\n${snippet}\n`);
+    const result = runProbe(generatedTreeProbe(`target = generated / 'prompts/git-spice-stack.md'\ntarget.write_text(target.read_text() + ${fragment})`), packageCopy, source);
+    assert.equal(result.status, 0, result.stderr);
+  });
+}
 
 const installationProbe = (injection) => [
   "import importlib.util, pathlib, sys",

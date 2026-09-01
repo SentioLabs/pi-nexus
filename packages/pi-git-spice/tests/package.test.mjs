@@ -45,6 +45,18 @@ const runtimePaths = [
   ...expectedSkills.map((name) => `skills/${name}/SKILL.md`),
   ...expectedAgents.map((name) => `agents/${name}`),
 ];
+const expectedPackedPaths = [
+  "CHANGELOG.md",
+  "LICENSE",
+  "README.md",
+  ...runtimePaths,
+  "extensions/git-spice-workflow.ts",
+  "package.json",
+  "src/adapters/command-runner.ts",
+  "src/adapters/git.ts",
+  "src/core/contracts.ts",
+  "src/core/ports.ts",
+].sort();
 
 const executableSnippets = (text) => {
   const bareCommands = text.split("\n").map((line) => line.trim()).filter((line) => /^\(?\s*git-spice(?:\s|$)/.test(line));
@@ -118,6 +130,7 @@ test("committed runtime occurrence inventories reconcile and validate independen
     assert.equal(result.inventory, result.references + result.executables, `${relative} reconciles every occurrence`);
     assert.ok(result.executables > 0, `${relative} validates executable guidance`);
     assert.ok(result.reasons.every((reason) => reason.length > 0), `${relative} records every classification reason`);
+    assert.ok(result.reasons.every((reason) => !/capitalized|tabular|Markdown-formatted|cue word/i.test(reason)), `${relative} uses structural classification reasons`);
   }
 });
 
@@ -285,16 +298,9 @@ test("npm pack contains the exact generated runtime and no maintainer tooling", 
   }));
   assert.equal(packed.length, 1);
   const paths = new Set(packed[0].files.map(({ path }) => path));
-  for (const runtimePath of runtimeManifest) {
-    assert.equal(paths.has(runtimePath), true, `${runtimePath} should be packed`);
-  }
-  for (const runtimePath of [
-    "extensions/git-spice-workflow.ts",
-    "src/core/contracts.ts",
-    "src/core/ports.ts",
-  ]) {
-    assert.equal(paths.has(runtimePath), true, `${runtimePath} should be packed`);
-  }
+  assert.equal(paths.size, 20);
+  assert.deepEqual([...paths].sort(), expectedPackedPaths);
+  assert.deepEqual([...runtimeManifest].sort(), [...runtimePaths].sort(), "the exact 11 generated resources remain packed");
   assert.equal([...paths].some((p) => p.startsWith("scripts/") || p.startsWith("tests/") || p.startsWith(".pi/")), false);
   assert.deepEqual(
     [...paths].filter((p) => p.startsWith("agents/") || p.startsWith("prompts/") || p.startsWith("skills/")).sort(),
