@@ -105,9 +105,33 @@ const classifyGitSpiceCommand = (command) => {
   return null;
 };
 
+const approvedStructuralReferenceReasons = new Set([
+  "exact package or skill identifier",
+  "exact standalone fenced code token",
+  "exact standalone inline code token",
+  "identifier-adjacent git-spice reference",
+  "shell comment reference",
+]);
+
+const assertApprovedReferenceReasons = (relative, reasons, proseReferenceReason) => {
+  for (const reason of reasons) {
+    assert.ok(
+      approvedStructuralReferenceReasons.has(reason) || reason === proseReferenceReason,
+      `${relative} has unapproved git-spice reference reason: ${JSON.stringify(reason)}`,
+    );
+  }
+};
+
 test("package command audit extracts bare unknown commands without known-prefix filtering", () => {
   assert.deepEqual(executableGitSpiceCommands("git-spice future mutate"), ["git-spice future mutate"]);
   assert.deepEqual(executableGitSpiceCommands("git-spice --verbose future mutate"), ["git-spice --verbose future mutate"]);
+});
+
+test("positive occurrence audit rejects an unapproved generic reference reason", () => {
+  assert.throws(
+    () => assertApprovedReferenceReasons("synthetic.md", ["generic prose heuristic"], "manifest reason"),
+    /unapproved git-spice reference reason/,
+  );
 });
 
 test("committed runtime occurrence inventories reconcile and validate independently", () => {
@@ -120,7 +144,7 @@ test("committed runtime occurrence inventories reconcile and validate independen
     "result = {}",
     "for relative in sys.argv[3:]:",
     "    occurrences = module.audit_git_spice_occurrences(pathlib.Path(relative), (root / relative).read_text(encoding='utf8'))",
-    "    result[relative] = {'inventory': len(occurrences), 'references': sum(item.classification == 'reference' for item in occurrences), 'executables': sum(item.classification == 'executable' for item in occurrences), 'reasons': [item.reason for item in occurrences]}",
+    "    result[relative] = {'inventory': len(occurrences), 'references': sum(item.classification == 'reference' for item in occurrences), 'executables': sum(item.classification == 'executable' for item in occurrences), 'reasons': [item.reason for item in occurrences], 'referenceReasons': [item.reason for item in occurrences if item.classification == 'reference'], 'proseReferenceReason': module.PROSE_REFERENCE_REASON}",
     "print(json.dumps(result))",
   ].join("\n");
   const audit = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, packageRoot, ...runtimePaths], { encoding: "utf8" }));
@@ -130,7 +154,7 @@ test("committed runtime occurrence inventories reconcile and validate independen
     assert.equal(result.inventory, result.references + result.executables, `${relative} reconciles every occurrence`);
     assert.ok(result.executables > 0, `${relative} validates executable guidance`);
     assert.ok(result.reasons.every((reason) => reason.length > 0), `${relative} records every classification reason`);
-    assert.ok(result.reasons.every((reason) => !/capitalized|tabular|Markdown-formatted|cue word|frontmatter|heading|punctuation/i.test(reason)), `${relative} uses mechanical or manifest-backed classification reasons`);
+    assertApprovedReferenceReasons(relative, result.referenceReasons, result.proseReferenceReason);
   }
 });
 

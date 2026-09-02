@@ -1120,14 +1120,12 @@ def _has_argument_text(line: str, occurrence: GitSpiceOccurrence) -> bool:
     comment = _unquoted_comment_index(suffix)
     if comment is not None:
         suffix = suffix[:comment]
-    suffix = suffix.strip()
-    return bool(suffix and suffix[0] not in ".,!?)]}")
+    return bool(suffix.strip())
 
 
 def _code_region_has_argument_text(text: str, occurrence: GitSpiceOccurrence) -> bool:
     if occurrence.region.kind == "inline_code":
-        suffix = text[occurrence.end:occurrence.region.content_end].strip()
-        return bool(suffix and suffix[0] not in ".,!?)]}")
+        return bool(text[occurrence.end:occurrence.region.content_end].strip())
     return _has_argument_text(occurrence.physical_line, occurrence)
 
 

@@ -649,12 +649,13 @@ const runUnsafeSourceMigration = (snippet) => {
   return { packageCopy, result: runMigration(packageCopy.script, source, packageCopy.root), sentinels };
 };
 
-const assertDiscoveryFailureBeforeMutation = (snippet) => {
+const assertDiscoveryFailureBeforeMutation = (snippet, diagnostic = null) => {
   const { packageCopy, result, sentinels } = runUnsafeSourceMigration(snippet);
   assert.notEqual(result.status, 0, `unsafe snippet unexpectedly passed:\n${snippet}`);
   assert.match(result.stderr, /prompts\/git-spice-stack\.md/);
   assert.match(result.stderr, /line \d+, column \d+/);
   assert.match(result.stderr, /excerpt=.*git-spice/);
+  if (diagnostic) assert.match(result.stderr, diagnostic);
   assertRollback(packageCopy.root, sentinels);
 };
 
@@ -671,6 +672,19 @@ test("review blocker: command after arbitrary shell text is inventoried", () => 
 test("review blocker: longer closing fence retains unsafe fenced command", () => {
   assertDiscoveryFailureBeforeMutation("```bash\ntrue && git-spice future mutate\n````");
 });
+
+for (const [name, snippet] of [
+  ["inline period argument", "`git-spice .`"],
+  ["inline question-mark argument", "`git-spice ?`"],
+  ["inline closing-parenthesis argument", "`git-spice )`"],
+  ["fenced period argument", "```text\ngit-spice .\n```"],
+  ["fenced question-mark argument", "```text\ngit-spice ?\n```"],
+  ["fenced closing-parenthesis argument", "```text\ngit-spice )\n```"],
+]) {
+  test(`code-region punctuation reaches command validation for ${name}`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand/);
+  });
+}
 
 test("review blocker: capitalized prose cannot hide an ambiguous wrapper invocation", () => {
   assertDiscoveryFailureBeforeMutation("Use sudo git-spice future mutate");
