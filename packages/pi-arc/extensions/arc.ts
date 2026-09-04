@@ -24,6 +24,7 @@ import {
   normalizeArcModelsConfig,
   resolveArcModelProfile,
   resolveArcModelsConfigPath,
+  resolveSupportedArcThinkingLevel,
   saveArcModelsConfig,
   toArcModelInfo,
 } from "./arc/model-profiles.ts";
@@ -126,7 +127,7 @@ const DEFAULT_ARC_MODEL_TIERS: ArcModelTierMap = {
   nano: "openai-codex/gpt-5.6-luna",
   small: "openai-codex/gpt-5.6-luna",
   standard: "openai-codex/gpt-5.6-terra",
-  large: "openai-codex/gpt-5.6-sol",
+  large: "openai-codex/gpt-6-astra",
 };
 
 const MODEL_TIER_ALIASES: Record<string, ArcModelTier> = {
@@ -273,15 +274,15 @@ type ArcProfileRecommendation = {
 const ARC_RECOMMENDED_MODEL_PROVIDER = "openai-codex";
 
 const ARC_PROFILE_RECOMMENDATIONS: Record<ArcModelProfileKey, ArcProfileRecommendation> = {
-  brainstorm: { modelId: "gpt-5.6-sol", thinking: "high", reason: "design exploration and architecture judgment" },
-  plan: { modelId: "gpt-5.6-sol", thinking: "high", reason: "task breakdown and sequencing" },
+  brainstorm: { modelId: "gpt-6-astra", thinking: "high", reason: "design exploration and architecture judgment" },
+  plan: { modelId: "gpt-6-astra", thinking: "high", reason: "task breakdown and sequencing" },
   issueManager: { modelId: "gpt-5.6-luna", thinking: "off", reason: "Arc CLI formatting and issue updates" },
   builder: { modelId: "gpt-5.6-terra", thinking: "medium", reason: "implementation and code navigation" },
-  devopsBuilder: { modelId: "gpt-5.6-sol", thinking: "high", reason: "live-system operations and blast-radius judgment" },
-  codeReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "review judgment and risk detection" },
+  devopsBuilder: { modelId: "gpt-6-astra", thinking: "high", reason: "live-system operations and blast-radius judgment" },
+  codeReviewer: { modelId: "gpt-6-astra", thinking: "high", reason: "review judgment and risk detection" },
   docWriter: { modelId: "gpt-5.6-luna", thinking: "low", reason: "documentation prose and light reasoning" },
-  specReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "spec compliance and ambiguity detection" },
-  evaluator: { modelId: "gpt-5.6-sol", thinking: "high", reason: "adversarial validation" },
+  specReviewer: { modelId: "gpt-6-astra", thinking: "high", reason: "spec compliance and ambiguity detection" },
+  evaluator: { modelId: "gpt-6-astra", thinking: "high", reason: "adversarial validation" },
 };
 
 type BrainstormProfilePromptAction = "recommended" | "customize" | "skip" | "reconfigure" | "fallback" | "disable" | "cancel";
@@ -326,7 +327,7 @@ function applyRecommendedArcModelProfiles(config: ArcModelsConfig, models: ArcMo
     config.modelProfiles[profileKey] = {
       ...config.modelProfiles[profileKey],
       model: recommended.model.fullId,
-      thinking: levels.includes(recommendation.thinking) ? recommendation.thinking : "off",
+      thinking: resolveSupportedArcThinkingLevel(levels, recommendation.thinking),
     };
   }
   config.setup = { ...config.setup, completedAt: new Date().toISOString(), dismissedAt: null };

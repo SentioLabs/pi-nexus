@@ -23,18 +23,18 @@ function extractFunctionBlock(source, functionName, stopToken) {
 }
 
 const EXPECTED_RECOMMENDATIONS = [
-  ['brainstorm', 'gpt-5.6-sol', 'high', 'design exploration and architecture judgment'],
-  ['plan', 'gpt-5.6-sol', 'high', 'task breakdown and sequencing'],
+  ['brainstorm', 'gpt-6-astra', 'high', 'design exploration and architecture judgment'],
+  ['plan', 'gpt-6-astra', 'high', 'task breakdown and sequencing'],
   ['issueManager', 'gpt-5.6-luna', 'off', 'Arc CLI formatting and issue updates'],
   ['builder', 'gpt-5.6-terra', 'medium', 'implementation and code navigation'],
-  ['devopsBuilder', 'gpt-5.6-sol', 'high', 'live-system operations and blast-radius judgment'],
-  ['codeReviewer', 'gpt-5.6-sol', 'high', 'review judgment and risk detection'],
+  ['devopsBuilder', 'gpt-6-astra', 'high', 'live-system operations and blast-radius judgment'],
+  ['codeReviewer', 'gpt-6-astra', 'high', 'review judgment and risk detection'],
   ['docWriter', 'gpt-5.6-luna', 'low', 'documentation prose and light reasoning'],
-  ['specReviewer', 'gpt-5.6-sol', 'high', 'spec compliance and ambiguity detection'],
-  ['evaluator', 'gpt-5.6-sol', 'high', 'adversarial validation'],
+  ['specReviewer', 'gpt-6-astra', 'high', 'spec compliance and ambiguity detection'],
+  ['evaluator', 'gpt-6-astra', 'high', 'adversarial validation'],
 ];
 
-const ALLOWED_RECOMMENDED_MODEL_IDS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+const ALLOWED_RECOMMENDED_MODEL_IDS = new Set(['gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna']);
 
 test('arc extension wires model profiles into commands and agent dispatch', () => {
   const source = read('extensions/arc.ts');
@@ -106,7 +106,7 @@ test('arc brainstorm setup applies recommended thinking and avoids unrelated fal
   const source = read('extensions/arc.ts');
   assert.match(source, /getSupportedArcThinkingLevels/);
   assert.match(source, /const levels = getSupportedArcThinkingLevels\(recommended\.model\)/);
-  assert.match(source, /thinking: levels\.includes\(recommendation\.thinking\) \? recommendation\.thinking : "off"/);
+  assert.match(source, /thinking: resolveSupportedArcThinkingLevel\(levels, recommendation\.thinking\)/);
   assert.doesNotMatch(source, /return candidates\[0\]/);
 });
 
@@ -135,9 +135,26 @@ test('README modelProfiles example stays within the recommended model set', () =
   assert.notEqual(end, -1, 'missing next README section');
   const section = source.slice(start, end);
   assert.doesNotMatch(section, /gpt-5\.[1-5](?:\b|[-.])|claude|haiku|opus|sonnet/i);
-  assert.match(section, /openai-codex\/gpt-5\.6-sol/);
+  assert.match(section, /openai-codex\/gpt-6-astra/);
   assert.match(section, /openai-codex\/gpt-5\.6-terra/);
   assert.match(section, /openai-codex\/gpt-5\.6-luna/);
+});
+
+test('model guidance and migration templates preserve the Astra policy', () => {
+  const arc = read('skills/arc/SKILL.md');
+  const build = read('skills/arc-build/SKILL.md');
+  const migration = read('scripts/migrate-arc-plugin.py');
+
+  assert.match(arc, /Model policy/);
+  assert.match(arc, /arc-build\/SKILL\.md/);
+  assert.match(build, /openai-codex\/gpt-6-astra:high/);
+  assert.match(build, /openai-codex\/gpt-6-astra:low/);
+  assert.match(build, /openai-codex\/gpt-5\.6-terra:high/);
+  assert.match(build, /no direct Arc benchmark exists/i);
+  assert.match(build, /`xhigh` and `max` are deliberate exceptional escalations/i);
+  assert.match(build, /re-dispatches stop at `large`/);
+  assert.equal((migration.match(/openai-codex\/gpt-6-astra/g) ?? []).length >= 2, true);
+  assert.doesNotMatch(migration, /gpt-5\.6-sol/);
 });
 
 test('issue-manager docs recommend gpt-5.6-luna while preserving legacy fallback guidance', () => {

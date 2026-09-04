@@ -69,6 +69,10 @@ After `plan`, choose:
 - **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.
 - **Stacked PRs (arc + git-spice)**: When the epic is 3+ tasks with linear dependencies and each task is independently reviewable, ship as a stack of PRs instead of one. See [`STACKING.md`](../../STACKING.md) for the integration playbook (concept mapping, per-task loop, review iteration).
 
+## Model policy
+
+Arc recommends Luna for low-cost issue-manager/docs work, Terra at medium for standard builders, and Astra at high for planning and large-tier operations/review. Existing role profiles and explicit dispatch overrides remain authoritative. See [arc-build model selection](../arc-build/SKILL.md#model-selection) for role/effort guidance, supported-effort limits, and explicit `model:effort` dispatch examples.
+
 ## Quick Start
 
 Run `arc onboard` at session start to get project context and available issues.
