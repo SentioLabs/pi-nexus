@@ -874,22 +874,31 @@ for (const [kind, identifier] of [
   }
 }
 
-for (const [kind, nearMiss] of [
-  ["prompt", "/git-spice-stack.)evil"],
-  ["agent", "git-spice.stacker.\"evil"],
-  ["upstream", "abhinav/git-spice#1050.>evil"],
+for (const [kind, identifier] of [
+  ["prompt", "/git-spice-init"],
+  ["agent", "git-spice.stacker"],
+  ["upstream", "abhinav/git-spice#1050"],
 ]) {
-  test(`closing delimiters before identifier text do not complete a registered ${kind} identifier`, () => {
-    assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`);
-  });
+  for (const closingRunLength of [1, 7, 1024]) {
+    const closingRun = Array.from(
+      { length: closingRunLength },
+      (_, index) => ")]}"[index % 3],
+    ).join("");
+    for (const punctuation of [",", ";", ":", "!", "?"]) {
+      test(`terminal ${punctuation} before attached text rejects registered ${kind} identifier after ${closingRunLength} closing delimiters`, () => {
+        assertDiscoveryFailureBeforeMutation(`See ${identifier}.${closingRun}${punctuation}future-mutate`);
+      });
+    }
+  }
 }
 
 for (const [name, text, expectedReason] of [
-  ["closing run reaches whitespace", "Use /git-spice-stack.) next", "exact registered git-spice prompt identifier"],
-  ["closing run reaches end-of-line", "Dispatch git-spice.stacker.\"]", "exact registered git-spice agent identifier"],
-  ["closing run reaches explicit terminal boundary", "See abhinav/git-spice#1050.)!evil", "exact registered git-spice upstream identifier"],
+  ["zero closing delimiters reach end-of-document", "Use /git-spice-stack.", "exact registered git-spice prompt identifier"],
+  ["many closing delimiters reach whitespace", "Dispatch git-spice.stacker.)]}>\"'` next", "exact registered git-spice agent identifier"],
+  ["many closing delimiters and punctuation reach whitespace", "See abhinav/git-spice#1050.)]}! next", "exact registered git-spice upstream identifier"],
+  ["committed upstream punctuation reaches end-of-document", "abhinav/git-spice#1050.)", "exact registered git-spice upstream identifier"],
 ]) {
-  test(`terminal dot accepts an approved boundary when its ${name}`, () => {
+  test(`terminal dot accepts an approved boundary when ${name}`, () => {
     const result = auditSyntheticText(text);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);

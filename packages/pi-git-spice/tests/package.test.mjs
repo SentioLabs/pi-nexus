@@ -182,6 +182,52 @@ test("registered identifier groups bind each kind to its explicit boundary polic
   ]);
 });
 
+test("registered identifier boundaries reject terminal punctuation followed by attached text after bounded and long closing runs", () => {
+  const cases = [];
+  for (const [kind, identifier] of [
+    ["prompt", "/git-spice-init"],
+    ["agent", "git-spice.stacker"],
+    ["upstream", "abhinav/git-spice#1050"],
+  ]) {
+    for (const closingRunLength of [1, 7, 1024]) {
+      const closingRun = Array.from(
+        { length: closingRunLength },
+        (_, index) => ")]}"[index % 3],
+      ).join("");
+      for (const punctuation of [",", ";", ":", "!", "?"]) {
+        cases.push({
+          kind,
+          closingRunLength,
+          punctuation,
+          text: `${identifier}.${closingRun}${punctuation}future-mutate`,
+        });
+      }
+    }
+  }
+
+  const probe = [
+    "import importlib.util, json, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "result = []",
+    "for item in json.load(sys.stdin):",
+    "    text = item['text']",
+    "    occurrences = module.inventory_git_spice_occurrences(text, module.scan_markdown_regions(text))",
+    "    if len(occurrences) != 1: raise RuntimeError('expected exactly one direct-probe occurrence')",
+    "    reason = module._registered_identifier_reference_reason(text, occurrences[0])",
+    "    if reason is not None: result.append({**item, 'reason': reason})",
+    "print(json.dumps(result))",
+  ].join("\n");
+  const structuralMatches = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript], {
+    encoding: "utf8",
+    input: JSON.stringify(cases),
+  }));
+
+  assert.equal(cases.length, 45);
+  assert.deepEqual(structuralMatches, []);
+});
+
 test("package command audit extracts bare unknown commands without known-prefix filtering", () => {
   assert.deepEqual(executableGitSpiceCommands("git-spice future mutate"), ["git-spice future mutate"]);
   assert.deepEqual(executableGitSpiceCommands("git-spice --verbose future mutate"), ["git-spice --verbose future mutate"]);

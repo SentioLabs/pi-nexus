@@ -1113,17 +1113,11 @@ def _terminal_dot_boundary(
     policy: IdentifierBoundaryPolicy,
 ) -> bool:
     cursor = dot + 1
-    if cursor == len(text) or text[cursor].isspace():
-        return True
-    if text[cursor] not in policy.terminal_dot_closing_delimiters:
-        return False
     while cursor < len(text) and text[cursor] in policy.terminal_dot_closing_delimiters:
         cursor += 1
-    return (
-        cursor == len(text)
-        or text[cursor].isspace()
-        or text[cursor] in policy.explicit_terminal_boundaries
-    )
+    if cursor < len(text) and text[cursor] in policy.explicit_terminal_boundaries:
+        cursor += 1
+    return cursor == len(text) or text[cursor].isspace()
 
 
 def _registered_identifier_boundaries(
