@@ -117,6 +117,7 @@ const rawSourceFiles = () => ({
     "> Prefer `git-spice commit ...` over raw `git commit` while inside a stack. The git-spice variants restack everything above the current branch automatically; `git commit` leaves upstack branches misaligned and you'll have to run `git-spice upstack restack` yourself.",
     "git-spice rebases run `git rebase` under the hood. Conflicts pause the operation. **Resolve with the git-spice variants, not raw git:**",
     "2. Run `git-spice rebase continue`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).",
+    "Using raw `git rebase --continue` works for the *current* rebase only; git-spice won't auto-advance to the next branch in a multi-step operation.",
     "- **Don't `git push --force`** on a tracked branch. Use `git-spice <scope> submit <draft-flag>` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.",
     "- **Don't assume `gs`** is git-spice in commands you write. Always `git-spice`.",
     "- **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice upstack restack`, or `git-spice branch edit` when the user is driving interactively.",
@@ -553,6 +554,24 @@ for (const [name, relative, makeContent, diagnostic] of failureVariants) {
   });
 }
 
+const autoAdvanceSourceText = "git-spice won't auto-advance";
+for (const [variant, mutate, expectedCount] of [
+  ["zero", (text) => text.replace(/^Using raw .*git-spice.*auto-advance.*\n/m, ""), 0],
+  ["duplicate", (text) => text.replace(autoAdvanceSourceText, `${autoAdvanceSourceText}; ${autoAdvanceSourceText}`), 2],
+  ["drifted", (text) => text.replace(autoAdvanceSourceText, "git-spice does not auto-advance"), 0],
+]) {
+  test(`git-spice auto-advance transform rejects ${variant} source cardinality before installation`, () => {
+    const relative = "skills/git-spice/SKILL.md";
+    const source = createSourceFixture({ [relative]: mutate(sourceFiles()[relative]) });
+    const packageCopy = createTemporaryPackage();
+    const sentinels = installedSentinels(packageCopy.root);
+    const result = runMigration(packageCopy.script, source, packageCopy.root);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`Expected exactly one source text occurrence.*${relative.replaceAll("/", "\\/")}.*found ${expectedCount}`));
+    assertRollback(packageCopy.root, sentinels);
+  });
+}
+
 const guardedMutationAnchors = [
   ["init/reset", "commands/init.md", mutationAnchorPatterns.reset, /reset mutation anchor cardinality/],
   ["init/reconfiguration", "commands/init.md", mutationAnchorPatterns.init, /init mutation anchor cardinality/],
@@ -853,6 +872,38 @@ for (const [kind, identifier] of [
       assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`);
     });
   }
+}
+
+for (const [kind, nearMiss] of [
+  ["prompt", "/git-spice-stack.)evil"],
+  ["agent", "git-spice.stacker.\"evil"],
+  ["upstream", "abhinav/git-spice#1050.>evil"],
+]) {
+  test(`closing delimiters before identifier text do not complete a registered ${kind} identifier`, () => {
+    assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`);
+  });
+}
+
+for (const [name, text, expectedReason] of [
+  ["closing run reaches whitespace", "Use /git-spice-stack.) next", "exact registered git-spice prompt identifier"],
+  ["closing run reaches end-of-line", "Dispatch git-spice.stacker.\"]", "exact registered git-spice agent identifier"],
+  ["closing run reaches explicit terminal boundary", "See abhinav/git-spice#1050.)!evil", "exact registered git-spice upstream identifier"],
+]) {
+  test(`terminal dot accepts an approved boundary when its ${name}`, () => {
+    const result = auditSyntheticText(text);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);
+  });
+}
+
+for (const [kind, nearMiss] of [
+  ["prompt", "/git-spice-stack-extra"],
+  ["agent", "git-spice.stacker.evil"],
+  ["upstream", "abhinav/git-spice#10500"],
+]) {
+  test(`registered ${kind} boundary policy rejects its identifier-kind continuation`, () => {
+    assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`);
+  });
 }
 
 test("exact standalone ATX heading uses its named structural reason", () => {

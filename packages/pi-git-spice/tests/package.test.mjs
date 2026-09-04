@@ -140,6 +140,48 @@ test("production and independent snapshots dual-lock exact structural reference 
   assert.equal(exportedApprovedStructuralReasons.has("shell comment reference"), false);
 });
 
+test("registered identifier groups bind each kind to its explicit boundary policy and reason", () => {
+  const probe = [
+    "import importlib.util, json, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "print(json.dumps([{'kind': group.kind.value, 'identifiers': sorted(group.identifiers), 'occurrenceOffset': group.occurrence_offset, 'boundaryPolicy': group.boundary_policy.kind.value, 'reason': group.reason} for group in module.REGISTERED_IDENTIFIER_GROUPS]))",
+  ].join("; ");
+  const contract = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript], { encoding: "utf8" }));
+  assert.deepEqual(contract, [
+    {
+      kind: "prompt",
+      identifiers: [
+        "/git-spice-continue",
+        "/git-spice-init",
+        "/git-spice-new",
+        "/git-spice-restack",
+        "/git-spice-stack",
+        "/git-spice-submit",
+        "/git-spice-sync",
+      ],
+      occurrenceOffset: 1,
+      boundaryPolicy: "prompt",
+      reason: "exact registered git-spice prompt identifier",
+    },
+    {
+      kind: "agent",
+      identifiers: ["git-spice.stack-doctor", "git-spice.stacker"],
+      occurrenceOffset: 0,
+      boundaryPolicy: "agent",
+      reason: "exact registered git-spice agent identifier",
+    },
+    {
+      kind: "upstream",
+      identifiers: ["abhinav/git-spice#1050"],
+      occurrenceOffset: 8,
+      boundaryPolicy: "upstream",
+      reason: "exact registered git-spice upstream identifier",
+    },
+  ]);
+});
+
 test("package command audit extracts bare unknown commands without known-prefix filtering", () => {
   assert.deepEqual(executableGitSpiceCommands("git-spice future mutate"), ["git-spice future mutate"]);
   assert.deepEqual(executableGitSpiceCommands("git-spice --verbose future mutate"), ["git-spice --verbose future mutate"]);

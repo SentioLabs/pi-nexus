@@ -3,6 +3,7 @@
 
 import argparse
 from dataclasses import dataclass
+from enum import Enum
 import json
 from pathlib import Path
 import re
@@ -670,7 +671,7 @@ def transform_git_spice_skill(text: str) -> str:
     body = require_replace(body, "git-spice is a CLI for managing **stacks of dependent Git branches**.", "The git-spice CLI manages **stacks of dependent Git branches**.", context)
     body = require_replace(body, "git-spice operations are *local-first*.", "The git-spice CLI's operations are *local-first*.", context)
     body = require_replace(body, "git-spice rebases run `git rebase` under the hood.", "The git-spice CLI runs `git rebase` under the hood.", context)
-    body = body.replace("git-spice won't auto-advance", "`git-spice` won't auto-advance")
+    body = require_replace(body, "git-spice won't auto-advance", "`git-spice` won't auto-advance", context)
     body = transform_prompt_references(body, context)
     body = transform_executable_guidance(body, context)
     body = body.rstrip() + "\n\n" + INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + SUBMIT_DRAFT_CONTRACT.rstrip()
@@ -777,6 +778,30 @@ class ProseReferenceManifestEntry:
     expected_count: int
 
 
+class RegisteredIdentifierKind(Enum):
+    PROMPT = "prompt"
+    AGENT = "agent"
+    UPSTREAM = "upstream"
+
+
+@dataclass(frozen=True)
+class IdentifierBoundaryPolicy:
+    kind: RegisteredIdentifierKind
+    prefix_continuations: frozenset[str]
+    suffix_continuations: frozenset[str]
+    terminal_dot_closing_delimiters: frozenset[str]
+    explicit_terminal_boundaries: frozenset[str]
+
+
+@dataclass(frozen=True)
+class RegisteredIdentifierGroup:
+    kind: RegisteredIdentifierKind
+    identifiers: frozenset[str]
+    occurrence_offset: int
+    boundary_policy: IdentifierBoundaryPolicy
+    reason: str
+
+
 PROMPT_IDENTIFIERS = frozenset({
     "/git-spice-continue",
     "/git-spice-init",
@@ -810,6 +835,56 @@ APPROVED_STRUCTURAL_REFERENCE_REASONS = frozenset({
     INLINE_CODE_REFERENCE_REASON,
     FENCED_CODE_REFERENCE_REASON,
 })
+
+_IDENTIFIER_PREFIX_CONTINUATIONS = frozenset("._/:#-")
+_IDENTIFIER_SUFFIX_CONTINUATIONS = frozenset("_/:#-")
+_TERMINAL_DOT_CLOSING_DELIMITERS = frozenset(")]}>\"'`")
+_EXPLICIT_TERMINAL_BOUNDARIES = frozenset(",;:!?")
+PROMPT_IDENTIFIER_BOUNDARY_POLICY = IdentifierBoundaryPolicy(
+    RegisteredIdentifierKind.PROMPT,
+    _IDENTIFIER_PREFIX_CONTINUATIONS,
+    _IDENTIFIER_SUFFIX_CONTINUATIONS,
+    _TERMINAL_DOT_CLOSING_DELIMITERS,
+    _EXPLICIT_TERMINAL_BOUNDARIES,
+)
+AGENT_IDENTIFIER_BOUNDARY_POLICY = IdentifierBoundaryPolicy(
+    RegisteredIdentifierKind.AGENT,
+    _IDENTIFIER_PREFIX_CONTINUATIONS,
+    _IDENTIFIER_SUFFIX_CONTINUATIONS,
+    _TERMINAL_DOT_CLOSING_DELIMITERS,
+    _EXPLICIT_TERMINAL_BOUNDARIES,
+)
+UPSTREAM_IDENTIFIER_BOUNDARY_POLICY = IdentifierBoundaryPolicy(
+    RegisteredIdentifierKind.UPSTREAM,
+    _IDENTIFIER_PREFIX_CONTINUATIONS,
+    _IDENTIFIER_SUFFIX_CONTINUATIONS,
+    _TERMINAL_DOT_CLOSING_DELIMITERS,
+    _EXPLICIT_TERMINAL_BOUNDARIES,
+)
+REGISTERED_IDENTIFIER_GROUPS = (
+    RegisteredIdentifierGroup(
+        RegisteredIdentifierKind.PROMPT,
+        PROMPT_IDENTIFIERS,
+        1,
+        PROMPT_IDENTIFIER_BOUNDARY_POLICY,
+        PROMPT_IDENTIFIER_REFERENCE_REASON,
+    ),
+    RegisteredIdentifierGroup(
+        RegisteredIdentifierKind.AGENT,
+        AGENT_IDENTIFIERS,
+        0,
+        AGENT_IDENTIFIER_BOUNDARY_POLICY,
+        AGENT_IDENTIFIER_REFERENCE_REASON,
+    ),
+    RegisteredIdentifierGroup(
+        RegisteredIdentifierKind.UPSTREAM,
+        UPSTREAM_IDENTIFIERS,
+        8,
+        UPSTREAM_IDENTIFIER_BOUNDARY_POLICY,
+        UPSTREAM_IDENTIFIER_REFERENCE_REASON,
+    ),
+)
+
 PROSE_REFERENCE_REASON = "exact physical-line prose reference manifest match"
 PROSE_REFERENCE_MANIFEST = {
     "prompts/git-spice-continue.md": (
@@ -1032,18 +1107,40 @@ def inventory_git_spice_occurrences(text: str, regions: list[MarkdownRegion]) ->
     return occurrences
 
 
-def _registered_identifier_boundaries(text: str, start: int, end: int) -> bool:
+def _terminal_dot_boundary(
+    text: str,
+    dot: int,
+    policy: IdentifierBoundaryPolicy,
+) -> bool:
+    cursor = dot + 1
+    if cursor == len(text) or text[cursor].isspace():
+        return True
+    if text[cursor] not in policy.terminal_dot_closing_delimiters:
+        return False
+    while cursor < len(text) and text[cursor] in policy.terminal_dot_closing_delimiters:
+        cursor += 1
+    return (
+        cursor == len(text)
+        or text[cursor].isspace()
+        or text[cursor] in policy.explicit_terminal_boundaries
+    )
+
+
+def _registered_identifier_boundaries(
+    text: str,
+    start: int,
+    end: int,
+    policy: IdentifierBoundaryPolicy,
+) -> bool:
     before = text[start - 1] if start else ""
-    if before and (before.isalnum() or before in "._/:#-"):
+    if before and (before.isalnum() or before in policy.prefix_continuations):
         return False
 
     after = text[end] if end < len(text) else ""
-    if after and (after.isalnum() or after in "_/:#-"):
+    if after and (after.isalnum() or after in policy.suffix_continuations):
         return False
     if after == ".":
-        after_dot = text[end + 1] if end + 1 < len(text) else ""
-        if after_dot and not (after_dot.isspace() or after_dot in ")]}>\"'`"):
-            return False
+        return _terminal_dot_boundary(text, end, policy)
     return True
 
 
@@ -1051,22 +1148,16 @@ def _registered_identifier_reference_reason(
     text: str,
     occurrence: GitSpiceOccurrence,
 ) -> str | None:
-    identifier_groups = (
-        (PROMPT_IDENTIFIERS, PROMPT_IDENTIFIER_REFERENCE_REASON),
-        (AGENT_IDENTIFIERS, AGENT_IDENTIFIER_REFERENCE_REASON),
-        (UPSTREAM_IDENTIFIERS, UPSTREAM_IDENTIFIER_REFERENCE_REASON),
-    )
-    for identifiers, reason in identifier_groups:
-        for identifier in identifiers:
-            occurrence_offset = identifier.index("git-spice")
-            start = occurrence.start - occurrence_offset
+    for group in REGISTERED_IDENTIFIER_GROUPS:
+        for identifier in group.identifiers:
+            start = occurrence.start - group.occurrence_offset
             end = start + len(identifier)
             if (
                 start >= 0
                 and text[start:end] == identifier
-                and _registered_identifier_boundaries(text, start, end)
+                and _registered_identifier_boundaries(text, start, end, group.boundary_policy)
             ):
-                return reason
+                return group.reason
     return None
 
 
