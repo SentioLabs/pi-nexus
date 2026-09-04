@@ -1042,7 +1042,7 @@ def _registered_identifier_boundaries(text: str, start: int, end: int) -> bool:
         return False
     if after == ".":
         after_dot = text[end + 1] if end + 1 < len(text) else ""
-        if after_dot and not (after_dot.isspace() or after_dot in ")]}>\"'`,;:!?"):
+        if after_dot and not (after_dot.isspace() or after_dot in ")]}>\"'`"):
             return False
     return True
 
@@ -1075,10 +1075,7 @@ def _exact_metadata_identifier_reference(occurrence: GitSpiceOccurrence) -> bool
 
 
 def _exact_markdown_heading_reference(occurrence: GitSpiceOccurrence) -> bool:
-    return re.fullmatch(
-        r" {0,3}#{1,6}[ \t]+git-spice(?:[ \t]+#+[ \t]*)?",
-        occurrence.physical_line,
-    ) is not None
+    return occurrence.physical_line == "# git-spice"
 
 
 def _unquoted_comment_index(line: str) -> int | None:

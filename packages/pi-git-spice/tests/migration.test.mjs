@@ -842,6 +842,19 @@ for (const [identifier, snippet] of [
   });
 }
 
+for (const [kind, identifier] of [
+  ["prompt", "/git-spice-stack"],
+  ["agent", "git-spice.stacker"],
+  ["upstream", "abhinav/git-spice#1050"],
+]) {
+  for (const punctuation of [":", ",", ";", "!", "?"]) {
+    const nearMiss = `${identifier}.${punctuation}evil`;
+    test(`terminal dot before ${punctuation} does not complete a registered ${kind} identifier`, () => {
+      assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`);
+    });
+  }
+}
+
 test("exact standalone ATX heading uses its named structural reason", () => {
   const result = auditSyntheticText("# git-spice");
   assert.equal(result.status, 0, result.stderr);
@@ -850,6 +863,18 @@ test("exact standalone ATX heading uses its named structural reason", () => {
     reason: "exact standalone git-spice Markdown heading",
   }]);
 });
+
+for (const heading of [
+  "## git-spice",
+  "# git-spice #",
+  " # git-spice",
+  "# git-spice \nTrailing source content",
+  "#\tgit-spice",
+]) {
+  test(`non-exact git-spice heading fails before mutation: ${JSON.stringify(heading)}`, () => {
+    assertDiscoveryFailureBeforeMutation(heading);
+  });
+}
 
 for (const [snippet, expectedArguments] of [
   ["`git-spice.`", ["."]],
