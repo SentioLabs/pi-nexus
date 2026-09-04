@@ -874,6 +874,16 @@ for (const [kind, identifier] of [
   }
 }
 
+for (const [kind, nearMiss] of [
+  ["prompt", "/git-spice-stack.)evil"],
+  ["agent", "git-spice.stacker.\"evil"],
+  ["upstream", "abhinav/git-spice#1050.>evil"],
+]) {
+  test(`closing delimiters before identifier text do not complete a registered ${kind} identifier`, () => {
+    assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`);
+  });
+}
+
 for (const [kind, identifier] of [
   ["prompt", "/git-spice-init"],
   ["agent", "git-spice.stacker"],
@@ -893,12 +903,11 @@ for (const [kind, identifier] of [
 }
 
 for (const [name, text, expectedReason] of [
-  ["zero closing delimiters reach end-of-document", "Use /git-spice-stack.", "exact registered git-spice prompt identifier"],
-  ["many closing delimiters reach whitespace", "Dispatch git-spice.stacker.)]}>\"'` next", "exact registered git-spice agent identifier"],
-  ["many closing delimiters and punctuation reach whitespace", "See abhinav/git-spice#1050.)]}! next", "exact registered git-spice upstream identifier"],
-  ["committed upstream punctuation reaches end-of-document", "abhinav/git-spice#1050.)", "exact registered git-spice upstream identifier"],
+  ["closing run reaches whitespace", "Use /git-spice-stack.) next", "exact registered git-spice prompt identifier"],
+  ["closing run reaches end-of-line", "Dispatch git-spice.stacker.\"]", "exact registered git-spice agent identifier"],
+  ["closing run and explicit terminal punctuation reach whitespace", "See abhinav/git-spice#1050.)! next", "exact registered git-spice upstream identifier"],
 ]) {
-  test(`terminal dot accepts an approved boundary when ${name}`, () => {
+  test(`terminal dot accepts an approved boundary when its ${name}`, () => {
     const result = auditSyntheticText(text);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);
