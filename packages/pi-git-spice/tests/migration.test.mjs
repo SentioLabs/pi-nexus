@@ -34,7 +34,7 @@ const prompt = (description, body, argumentHint) => [
   "",
   body,
   "Fixture source body remains.",
-  "/git-spice:custom-source-reference",
+  "/git-spice:stack",
   "",
 ].join("\n");
 
@@ -108,6 +108,8 @@ const rawSourceFiles = () => ({
     "# git-spice",
     "",
     "git-spice is a CLI for managing **stacks of dependent Git branches**. Each branch (except the trunk) has a recorded *base* — the branch it was created from. git-spice tracks those relationships, restacks (rebases) dependents automatically when a base changes, and submits the whole chain as separate-but-linked Change Requests (CRs — PRs on GitHub, MRs on GitLab).",
+    "The official shorthand is `gs`, but on many systems `gs` is **Ghostscript**. **Always invoke `git-spice` directly** in scripts, commands, and tool calls — never assume `gs` is git-spice. (If a user types `gs` in chat, mentally map it to `git-spice`.)",
+    "- **base** — the branch a given branch was created from. Stored as metadata by git-spice.",
     "",
     "## Command map",
     "git-spice operations are *local-first*. Auth is only needed for `submit`/`sync` (network operations).",
@@ -117,6 +119,7 @@ const rawSourceFiles = () => ({
     "2. Run `git-spice rebase continue`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).",
     "- **Don't `git push --force`** on a tracked branch. Use `git-spice <scope> submit <draft-flag>` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.",
     "- **Don't assume `gs`** is git-spice in commands you write. Always `git-spice`.",
+    "- **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice upstack restack`, or `git-spice branch edit` when the user is driving interactively.",
     "Use `git-spice log long` to inspect a stack.",
     "For work run `git-spice branch create <slug>` (`git-spice bc`).",
     "After conflicts, run `git-spice rebase continue` (`git-spice rbc`).",
@@ -415,7 +418,7 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   assert.doesNotMatch(combinedPrompts, /\/git-spice:/);
   for (const [relative, output] of Object.entries(prompts)) {
     assert.match(output, /Fixture source body remains\./);
-    assert.match(output, /\/git-spice-custom-source-reference/);
+    assert.match(output, /\/git-spice-stack/);
   }
   assertSafeBranchCreation(prompts["commands/new.md"], "new prompt");
   assertSafeRebaseContinuation(prompts["commands/continue.md"], "continue prompt");
@@ -686,6 +689,43 @@ for (const [name, snippet] of [
   });
 }
 
+for (const [name, snippet] of [
+  ["inline attached period", "`git-spice.`"],
+  ["inline attached question", "`git-spice?`"],
+  ["inline attached close paren", "`git-spice)`"],
+  ["fenced attached period", "```text\ngit-spice.\n```"],
+  ["fenced attached question", "```text\ngit-spice?\n```"],
+  ["fenced attached close paren", "```text\ngit-spice)\n```"],
+]) {
+  test(`attached punctuation reaches command validation: ${name}`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand/);
+  });
+}
+
+for (const snippet of [
+  "`prefix git-spice`",
+  "`prefix git-spice future mutate`",
+  "```text\nprefix git-spice\n```",
+  "```text\nprefix git-spice future mutate\n```",
+  "```bash\n# git-spice future mutate\n```",
+]) {
+  test(`prefixed/code-comment occurrence reaches validation: ${JSON.stringify(snippet)}`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand/);
+  });
+}
+
+for (const snippet of [
+  "Run git-spice. future mutate",
+  "RUN git-spice? future mutate",
+  "# Run git-spice future mutate",
+  "## run git-spice. future mutate",
+  "### RUN git-spice? future mutate",
+]) {
+  test(`plain heading/prose cannot bypass manifest: ${JSON.stringify(snippet)}`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet);
+  });
+}
+
 test("review blocker: capitalized prose cannot hide an ambiguous wrapper invocation", () => {
   assertDiscoveryFailureBeforeMutation("Use sudo git-spice future mutate");
 });
@@ -753,6 +793,99 @@ for (const [name, snippet] of totalAccountingUnsafeCases) {
     assertDiscoveryFailureBeforeMutation(snippet);
   });
 }
+
+const auditSyntheticText = (text) => {
+  const packageCopy = createTemporaryPackage();
+  const python = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    `text = ${JSON.stringify(text)}`,
+    "module.PROSE_REFERENCE_MANIFEST = {target: () for _, target in module.RUNTIME_MANIFEST}",
+    "occurrences = module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), text)",
+    "print(json.dumps([{'classification': item.classification, 'reason': item.reason} for item in occurrences]))",
+  ].join("\n");
+  return spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
+};
+
+for (const [name, text, expectedReason] of [
+  ["prompt continue", "Use /git-spice-continue.", "exact registered git-spice prompt identifier"],
+  ["prompt init", "Use /git-spice-init.", "exact registered git-spice prompt identifier"],
+  ["prompt new", "Use /git-spice-new.", "exact registered git-spice prompt identifier"],
+  ["prompt restack", "Use /git-spice-restack.", "exact registered git-spice prompt identifier"],
+  ["prompt stack", "Use /git-spice-stack.", "exact registered git-spice prompt identifier"],
+  ["prompt submit", "Use /git-spice-submit.", "exact registered git-spice prompt identifier"],
+  ["prompt sync", "Use /git-spice-sync.", "exact registered git-spice prompt identifier"],
+  ["agent stacker", "Dispatch git-spice.stacker.", "exact registered git-spice agent identifier"],
+  ["agent stack doctor", "Dispatch git-spice.stack-doctor.", "exact registered git-spice agent identifier"],
+  ["upstream issue with committed punctuation", "abhinav/git-spice#1050.)", "exact registered git-spice upstream identifier"],
+]) {
+  test(`exact registered identifier classifies with its typed reason: ${name}`, () => {
+    const result = auditSyntheticText(text);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);
+  });
+}
+
+for (const [identifier, snippet] of [
+  ["x/git-spice-continue", "Use x/git-spice-continue."],
+  ["/git-spice-continue-extra", "Use /git-spice-continue-extra."],
+  ["git-spice.stacker.evil", "Use git-spice.stacker.evil."],
+  ["xgit-spice.stack-doctor", "Use xgit-spice.stack-doctor."],
+  ["abhinav/git-spice#1051", "See abhinav/git-spice#1051."],
+  ["evil/abhinav/git-spice#1050", "See evil/abhinav/git-spice#1050."],
+  ["git-spice.", "Bare sentence-final git-spice."],
+]) {
+  test(`near-miss registered identifier fails before mutation: ${identifier}`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet);
+  });
+}
+
+test("exact standalone ATX heading uses its named structural reason", () => {
+  const result = auditSyntheticText("# git-spice");
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [{
+    classification: "reference",
+    reason: "exact standalone git-spice Markdown heading",
+  }]);
+});
+
+for (const [snippet, expectedArguments] of [
+  ["`git-spice.`", ["."]],
+  ["`git-spice#future`", ["#future"]],
+  ["`prefix git-spice`", []],
+  ["`prefix git-spice future mutate`", ["future", "mutate"]],
+]) {
+  test(`occurrence-anchored extraction reaches command classification: ${snippet}`, () => {
+    const packageCopy = createTemporaryPackage();
+    const python = [
+      "import importlib.util, json, pathlib, sys",
+      "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+      "module = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(module)",
+      `text = ${JSON.stringify(snippet)}`,
+      "module.PROSE_REFERENCE_MANIFEST = {target: () for _, target in module.RUNTIME_MANIFEST}",
+      "captured = []",
+      "def capture(arguments):",
+      "    captured.append(arguments)",
+      "    raise ValueError('instrumented classifier stop')",
+      "module.classify_git_spice_command = capture",
+      "try:",
+      "    module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), text)",
+      "except RuntimeError:",
+      "    pass",
+      "print(json.dumps(captured))",
+    ].join("\n");
+    const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [expectedArguments]);
+  });
+}
+
+test("malformed occurrence tail quoting fails closed with target diagnostics", () => {
+  assertDiscoveryFailureBeforeMutation('`prefix git-spice "unterminated`', /malformed executable occurrence/);
+});
 
 test("inventory classifies every reference and executable occurrence exactly once with a reason", () => {
   const packageCopy = createTemporaryPackage();

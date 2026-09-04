@@ -777,6 +777,39 @@ class ProseReferenceManifestEntry:
     expected_count: int
 
 
+PROMPT_IDENTIFIERS = frozenset({
+    "/git-spice-continue",
+    "/git-spice-init",
+    "/git-spice-new",
+    "/git-spice-restack",
+    "/git-spice-stack",
+    "/git-spice-submit",
+    "/git-spice-sync",
+})
+AGENT_IDENTIFIERS = frozenset({
+    "git-spice.stacker",
+    "git-spice.stack-doctor",
+})
+UPSTREAM_IDENTIFIERS = frozenset({
+    "abhinav/git-spice#1050",
+})
+
+PROMPT_IDENTIFIER_REFERENCE_REASON = "exact registered git-spice prompt identifier"
+AGENT_IDENTIFIER_REFERENCE_REASON = "exact registered git-spice agent identifier"
+UPSTREAM_IDENTIFIER_REFERENCE_REASON = "exact registered git-spice upstream identifier"
+PACKAGE_OR_SKILL_IDENTIFIER_REFERENCE_REASON = "exact package or skill identifier"
+MARKDOWN_HEADING_REFERENCE_REASON = "exact standalone git-spice Markdown heading"
+INLINE_CODE_REFERENCE_REASON = "exact standalone inline code token"
+FENCED_CODE_REFERENCE_REASON = "exact standalone fenced code token"
+APPROVED_STRUCTURAL_REFERENCE_REASONS = frozenset({
+    PROMPT_IDENTIFIER_REFERENCE_REASON,
+    AGENT_IDENTIFIER_REFERENCE_REASON,
+    UPSTREAM_IDENTIFIER_REFERENCE_REASON,
+    PACKAGE_OR_SKILL_IDENTIFIER_REFERENCE_REASON,
+    MARKDOWN_HEADING_REFERENCE_REASON,
+    INLINE_CODE_REFERENCE_REASON,
+    FENCED_CODE_REFERENCE_REASON,
+})
 PROSE_REFERENCE_REASON = "exact physical-line prose reference manifest match"
 PROSE_REFERENCE_MANIFEST = {
     "prompts/git-spice-continue.md": (
@@ -802,13 +835,16 @@ PROSE_REFERENCE_MANIFEST = {
     "skills/git-spice/SKILL.md": (
         ProseReferenceManifestEntry("  Reference for the git-spice CLI — stacked-branch workflows, command map, and recovery from interrupted rebases. This skill should be used whenever the user mentions git-spice, `gs`, stacked PRs, stacked diffs, branch stacks, dependent branches, PRs that depend on each other, or says things like \"stack this\", \"check the stack\", \"submit the stack\", \"submit my stacked PRs\", \"restack\", \"rebase failed\", \"sync after merge\", \"what's on top of <branch>\", \"branch above/below\". Also load when a multi-step plan would naturally produce a chain of dependent branches and you need to drive that with the CLI, or when an interrupted rebase needs recovery.", 2),
         ProseReferenceManifestEntry("The git-spice CLI manages **stacks of dependent Git branches**. Each branch (except the trunk) has a recorded *base* — the branch it was created from. git-spice tracks those relationships, restacks (rebases) dependents automatically when a base changes, and submits the whole chain as separate-but-linked Change Requests (CRs — PRs on GitHub, MRs on GitLab).", 2),
+        ProseReferenceManifestEntry("The official shorthand is `gs`, but on many systems `gs` is **Ghostscript**. **Always invoke `git-spice` directly** in scripts, commands, and tool calls — never assume `gs` is git-spice. (If a user types `gs` in chat, mentally map it to `git-spice`.)", 1),
         ProseReferenceManifestEntry("The git-spice CLI's operations are *local-first*. Auth is only needed for `submit`/`sync` (network operations).", 1),
+        ProseReferenceManifestEntry("- **base** — the branch a given branch was created from. Stored as metadata by git-spice.", 1),
         ProseReferenceManifestEntry("| Initialize git-spice in this repo | `git-spice --no-prompt repo init --trunk=<name> --remote=<name>` (`git-spice --no-prompt r i --trunk=<name> --remote=<name>`) |", 1),
         ProseReferenceManifestEntry("> Prefer `git-spice --no-prompt commit ...` over raw `git commit` while inside a stack. The git-spice variants restack everything above the current branch automatically; `git commit` leaves upstack branches misaligned and you'll have to run `git-spice --no-prompt upstack restack` yourself.", 1),
         ProseReferenceManifestEntry("The git-spice CLI runs `git rebase` under the hood. Conflicts pause the operation. **Resolve with the git-spice variants, not raw git:**", 2),
         ProseReferenceManifestEntry("2. Run `git-spice --no-prompt rebase continue --no-edit`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).", 1),
         ProseReferenceManifestEntry("- **Don't `git push --force`** on a tracked branch. Use `git-spice --no-prompt <scope> submit <draft-flag>` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.", 1),
         ProseReferenceManifestEntry("- **Don't assume `gs`** is git-spice in commands you write. Always `git-spice`.", 1),
+        ProseReferenceManifestEntry("- **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice --no-prompt upstack restack`, or `git-spice --no-prompt branch edit` when the user is driving interactively.", 1),
         ProseReferenceManifestEntry("For every initialization, reconfiguration, or recovery path, gather both trunk and remote from explicit arguments, a Pi user-question tool, or plain chat. Always run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. A reset forgets all git-spice tracking relationships while leaving Git branches; disclose that impact and require a separate explicit confirmation before running `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`.", 1),
     ),
     "skills/stacking-workflow/SKILL.md": (),
@@ -996,18 +1032,53 @@ def inventory_git_spice_occurrences(text: str, regions: list[MarkdownRegion]) ->
     return occurrences
 
 
-def _structured_identifier_reference(text: str, occurrence: GitSpiceOccurrence) -> bool:
-    identifier_characters = "._:/-"
-    before = text[occurrence.start - 1] if occurrence.start else ""
-    after = text[occurrence.end] if occurrence.end < len(text) else ""
-    return bool(
-        (before and (before.isalnum() or before in identifier_characters))
-        or (after and (after.isalnum() or after in identifier_characters))
+def _registered_identifier_boundaries(text: str, start: int, end: int) -> bool:
+    before = text[start - 1] if start else ""
+    if before and (before.isalnum() or before in "._/:#-"):
+        return False
+
+    after = text[end] if end < len(text) else ""
+    if after and (after.isalnum() or after in "_/:#-"):
+        return False
+    if after == ".":
+        after_dot = text[end + 1] if end + 1 < len(text) else ""
+        if after_dot and not (after_dot.isspace() or after_dot in ")]}>\"'`,;:!?"):
+            return False
+    return True
+
+
+def _registered_identifier_reference_reason(
+    text: str,
+    occurrence: GitSpiceOccurrence,
+) -> str | None:
+    identifier_groups = (
+        (PROMPT_IDENTIFIERS, PROMPT_IDENTIFIER_REFERENCE_REASON),
+        (AGENT_IDENTIFIERS, AGENT_IDENTIFIER_REFERENCE_REASON),
+        (UPSTREAM_IDENTIFIERS, UPSTREAM_IDENTIFIER_REFERENCE_REASON),
     )
+    for identifiers, reason in identifier_groups:
+        for identifier in identifiers:
+            occurrence_offset = identifier.index("git-spice")
+            start = occurrence.start - occurrence_offset
+            end = start + len(identifier)
+            if (
+                start >= 0
+                and text[start:end] == identifier
+                and _registered_identifier_boundaries(text, start, end)
+            ):
+                return reason
+    return None
 
 
 def _exact_metadata_identifier_reference(occurrence: GitSpiceOccurrence) -> bool:
     return occurrence.physical_line in {"name: git-spice", "package: git-spice"}
+
+
+def _exact_markdown_heading_reference(occurrence: GitSpiceOccurrence) -> bool:
+    return re.fullmatch(
+        r" {0,3}#{1,6}[ \t]+git-spice(?:[ \t]+#+[ \t]*)?",
+        occurrence.physical_line,
+    ) is not None
 
 
 def _unquoted_comment_index(line: str) -> int | None:
@@ -1115,20 +1186,6 @@ def _shell_position_reason(line: str, occurrence_column: int) -> str | None:
     return None
 
 
-def _has_argument_text(line: str, occurrence: GitSpiceOccurrence) -> bool:
-    suffix = line[occurrence.column - 1 + len("git-spice"):]
-    comment = _unquoted_comment_index(suffix)
-    if comment is not None:
-        suffix = suffix[:comment]
-    return bool(suffix.strip())
-
-
-def _code_region_has_argument_text(text: str, occurrence: GitSpiceOccurrence) -> bool:
-    if occurrence.region.kind == "inline_code":
-        return bool(text[occurrence.end:occurrence.region.content_end].strip())
-    return _has_argument_text(occurrence.physical_line, occurrence)
-
-
 def _manifest_entries(path: Path) -> tuple[ProseReferenceManifestEntry, ...]:
     expected_targets = {target for _, target in RUNTIME_MANIFEST}
     actual_targets = set(PROSE_REFERENCE_MANIFEST)
@@ -1182,38 +1239,34 @@ def classify_occurrence(
 
     line_offset = occurrence.column - 1
     region = occurrence.region
-    if region.kind in {"inline_code", "fenced_code"}:
-        if _structured_identifier_reference(text, occurrence):
-            return _classify(occurrence, "reference", "identifier-adjacent git-spice reference")
-        if not (region.content_start <= occurrence.start and occurrence.end <= region.content_end):
-            raise ValueError("git-spice occurrence appears in a Markdown code delimiter or fence info string")
-        comment = _unquoted_comment_index(occurrence.physical_line)
-        if region.kind == "fenced_code" and comment is not None and comment <= line_offset:
-            return _classify(occurrence, "reference", "shell comment reference")
-        if _code_region_has_argument_text(text, occurrence):
-            return _classify(occurrence, "executable", "argument-bearing occurrence in a Markdown code region")
-        if region.kind == "inline_code":
-            region_text = text[region.content_start:region.content_end].strip()
-            if region_text == "git-spice":
-                return _classify(occurrence, "reference", "exact standalone inline code token")
-        uncommented_line = occurrence.physical_line
-        line_comment = _unquoted_comment_index(uncommented_line)
-        if line_comment is not None:
-            uncommented_line = uncommented_line[:line_comment]
-        if uncommented_line.strip() == "git-spice":
-            return _classify(occurrence, "reference", "exact standalone fenced code token")
-        raise ValueError("unlisted non-command git-spice occurrence in a Markdown code region")
+    if (
+        region.kind in {"inline_code", "fenced_code"}
+        and not (region.content_start <= occurrence.start and occurrence.end <= region.content_end)
+    ):
+        raise ValueError("git-spice occurrence appears in a Markdown code delimiter or fence info string")
+
+    registered_reason = _registered_identifier_reference_reason(text, occurrence)
+    if registered_reason is not None:
+        return _classify(occurrence, "reference", registered_reason)
+
+    if region.kind == "inline_code":
+        region_text = text[region.content_start:region.content_end].strip()
+        if region_text == "git-spice":
+            return _classify(occurrence, "reference", INLINE_CODE_REFERENCE_REASON)
+        return _classify(occurrence, "executable", "non-standalone occurrence in a Markdown code region")
+
+    if region.kind == "fenced_code":
+        if occurrence.physical_line.strip() == "git-spice":
+            return _classify(occurrence, "reference", FENCED_CODE_REFERENCE_REASON)
+        return _classify(occurrence, "executable", "non-standalone occurrence in a Markdown code region")
 
     shell_reason = _shell_position_reason(occurrence.physical_line, line_offset)
     if shell_reason:
         return _classify(occurrence, "executable", shell_reason)
-    comment = _unquoted_comment_index(occurrence.physical_line)
-    if comment is not None and comment <= line_offset:
-        return _classify(occurrence, "reference", "shell comment reference")
-    if _structured_identifier_reference(text, occurrence):
-        return _classify(occurrence, "reference", "identifier-adjacent git-spice reference")
     if _exact_metadata_identifier_reference(occurrence):
-        return _classify(occurrence, "reference", "exact package or skill identifier")
+        return _classify(occurrence, "reference", PACKAGE_OR_SKILL_IDENTIFIER_REFERENCE_REASON)
+    if _exact_markdown_heading_reference(occurrence):
+        return _classify(occurrence, "reference", MARKDOWN_HEADING_REFERENCE_REASON)
     if path is None or manifest_usage is None:
         raise ValueError("unlisted prose reference in prose manifest outside shell command position")
     entries = {entry.exact_physical_line: entry for entry in _manifest_entries(path)}
@@ -1236,7 +1289,7 @@ def classify_git_spice_occurrences(text: str, occurrences: list[GitSpiceOccurren
     return occurrences
 
 
-def strip_shell_comments(snippet: str) -> str:
+def strip_shell_comments(snippet: str, comment_at_start: bool = True) -> str:
     result = []
     quote = None
     index = 0
@@ -1267,7 +1320,10 @@ def strip_shell_comments(snippet: str) -> str:
             result.append(character)
             index += 1
             continue
-        if character == "#" and (not result or result[-1].isspace() or result[-1] in ";&|()"):
+        if character == "#" and (
+            (index == 0 and comment_at_start)
+            or (result and (result[-1].isspace() or result[-1] in ";&|()"))
+        ):
             newline = snippet.find("\n", index)
             if newline == -1:
                 break
@@ -1279,8 +1335,8 @@ def strip_shell_comments(snippet: str) -> str:
     return "".join(result)
 
 
-def tokenize_executable_snippet(snippet: str) -> list[str]:
-    uncommented = strip_shell_comments(snippet)
+def tokenize_executable_snippet(snippet: str, comment_at_start: bool = True) -> list[str]:
+    uncommented = strip_shell_comments(snippet, comment_at_start)
     normalized = re.sub(r"\\\r?\n", " ", uncommented).replace("\r\n", "\n").replace("\n", " ; ")
     lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
@@ -1318,22 +1374,17 @@ def _occurrence_source_end(text: str, occurrence: GitSpiceOccurrence) -> int:
     return _continued_prose_source_end(text, occurrence)
 
 
-def extract_shell_invocations(text: str, executable_occurrences: list[GitSpiceOccurrence]) -> list[list[str]]:
-    invocations = []
-    for occurrence in executable_occurrences:
-        physical = occurrence.physical_line.strip()
-        if physical.startswith("<") and physical.endswith(">"):
-            snippet = occurrence.physical_line[occurrence.column - 1:].rstrip()[:-1]
-        else:
-            snippet = text[occurrence.start:_occurrence_source_end(text, occurrence)]
-        tokens = tokenize_executable_snippet(snippet)
-        if not tokens or tokens[0] != "git-spice":
-            raise ValueError("argument-bearing git-spice occurrence could not be shell-tokenized as an invocation")
-        end = 1
-        while end < len(tokens) and not is_shell_control_token(tokens[end]):
-            end += 1
-        invocations.append(tokens[:end])
-    return invocations
+def extract_invocation_from_occurrence(text: str, occurrence: GitSpiceOccurrence) -> list[str]:
+    physical = occurrence.physical_line.strip()
+    if physical.startswith("<") and physical.endswith(">"):
+        tail = occurrence.physical_line[occurrence.column - 1 + len("git-spice"):].rstrip()[:-1]
+    else:
+        tail = text[occurrence.end:_occurrence_source_end(text, occurrence)]
+    tokens = tokenize_executable_snippet(tail, comment_at_start=False)
+    end = 0
+    while end < len(tokens) and not is_shell_control_token(tokens[end]):
+        end += 1
+    return ["git-spice", *tokens[:end]]
 
 
 def executable_git_spice_invocations(text: str) -> list[list[str]]:
@@ -1341,7 +1392,7 @@ def executable_git_spice_invocations(text: str) -> list[list[str]]:
     occurrences = inventory_git_spice_occurrences(text, regions)
     classify_git_spice_occurrences(text, occurrences)
     executable = [occurrence for occurrence in occurrences if occurrence.classification == "executable"]
-    return extract_shell_invocations(text, executable)
+    return [extract_invocation_from_occurrence(text, occurrence) for occurrence in executable]
 
 
 def executable_git_spice_commands(text: str) -> list[str]:
@@ -1530,8 +1581,8 @@ def audit_git_spice_occurrences(path: Path, text: str) -> list[GitSpiceOccurrenc
 
     for occurrence in executable_occurrences:
         try:
-            invocation = extract_shell_invocations(text, [occurrence])[0]
-        except (IndexError, ValueError) as error:
+            invocation = extract_invocation_from_occurrence(text, occurrence)
+        except ValueError as error:
             raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"malformed executable occurrence: {error}")) from error
         command = " ".join(invocation)
         try:

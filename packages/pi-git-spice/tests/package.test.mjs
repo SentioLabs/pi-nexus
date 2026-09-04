@@ -12,6 +12,12 @@ const runtimeManifest = JSON.parse(execFileSync("python3", [
   "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps([target for _, target in module.RUNTIME_MANIFEST]))",
   migrationScript,
 ], { encoding: "utf8" }));
+const productionReferenceContract = JSON.parse(execFileSync("python3", [
+  "-B",
+  "-c",
+  "import importlib.util, json, sys; spec = importlib.util.spec_from_file_location('migration', sys.argv[1]); module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); print(json.dumps({'approvedStructuralReasons': sorted(getattr(module, 'APPROVED_STRUCTURAL_REFERENCE_REASONS', ())), 'proseReferenceReason': module.PROSE_REFERENCE_REASON}))",
+  migrationScript,
+], { encoding: "utf8" }));
 const readText = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), "utf8");
 const readJson = (relative) => JSON.parse(readText(relative));
 
@@ -105,22 +111,34 @@ const classifyGitSpiceCommand = (command) => {
   return null;
 };
 
-const approvedStructuralReferenceReasons = new Set([
+const expectedStructuralReasons = new Set([
+  "exact registered git-spice prompt identifier",
+  "exact registered git-spice agent identifier",
+  "exact registered git-spice upstream identifier",
   "exact package or skill identifier",
-  "exact standalone fenced code token",
+  "exact standalone git-spice Markdown heading",
   "exact standalone inline code token",
-  "identifier-adjacent git-spice reference",
-  "shell comment reference",
+  "exact standalone fenced code token",
 ]);
+const exportedApprovedStructuralReasons = new Set(productionReferenceContract.approvedStructuralReasons);
 
 const assertApprovedReferenceReasons = (relative, reasons, proseReferenceReason) => {
   for (const reason of reasons) {
     assert.ok(
-      approvedStructuralReferenceReasons.has(reason) || reason === proseReferenceReason,
+      exportedApprovedStructuralReasons.has(reason) || reason === proseReferenceReason,
       `${relative} has unapproved git-spice reference reason: ${JSON.stringify(reason)}`,
     );
   }
 };
+
+test("production and independent snapshots dual-lock exact structural reference reasons", () => {
+  assert.deepEqual(
+    Array.from(exportedApprovedStructuralReasons).sort(),
+    Array.from(expectedStructuralReasons).sort(),
+  );
+  assert.equal(exportedApprovedStructuralReasons.has("identifier-adjacent git-spice reference"), false);
+  assert.equal(exportedApprovedStructuralReasons.has("shell comment reference"), false);
+});
 
 test("package command audit extracts bare unknown commands without known-prefix filtering", () => {
   assert.deepEqual(executableGitSpiceCommands("git-spice future mutate"), ["git-spice future mutate"]);
@@ -156,6 +174,23 @@ test("committed runtime occurrence inventories reconcile and validate independen
     assert.ok(result.reasons.every((reason) => reason.length > 0), `${relative} records every classification reason`);
     assertApprovedReferenceReasons(relative, result.referenceReasons, result.proseReferenceReason);
   }
+});
+
+test("committed sentence-final bare git-spice reference is prose-manifest-backed", () => {
+  const physicalLine = "- **base** — the branch a given branch was created from. Stored as metadata by git-spice.";
+  const probe = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "path = pathlib.Path('skills/git-spice/SKILL.md')",
+    "text = pathlib.Path(sys.argv[2], path).read_text(encoding='utf8')",
+    "occurrences = module.audit_git_spice_occurrences(path, text)",
+    "line = sys.argv[3]",
+    "print(json.dumps([{'line': item.physical_line, 'reason': item.reason} for item in occurrences if item.physical_line == line]))",
+  ].join("\n");
+  const occurrences = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, packageRoot, physicalLine], { encoding: "utf8" }));
+  assert.deepEqual(occurrences, [{ line: physicalLine, reason: productionReferenceContract.proseReferenceReason }]);
 });
 
 test("committed runtime uses every static prose manifest entry at exact cardinality", () => {
