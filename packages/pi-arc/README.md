@@ -167,43 +167,26 @@ The brainstorm skill writes a first-line marker like `<!-- arc-review: id=<id> -
 
 ## Arc model profiles
 
-Use `/arc-models` to configure Arc's recommended Pi model and thinking level per workflow role. Arc stores profile preferences at `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`, with top-level `modelProfiles`.
-
-Profile keys map directly to the workflow roles: `brainstorm`, `plan`, `issueManager`, `builder`, `devopsBuilder`, `codeReviewer`, `docWriter`, `specReviewer`, and `evaluator`.
+Use `/arc-models` to configure Arc's recommended Pi model and reasoning effort per workflow role. Arc stores preferences at `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`; its `modelProfiles` take precedence over legacy tiers, while an explicit dispatch `model:` override takes precedence over profiles.
 
 ```json
 {
   "version": 1,
   "modelProfiles": {
-    "brainstorm": {
-      "model": "openai-codex/gpt-5.6-sol",
-      "thinking": "high"
-    },
-    "issueManager": {
-      "model": "openai-codex/gpt-5.6-luna",
-      "thinking": "off"
-    },
-    "builder": {
-      "model": "openai-codex/gpt-5.6-terra",
-      "thinking": "medium"
-    },
-    "devopsBuilder": {
-      "model": "openai-codex/gpt-5.6-sol",
-      "thinking": "high"
-    },
-    "codeReviewer": {
-      "model": "openai-codex/gpt-5.6-sol",
-      "thinking": "high"
-    }
+    "brainstorm": { "model": "openai-codex/gpt-6-astra", "thinking": "high" },
+    "issueManager": { "model": "openai-codex/gpt-5.6-luna", "thinking": "off" },
+    "builder": { "model": "openai-codex/gpt-5.6-terra", "thinking": "medium" },
+    "devopsBuilder": { "model": "openai-codex/gpt-6-astra", "thinking": "high" },
+    "codeReviewer": { "model": "openai-codex/gpt-6-astra", "thinking": "high" }
   }
 }
 ```
 
-`/arc-models` lists only models returned by Pi's active model registry. If a configured model is unavailable, it prompts you to choose a replacement before saving.
+Recommended defaults are Luna (`off` for issue management and `low` for docs), Terra `medium` for builders, and Astra `high` for brainstorm, plan, large-tier DevOps, reviewers, and evaluators. Existing profiles—including Sol or custom-model profiles—are never rewritten. `/arc-models` only offers efforts advertised by the selected model: Astra has `low` through `max`, but not `off`/`none`; `low` is its minimum effective effort.
 
-The same `modelProfiles` shape works for `plan`, `devopsBuilder`, `docWriter`, `specReviewer`, and `evaluator` profiles. Based on [OpenAI's GPT-5.6 preview](https://openai.com/index/previewing-gpt-5-6-sol/), the family maps naturally onto Arc's tiers: Luna for fast/affordable `nano` and `small` work, Terra for balanced `standard` implementation, and Sol for `large` design, operations, review, and adversarial evaluation. `devopsBuilder` defaults high because live-system operations require blast-radius and rollback judgment.
+For hard but bounded implementation, Terra `high` is the cost-sensitive explicit option. Astra `low`/`medium` are explicit capability-first options, and Astra `high` is for cross-cutting ambiguity and expensive mistakes. There is no direct Arc benchmark proving Terra-high versus Astra-low/medium; API pricing is not Codex quota pricing. Treat Astra `xhigh`/`max` as exceptional bounded escalation, never an automatic retry ladder. See [`arc-build` model selection](skills/arc-build/SKILL.md#model-selection) for dispatch syntax and the retained retry ceiling.
 
-Legacy `arc.modelTiers` settings in `~/.pi/agent/settings.json` or project `.pi/settings.json` remain supported as a compatibility fallback, but new configuration should use `/arc-models` and `modelProfiles`.
+Legacy `arc.modelTiers` remains a model-only compatibility fallback. The package defaults are Luna for `nano`/`small`, Terra for `standard`, and Astra for `large`; missing Astra remains visibly unavailable in the registry-driven setup flow rather than silently selecting another model.
 
 <!-- Legacy section marker retained for older checks: ## Sync Arc specialists -->
 ## Arc specialists in pi-subagents

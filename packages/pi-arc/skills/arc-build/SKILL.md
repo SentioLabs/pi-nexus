@@ -19,73 +19,43 @@ This catches the case where build was invoked without going through `brainstorm`
 
 ## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. GPT-5.6 maps naturally onto Arc's roles: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning. The dedicated `devopsBuilder` profile uses Sol because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
+`modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred role-specific policy. Resolution is: explicit dispatch `model:` override, configured role profile, legacy `arc.modelTiers`, then package defaults. Existing profiles, including Sol or custom models, remain authoritative; recommendations never rewrite them. The legacy tier map remains model-only.
 
-| Tier | Default concrete model | Use for |
+| Role / tier | Recommended model and effort | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
-| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| issueManager / `nano` | Luna, `off` | Low-reasoning Arc CLI work |
+| docWriter / `small` | Luna, `low` | Documentation and mechanical edits |
+| builder / `standard` | Terra, `medium` | Contained implementation |
+| brainstorm, plan | Astra, `high` | Design exploration and task sequencing |
+| devopsBuilder, codeReviewer, specReviewer, evaluator / `large` | Astra, `high` | Operations, review, and adversarial validation |
 
-```markdown
-Arc model selection resolves in this order:
+Package defaults are Luna for `nano`/`small`, Terra for `standard`, and Astra for `large`. Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; it does not support `off`/`none`, so `low` is its minimum effective effort. The picker only offers levels advertised by the active model. `xhigh` and `max` are deliberate exceptional escalations, not default retries; fix missing context or failing tools rather than blindly increasing effort.
 
-1. explicit dispatch `model:` override;
-2. configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`;
-3. legacy `arc.modelTiers` from Pi settings;
-4. package defaults.
+Terra at `high` is the cost-sensitive option for harder but bounded implementation. Astra at `low` or `medium` is an explicit choice when stronger model capability is needed without maximum effort; no direct Arc benchmark exists showing Terra-high and Astra-low/medium are equivalent. API prices are not Codex quota prices—compare accepted-task quality, retries, total tokens/cost, and elapsed time on representative work before changing cost-sensitive defaults.
 
-Users should run `/arc-models` to configure role-specific models. Keep `arc.modelTiers` documented only as a compatibility fallback for older setups.
+Examples use Pi-native `model:effort` suffixes when an explicit override is intended:
+
+```text
+# Preferred pi-subagents dispatches; omit model to preserve the configured role profile.
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh", async: true, clarify: false })
 ```
 
-Legacy fallback settings can still override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
+Use `openai-codex/gpt-6-astra:xhigh` or `openai-codex/gpt-6-astra:max` only for exceptional, explicitly bounded work. Do not create an automatic max retry ladder. The existing bounded retry ceiling remains: re-dispatches stop at `large`; if that does not resolve the blocker, escalate with the blocker summary rather than increasing effort automatically.
 
-```json
-{
-  "arc": {
-    "modelTiers": {
-      "nano": "openai-codex/gpt-5.6-luna",
-      "small": "openai-codex/gpt-5.6-luna",
-      "standard": "openai-codex/gpt-5.6-terra",
-      "large": "openai-codex/gpt-5.6-sol"
-    }
-  }
-}
-```
-
-Legacy aliases still resolve for compatibility: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. Prefer the Pi-native tier names in new prompts, including `nano` for low-reasoning issue-manager work.
-
-Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-builder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
-
-**Status visibility:** For long Arc workers after `/arc-plan`, prefer `pi-subagents` launches with `async: true, clarify: false`. The returned run appears in `/subagents-status`; you can also poll it with `subagent({ action: "status", id: "<run-id>" })`. Do not continue to validation, review, patch application, or arc closure until the async run is terminal and you have read its final output. The raw `arc_agent` fallback never appears in `/subagents-status`.
+Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show a required Arc specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled sequential `arc_agent` fallback.
 
 | Task signal | Dispatch `model:` |
 |---|---|
-| Bulk issue creation or other low-reasoning Arc CLI operations | `nano` |
-| Mechanical: 1-2 files, spec unambiguous, no cross-cutting concerns | `small` |
-| Standard: integration work, multi-file but contained, unambiguous | omit `model:` (use agent default) or `standard` |
-| Complex: 3+ files, cross-layer, design judgment required, migrations, breaking changes | `large` |
-| Re-dispatch after `BLOCKED` | escalate one tier (`nano` → `small` → `standard` → `large`); stop at `large` |
-| Re-dispatch after `NEEDS_CONTEXT` | same tier, richer context |
+| Bulk issue creation or other low-reasoning Arc CLI operations | omit (issueManager profile) or `nano` fallback |
+| Mechanical, unambiguous work | omit (docWriter profile) or `small` fallback |
+| Standard contained implementation | omit (builder profile) or `standard` fallback |
+| Cross-layer, high-risk, or adversarial work | omit (configured role profile) or `large` fallback |
+| Re-dispatch after `BLOCKED` | fix context/tools or move one tier up, stopping at `large` |
+| Re-dispatch after `NEEDS_CONTEXT` | same tier with richer context |
 
-Examples:
-
-```text
-# Self-contained fallback:
-arc_agent(agent="builder", model="small", task="...")       # mechanical
-arc_agent(agent="builder", task="...")                      # standard default
-arc_agent(agent="builder", model="large", task="...")       # complex
-
-# Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
-```
-
-**When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
-
-**Escalation rule:** If a subagent returns `BLOCKED` with a reasoning or capability complaint, re-dispatch with the next tier up before asking the human. Stop escalating at `large` — if `large` also returns `BLOCKED`, escalate to the human with the subagent's blocker summary.
+**When unsure, omit `model:`** so the configured role profile remains authoritative.
 
 ## Dispatch Modes
 

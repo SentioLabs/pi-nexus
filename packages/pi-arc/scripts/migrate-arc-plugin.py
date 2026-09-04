@@ -430,14 +430,24 @@ replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dis
 
 Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
-`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults map the GPT-5.6 family by role: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning.
+`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults map Luna to fast/affordable work, Terra to balanced implementation, and Astra to high-risk reasoning.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
 | `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
 | `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `large` | `openai-codex/gpt-6-astra` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+
+Role profiles carry effort: Luna is `off` for issue management and `low` for docs; Terra is `medium` for builders; Astra is `high` for brainstorm, plan, DevOps, review, and evaluation. Existing profiles and explicit dispatch overrides remain authoritative. Astra supports `low`, `medium`, `high`, `xhigh`, and `max`, not `off`/`none`; use `low` as its minimum effective effort. Use Terra `high` for harder bounded implementation. Astra `low`/`medium` are explicit capability-first choices, but no direct Arc benchmark shows they equal Terra-high. API prices are not Codex quota prices. Reserve Astra `xhigh`/`max` for exceptional bounded work, not automatic retries.
+
+Explicit Pi-subagents dispatches use `model:effort` suffixes:
+
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh" })
+```
 
 Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
 
@@ -448,7 +458,7 @@ Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/s
       "nano": "openai-codex/gpt-5.6-luna",
       "small": "openai-codex/gpt-5.6-luna",
       "standard": "openai-codex/gpt-5.6-terra",
-      "large": "openai-codex/gpt-5.6-sol"
+      "large": "openai-codex/gpt-6-astra"
     }
   }
 }
@@ -480,7 +490,7 @@ arc_agent(agent="builder", model="large", task="...")       # complex
 # Preferred when pi-subagents Arc agents are installed:
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -705,6 +715,13 @@ patch_file("skills/arc/SKILL.md", [
     ),
 ])
 
+insert_before_if_missing(
+    "skills/arc/SKILL.md",
+    "## Quick Start",
+    "## Model policy\n\nArc recommends Luna for low-cost issue-manager/docs work, Terra at medium for standard builders, and Astra at high for planning and large-tier operations/review. Existing role profiles and explicit dispatch overrides remain authoritative. See [arc-build model selection](../arc-build/SKILL.md#model-selection) for role/effort guidance, supported-effort limits, and explicit `model:effort` dispatch examples.\n\n",
+    "## Model policy",
+)
+
 patch_file("skills/arc-brainstorm/SKILL.md", [
     (
         "- Ask questions **one at a time** — don't dump a list\n- **Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool** for structured decisions using the package `questions[]` schema\n- Use open-ended text questions only when you need freeform feedback\n- Understand: purpose, constraints, success criteria, target users\n- Continue until you have enough to propose approaches",
@@ -746,14 +763,24 @@ patch_file("skills/arc-brainstorm/SKILL.md", [
 
 replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dispatch Modes", """## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. GPT-5.6 maps naturally onto Arc's roles: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning. The dedicated `devopsBuilder` profile uses Sol because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
+Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. Arc recommends Luna for fast/affordable work, Terra for balanced implementation, and Astra for high-risk reasoning. The dedicated `devopsBuilder` profile uses Astra because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
 | `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
 | `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `large` | `openai-codex/gpt-6-astra` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+
+Role profiles carry effort: Luna is `off` for issue management and `low` for docs; Terra is `medium` for builders; Astra is `high` for brainstorm, plan, DevOps, review, and evaluation. Existing profiles and explicit dispatch overrides remain authoritative. Astra supports `low`, `medium`, `high`, `xhigh`, and `max`, not `off`/`none`; use `low` as its minimum effective effort. Use Terra `high` for harder bounded implementation. Astra `low`/`medium` are explicit capability-first choices, but no direct Arc benchmark shows they equal Terra-high. API prices are not Codex quota prices. Reserve Astra `xhigh`/`max` for exceptional bounded work, not automatic retries.
+
+Explicit Pi-subagents dispatches use `model:effort` suffixes:
+
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh" })
+```
 
 ```markdown
 Arc model selection resolves in this order:
@@ -775,7 +802,7 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
       "nano": "openai-codex/gpt-5.6-luna",
       "small": "openai-codex/gpt-5.6-luna",
       "standard": "openai-codex/gpt-5.6-terra",
-      "large": "openai-codex/gpt-5.6-sol"
+      "large": "openai-codex/gpt-6-astra"
     }
   }
 }
@@ -807,7 +834,7 @@ arc_agent(agent="builder", model="large", task="...")       # complex
 # Preferred when pi-subagents Arc agents are installed:
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
