@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/SentioLabs/pi-nexus/compare/pi-code-quality-v0.2.0...pi-code-quality-v0.3.0) (2026-09-04)
+
+
+### Features
+
+* **code-quality:** sync deep review resources ([#11](https://github.com/SentioLabs/pi-nexus/issues/11)) ([bdfb56d](https://github.com/SentioLabs/pi-nexus/commit/bdfb56d50a82681b1be0a213fb1791f2f00423de))
+
 ## [0.2.0](https://github.com/SentioLabs/pi-nexus/compare/pi-code-quality-v0.1.0...pi-code-quality-v0.2.0) (2026-08-12)
 
 
