@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.11.0...pi-arc-v0.12.0) (2026-09-04)
+
+
+### Features
+
+* **pi-arc:** adopt GPT-6 Astra and effort-aware model policy ([#13](https://github.com/SentioLabs/pi-nexus/issues/13)) ([5326bb1](https://github.com/SentioLabs/pi-nexus/commit/5326bb1d825209419a82fbcc12b90d902a1a3fcd))
+
 ## [0.11.0](https://github.com/SentioLabs/pi-nexus/compare/pi-arc-v0.10.1...pi-arc-v0.11.0) (2026-07-17)
 
 
