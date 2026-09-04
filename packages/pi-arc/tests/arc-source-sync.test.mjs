@@ -59,6 +59,32 @@ test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
   assert.match(source, /Do not tell the user "ready to push"/);
 });
 
+test('migration preserves the general Arc model-policy guidance', () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-model-policy-'));
+  const packageRoot = path.join(fixture, 'pi-arc');
+  const scriptPath = path.join(packageRoot, 'scripts', 'migrate-arc-plugin.py');
+  const source = '/home/bfirestone/devspace/personal/bfirestone/agent-marketplace/claude-marketplace/plugins/arc';
+
+  try {
+    mkdirSync(path.dirname(scriptPath), { recursive: true });
+    const migration = read('scripts/migrate-arc-plugin.py');
+    const stop = migration.lastIndexOf('patch_file("skills/arc-brainstorm/SKILL.md", [');
+    assert.notEqual(stop, -1, 'missing model-policy overlay boundary');
+    writeFileSync(
+      scriptPath,
+      `${migration.slice(0, stop)}\nshutil.copytree(ARC_ROOT / "skills", REPO_ROOT / "skills")\n`,
+    );
+    execFileSync('python3', [scriptPath, source], { cwd: packageRoot, stdio: 'pipe' });
+
+    const arcSkill = readFileSync(path.join(packageRoot, 'skills', 'arc', 'SKILL.md'), 'utf8');
+    assert.match(arcSkill, /## Model policy/);
+    assert.match(arcSkill, /Arc recommends Luna for low-cost issue-manager\/docs work/);
+    assert.match(arcSkill, /\[arc-build model selection\]\(\.\.\/arc-build\/SKILL\.md#model-selection\)/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test('failed regeneration leaves installed resources untouched', () => {
   const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-invalid-source-'));
   const protectedPath = 'skills/arc/SKILL.md';

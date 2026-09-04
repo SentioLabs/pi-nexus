@@ -715,6 +715,13 @@ patch_file("skills/arc/SKILL.md", [
     ),
 ])
 
+insert_before_if_missing(
+    "skills/arc/SKILL.md",
+    "## Quick Start",
+    "## Model policy\n\nArc recommends Luna for low-cost issue-manager/docs work, Terra at medium for standard builders, and Astra at high for planning and large-tier operations/review. Existing role profiles and explicit dispatch overrides remain authoritative. See [arc-build model selection](../arc-build/SKILL.md#model-selection) for role/effort guidance, supported-effort limits, and explicit `model:effort` dispatch examples.\n\n",
+    "## Model policy",
+)
+
 patch_file("skills/arc-brainstorm/SKILL.md", [
     (
         "- Ask questions **one at a time** — don't dump a list\n- **Use the bundled `@juicesharp/rpiv-ask-user-question` `ask_user_question` tool** for structured decisions using the package `questions[]` schema\n- Use open-ended text questions only when you need freeform feedback\n- Understand: purpose, constraints, success criteria, target users\n- Continue until you have enough to propose approaches",
