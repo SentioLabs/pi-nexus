@@ -61,7 +61,7 @@ const reviewedGeneratedSha256 = {
   "prompts/git-spice-stack.md": "3e031ef21aa66a1e8f525be32b69cf5efd18e435bd5d4fa764235edef06b70f2",
   "prompts/git-spice-submit.md": "c5ce194c3f989ea5b3bfbf66f6726c1c23318ee67c61f50cdb713fdf8f244437",
   "prompts/git-spice-sync.md": "7f72f317bdda57d3b15c04b000e3bf5d6e23bedb7fddd816652cc0fdbbeeb474",
-  "skills/git-spice/SKILL.md": "7e2e267f4151c040f97c69dda598cea0d7cb766d79ae7e0b799525629d09917a",
+  "skills/git-spice/SKILL.md": "5bd01732856e6295eec9108fde700664de08004760787df430a7cbfc82f4410e",
   "skills/stacking-workflow/SKILL.md": "e3b8a55ba89a3a81b65f50487826c28c54c3b850182c4a391515a86e9ac3c4c0",
 };
 const expectedPackedPaths = [

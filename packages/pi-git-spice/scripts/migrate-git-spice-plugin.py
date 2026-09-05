@@ -661,10 +661,6 @@ def transform_git_spice_skill(text: str) -> str:
     frontmatter, body = split_frontmatter(normalized, context)
     validate_transformation_anchors(body, context)
     body = replace_section(body, "## Dispatching the subagents", "## Configuration", "## Dispatching optional Pi subagents\n\n" + DISPATCH_CONTRACT, context)
-    body = require_replace(body, "git-spice is a CLI for managing **stacks of dependent Git branches**.", "The git-spice CLI manages **stacks of dependent Git branches**.", context)
-    body = require_replace(body, "git-spice operations are *local-first*.", "The git-spice CLI's operations are *local-first*.", context)
-    body = require_replace(body, "git-spice rebases run `git rebase` under the hood.", "The git-spice CLI runs `git rebase` under the hood.", context)
-    body = require_replace(body, "git-spice won't auto-advance", "`git-spice` won't auto-advance", context)
     body = transform_prompt_references(body, context)
     body = transform_executable_guidance(body, context)
     body = require_replace(

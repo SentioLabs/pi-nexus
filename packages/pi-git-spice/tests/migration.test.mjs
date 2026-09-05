@@ -680,23 +680,28 @@ for (const [name, relative, makeContent, diagnostic] of failureVariants) {
   });
 }
 
-const autoAdvanceSourceText = "git-spice won't auto-advance";
-for (const [variant, mutate, expectedCount] of [
-  ["zero", (text) => text.replace(/^Using raw .*git-spice.*auto-advance.*\n/m, ""), 0],
-  ["duplicate", (text) => text.replace(autoAdvanceSourceText, `${autoAdvanceSourceText}; ${autoAdvanceSourceText}`), 2],
-  ["drifted", (text) => text.replace(autoAdvanceSourceText, "git-spice does not auto-advance"), 0],
-]) {
-  test(`git-spice auto-advance transform rejects ${variant} source cardinality before installation`, () => {
-    const relative = "skills/git-spice/SKILL.md";
-    const source = createSourceFixture({ [relative]: mutate(sourceFiles()[relative]) });
-    const packageCopy = createTemporaryPackage();
-    const sentinels = installedSentinels(packageCopy.root);
-    const result = runMigration(packageCopy.script, source, packageCopy.root);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, new RegExp(`Expected exactly one source text occurrence.*${relative.replaceAll("/", "\\/")}.*found ${expectedCount}`));
-    assertRollback(packageCopy.root, sentinels);
-  });
-}
+test("git-spice skill preserves ordinary upstream prose byte-for-byte", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  assert.equal(runMigration(packageCopy.script, source, packageCopy.root).status, 0);
+  const output = readFileSync(path.join(packageCopy.root, "skills/git-spice/SKILL.md"), "utf8");
+  for (const sentence of [
+    "git-spice is a CLI for managing **stacks of dependent Git branches**.",
+    "git-spice operations are *local-first*.",
+    "git-spice rebases run `git rebase` under the hood.",
+    "git-spice won't auto-advance",
+  ]) {
+    assert.equal(output.split(sentence).length - 1, 1, sentence);
+  }
+  for (const rewrite of [
+    "The git-spice CLI manages **stacks of dependent Git branches**.",
+    "The git-spice CLI's operations are *local-first*.",
+    "The git-spice CLI runs `git rebase` under the hood.",
+    "`git-spice` won't auto-advance",
+  ]) {
+    assert.equal(output.includes(rewrite), false, rewrite);
+  }
+});
 
 const guardedMutationAnchors = [
   ["init/reset", "commands/init.md", mutationAnchorPatterns.reset, /reset mutation anchor cardinality/],
@@ -836,6 +841,33 @@ test("KeyboardInterrupt during staging preserves installed roots and removes sta
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /KeyboardInterrupt/);
   assertRollback(packageCopy.root, sentinels);
+});
+
+test("KeyboardInterrupt during a live-root swap restores every original byte and removes transaction debris", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  installedSentinels(packageCopy.root);
+  const before = runtimeSnapshot(packageCopy.root);
+  const injection = [
+    "calls = {'backups': 0, 'installs': 0}",
+    "original_move = module.rename_path",
+    "def interrupted_move(source, destination):",
+    "    result = original_move(source, destination)",
+    "    if destination.parent.name == 'backups': calls['backups'] += 1",
+    "    if source.parent.name == 'staged':",
+    "        calls['installs'] += 1",
+    "        if calls['installs'] == 1:",
+    "            assert calls['backups'] >= 1",
+    "            assert destination.exists()",
+    "            raise KeyboardInterrupt('injected live-root swap interruption')",
+    "    return result",
+    "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=interrupted_move, remove=module.remove_tree)",
+  ].join("\n");
+  const result = runProbe(installationProbe(injection), packageCopy, source);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /KeyboardInterrupt: injected live-root swap interruption/);
+  assertRuntimeSnapshot(packageCopy.root, before);
+  assertNoTransactionDebris(packageCopy.root);
 });
 
 test("installed-root verification failure restores all originals", () => {
