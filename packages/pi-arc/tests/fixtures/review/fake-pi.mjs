@@ -37,6 +37,8 @@ if (mode === 'malformed') process.stdout.write('{not-json}\n');
 else if (mode === 'oversize') process.stdout.write(`${JSON.stringify({ type: 'diagnostic', text: 'x'.repeat(2 * 1024 * 1024) })}\n`);
 else if (mode === 'malformed-tail-lines') process.stdout.write(`${'{}\n'.repeat(129)}{not-json}\n`);
 else if (mode === 'malformed-tail-bytes') process.stdout.write(`${JSON.stringify({ text: 'x'.repeat(40 * 1024) })}\n${JSON.stringify({ text: 'y'.repeat(40 * 1024) })}\n{not-json}\n`);
+else if (mode === 'blank-tail-lines') process.stdout.write(`${'{}\n'.repeat(129)}\n{}\n`);
+else if (mode === 'valid-crlf') process.stdout.write(`${JSON.stringify({ type: 'fixture-complete' })}\r\n`);
 else process.stdout.write(`${JSON.stringify({ type: 'fixture-complete' })}\n`);
 
 if (mode === 'no-artifacts') process.exit(0);

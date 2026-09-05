@@ -22,7 +22,9 @@ import {
   type ArcReviewGuardConfig,
   type ArcReviewGuardMaterialization,
   type ArcReviewLaunchIdentity,
+  type ArcReviewPreparationReferences,
   type ArcReviewPreflightInput,
+  type ArcReviewStartRequest,
   type ArcTerminationEvidence,
 } from "./reports.ts";
 
@@ -62,6 +64,8 @@ const PRIVATE_DIRECTORIES = {
 } as const;
 const GUARD_EXTENSION_NAME = "review-child.ts";
 const GUARD_CONFIG_NAME = "arc-review-guard.json";
+const GUARD_CONFIG_KEYS = ["acknowledgementPath", "allowedTools", "attemptId", "expectedGuardSourceDigest", "expectedReportSchemaDigest", "expectedReviewInputDigest", "inputRoots", "reportPath", "reportRoot", "reportSchemaPath", "version"] as const;
+const FIXED_GUARD_TOOLS = ["read", "grep", "find", "ls", "structured_output", "arc_review_report"] as const;
 const EVIDENCE_NAME = "guard-evidence.jsonl";
 const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
 const MAX_DIAGNOSTIC_LINES = 128;
@@ -187,8 +191,7 @@ function validateMaterializationConfig(config: Omit<ArcReviewGuardConfig, "expec
   const paths = [...config.inputRoots, config.reportRoot, config.reportPath, config.reportSchemaPath, config.acknowledgementPath];
   if (paths.some((value) => typeof value !== "string" || !path.isAbsolute(value) || value.includes("\0") || Buffer.byteLength(value, "utf8") > 4096)) throw new Error("guard config paths must be bounded absolute paths");
   if (!/^[a-f0-9]{64}$/.test(config.expectedReviewInputDigest)) throw new Error("guard config review input digest is invalid");
-  const fixed = ["read", "grep", "find", "ls", "structured_output", "arc_review_report"];
-  if (!Array.isArray(config.allowedTools) || config.allowedTools.length !== fixed.length || config.allowedTools.some((value, index) => value !== fixed[index])) throw new Error("guard config allowlist is invalid");
+  if (!Array.isArray(config.allowedTools) || config.allowedTools.length !== FIXED_GUARD_TOOLS.length || config.allowedTools.some((value, index) => value !== FIXED_GUARD_TOOLS[index])) throw new Error("guard config allowlist is invalid");
 }
 
 export async function materializeArcReviewGuard(input: {
@@ -270,14 +273,54 @@ async function manifestReviewerPaths(inputRoot: string, manifestPath: string): P
   return materialPaths;
 }
 
-async function validateAttemptPaths(attempt: ArcPreparedReviewAttempt, trustedExtensions: string[]): Promise<string[]> {
-  const repositoryRoot = await canonicalDirectory(attempt.request.repositoryRoot, "repositoryRoot");
-  const stateDir = await canonicalDirectory(attempt.stateDir, "stateDir", true);
+async function readBoundGuardConfig(preparation: ArcReviewPreparationReferences, expectedAttemptId?: string): Promise<ArcReviewGuardConfig> {
+  const bytes = await boundedRead(preparation.guardConfigPath, 256 * 1024, 0o400);
+  let value: unknown;
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { throw new Error("guard config is not strict UTF-8 JSON"); }
+  if (!isRecord(value)) throw new Error("guard config must be an object");
+  const keys = Object.keys(value).sort();
+  const expectedKeys = [...GUARD_CONFIG_KEYS].sort();
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) throw new Error("guard config must contain the exact expected keys");
+  if (value.version !== 1 || typeof value.attemptId !== "string" || !value.attemptId || value.attemptId.includes("\0") || Buffer.byteLength(value.attemptId, "utf8") > 256) {
+    throw new Error("guard config attempt identity is invalid");
+  }
+  if (expectedAttemptId !== undefined && value.attemptId !== expectedAttemptId) throw new Error("guard config attemptId does not match the complete attempt");
+  if (!Array.isArray(value.inputRoots) || value.inputRoots.length !== 1 || value.inputRoots[0] !== preparation.inputRoot) {
+    throw new Error("guard config inputRoots do not match the prepared input");
+  }
+  if (value.reportRoot !== preparation.reportRoot || value.reportSchemaPath !== preparation.reportSchemaPath || value.acknowledgementPath !== preparation.guardAcknowledgementPath) {
+    throw new Error("guard config artifact paths do not match the preparation references");
+  }
+  if (value.expectedReviewInputDigest !== preparation.reviewInputDigest) throw new Error("guard config review input digest does not match the preparation references");
+  if (!Array.isArray(value.allowedTools) || value.allowedTools.length !== FIXED_GUARD_TOOLS.length || value.allowedTools.some((entry, index) => entry !== FIXED_GUARD_TOOLS[index])) {
+    throw new Error("guard config allowlist does not match the fixed review policy");
+  }
+  if (typeof value.expectedGuardSourceDigest !== "string" || value.expectedGuardSourceDigest !== await sha256File(preparation.guardExtensionPath)) {
+    throw new Error("guard config source identity does not match the prepared guard");
+  }
+  if (typeof value.expectedReportSchemaDigest !== "string" || value.expectedReportSchemaDigest !== await sha256File(preparation.reportSchemaPath)) {
+    throw new Error("guard config schema identity does not match the prepared schema");
+  }
+  if (typeof value.reportPath !== "string") throw new Error("guard config does not name a fixed report path");
+  const reportPath = await canonicalDestination(value.reportPath, preparation.reportRoot, "fixed reportPath");
+  if (reportPath === preparation.guardAcknowledgementPath) throw new Error("guard config report and acknowledgement paths must be distinct");
+  return value as unknown as ArcReviewGuardConfig;
+}
+
+async function validateAttemptPaths(
+  preparation: ArcReviewPreparationReferences,
+  request: ArcReviewStartRequest,
+  trustedExtensions: string[],
+  expectedAttemptId?: string,
+): Promise<{ reviewerPaths: string[]; guardConfig: ArcReviewGuardConfig }> {
+  const repositoryRoot = await canonicalDirectory(request.repositoryRoot, "repositoryRoot");
+  const stateDir = await canonicalDirectory(preparation.stateDir, "stateDir", true);
   const inputParent = await canonicalDirectory(path.join(stateDir, "input"), "stateDir/input", true);
-  const inputRoot = await canonicalDirectory(attempt.inputRoot, "inputRoot");
+  const inputRoot = await canonicalDirectory(preparation.inputRoot, "inputRoot");
   const sourceRoot = await canonicalDirectory(path.join(inputRoot, "source"), "sourceRoot");
-  const runtimeRoot = await canonicalDirectory(attempt.runtimeRoot, "runtimeRoot", true);
-  const reportRoot = await canonicalDirectory(attempt.reportRoot, "reportRoot", true);
+  const runtimeRoot = await canonicalDirectory(preparation.runtimeRoot, "runtimeRoot", true);
+  const reportRoot = await canonicalDirectory(preparation.reportRoot, "reportRoot", true);
   const evidenceRoot = await canonicalDirectory(path.join(stateDir, "evidence"), "stateDir/evidence", true);
   if (runtimeRoot !== path.join(stateDir, "runtime") || reportRoot !== path.join(stateDir, "reports") || !below(inputParent, inputRoot) || inputRoot === inputParent) {
     throw new Error("attempt paths must use the approved stateDir input/runtime/reports sibling layout");
@@ -286,29 +329,33 @@ async function validateAttemptPaths(attempt: ArcPreparedReviewAttempt, trustedEx
   for (const [left, right, label] of [[inputRoot, runtimeRoot, "runtimeRoot"], [inputRoot, reportRoot, "reportRoot"], [runtimeRoot, reportRoot, "reportRoot"]] as const) {
     if (below(left, right) || below(right, left)) throw new Error(`${label} must be disjoint from other attempt roots`);
   }
-  const manifestPath = await canonicalRegularFile(attempt.manifestPath, "manifestPath");
+  const manifestPath = await canonicalRegularFile(preparation.manifestPath, "manifestPath");
   if (manifestPath !== path.join(inputRoot, "manifest.json")) throw new Error("manifestPath must name the canonical input manifest");
   const materialPaths = await manifestReviewerPaths(inputRoot, manifestPath);
   const expectedDiff = path.join(inputRoot, "materials", "diff.patch");
-  if (attempt.diffPath !== expectedDiff || !materialPaths.includes(expectedDiff)) throw new Error("diffPath must name the canonical public diff material");
-  for (const [name, value] of Object.entries({ baselinePath: attempt.baselinePath, inputDescriptorPath: attempt.inputDescriptorPath })) {
-    const file = await canonicalPrivateFile(value, name);
+  if (preparation.diffPath !== expectedDiff || !materialPaths.includes(expectedDiff)) throw new Error("diffPath must name the canonical public diff material");
+  for (const [name, pathValue] of Object.entries({ baselinePath: preparation.baselinePath, inputDescriptorPath: preparation.inputDescriptorPath })) {
+    const file = await canonicalPrivateFile(pathValue, name);
     if (path.dirname(file) !== evidenceRoot || below(inputRoot, file) || below(repositoryRoot, file)) throw new Error(`${name} must be private evidence below stateDir/evidence`);
   }
-  for (const [name, value] of Object.entries({
-    guardExtensionPath: attempt.guardExtensionPath,
-    guardConfigPath: attempt.guardConfigPath,
-    reportSchemaPath: attempt.reportSchemaPath,
+  for (const [name, pathValue] of Object.entries({
+    guardExtensionPath: preparation.guardExtensionPath,
+    guardConfigPath: preparation.guardConfigPath,
+    reportSchemaPath: preparation.reportSchemaPath,
   })) {
-    const file = await canonicalRegularFile(value, name);
+    const file = await canonicalPrivateFile(pathValue, name);
     if (!below(runtimeRoot, file) || below(inputRoot, file) || below(repositoryRoot, file)) throw new Error(`${name} must be private runtime material`);
   }
-  await canonicalDestination(attempt.guardAcknowledgementPath, reportRoot, "guardAcknowledgementPath");
+  if (preparation.guardExtensionPath !== path.join(runtimeRoot, GUARD_EXTENSION_NAME) || preparation.guardConfigPath !== path.join(runtimeRoot, GUARD_CONFIG_NAME)) {
+    throw new Error("guard paths do not identify the materialized review guard");
+  }
+  await canonicalDestination(preparation.guardAcknowledgementPath, reportRoot, "guardAcknowledgementPath");
+  const guardConfig = await readBoundGuardConfig(preparation, expectedAttemptId);
   for (let index = 0; index < trustedExtensions.length; index += 1) {
     const extension = await canonicalRegularFile(trustedExtensions[index], `trustedProviderExtensions[${index}]`);
     if (below(inputRoot, extension) || below(repositoryRoot, extension)) throw new Error("trusted provider extensions cannot come from review input or checkout");
   }
-  return [sourceRoot, manifestPath, ...materialPaths];
+  return { reviewerPaths: [sourceRoot, manifestPath, ...materialPaths], guardConfig };
 }
 
 async function privateEnvironment(attempt: ArcPreparedReviewAttempt, source: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
@@ -336,8 +383,10 @@ function promptContainsCanonicalPath(prompt: string, requiredPath: string): bool
     const before = index === 0 ? "" : prompt[index - 1];
     const afterIndex = index + requiredPath.length;
     const after = afterIndex === prompt.length ? "" : prompt[afterIndex];
-    const componentCharacter = (value: string) => value !== "" && /[A-Za-z0-9_~\/-]/.test(value);
-    if (!componentCharacter(before) && !componentCharacter(after)) return true;
+    const afterNext = afterIndex + 1 >= prompt.length ? "" : prompt[afterIndex + 1];
+    const validBefore = before === "" || /[\s'"`([{=:]/.test(before);
+    const validAfter = after === "" || /[\s'"`\])},;:]/.test(after) || (after === "." && (afterNext === "" || /\s/.test(afterNext)));
+    if (validBefore && validAfter) return true;
     offset = index + 1;
   }
   return false;
@@ -395,9 +444,12 @@ function decodeJsonLines(bytes: Uint8Array): { diagnostics: string[]; error?: st
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return { diagnostics: [], error: "stdout is not strict UTF-8" }; }
   const diagnostics: string[] = [];
+  if (text.length === 0) return { diagnostics };
+  const lines = text.split(/\r?\n/);
+  if (text.endsWith("\n")) lines.pop();
   let total = 0;
-  for (const [index, line] of text.split(/\r?\n/).entries()) {
-    if (!line) continue;
+  for (const [index, line] of lines.entries()) {
+    if (line.length === 0) return { diagnostics, error: `stdout line ${index + 1} is not JSON` };
     let value: unknown;
     try { value = JSON.parse(line); } catch { return { diagnostics, error: `stdout line ${index + 1} is not JSON` }; }
     let rendered: string;
@@ -432,16 +484,8 @@ async function readAcknowledgement(attempt: ArcPreparedReviewAttempt): Promise<A
   return value as unknown as ArcReviewGuardAcknowledgement;
 }
 
-async function fixedReportPath(attempt: ArcPreparedReviewAttempt): Promise<string> {
-  const guardConfigBytes = await boundedRead(attempt.guardConfigPath, 256 * 1024, 0o400);
-  let guardConfig: unknown;
-  try { guardConfig = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(guardConfigBytes)); } catch { throw new Error("guard config is not strict UTF-8 JSON"); }
-  if (!isRecord(guardConfig) || typeof guardConfig.reportPath !== "string") throw new Error("guard config does not name a fixed report path");
-  return canonicalDestination(guardConfig.reportPath, attempt.reportRoot, "fixed reportPath");
-}
-
-async function requireFreshArtifacts(attempt: ArcPreparedReviewAttempt): Promise<void> {
-  const candidates = [attempt.guardAcknowledgementPath, await fixedReportPath(attempt), path.join(attempt.reportRoot, EVIDENCE_NAME)];
+async function requireFreshArtifacts(attempt: ArcPreparedReviewAttempt, reportPath: string): Promise<void> {
+  const candidates = [attempt.guardAcknowledgementPath, reportPath, path.join(attempt.reportRoot, EVIDENCE_NAME)];
   for (const candidate of candidates) {
     try {
       await lstat(candidate);
@@ -452,8 +496,7 @@ async function requireFreshArtifacts(attempt: ArcPreparedReviewAttempt): Promise
   }
 }
 
-async function readReport(attempt: ArcPreparedReviewAttempt): Promise<unknown> {
-  const reportPath = await fixedReportPath(attempt);
+async function readReport(reportPath: string): Promise<unknown> {
   const reportBytes = await boundedRead(reportPath, MAX_ARTIFACT_BYTES, 0o600);
   let report: unknown;
   try { report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(reportBytes)); } catch { throw new Error("fixed review report is not strict UTF-8 JSON"); }
@@ -496,7 +539,7 @@ export function createArcStandaloneReviewAdapter(options: ArcStandaloneReviewOpt
     async preflight(input: ArcReviewPreflightInput) {
       if (process.platform === "win32") return { ok: false, classification: "incompatible", reason: "standalone review is unsupported on win32 without exact process-tree termination" };
       try {
-        await validateAttemptPaths({ ...input.preparation, request: input.request } as ArcPreparedReviewAttempt, options.trustedProviderExtensions);
+        await validateAttemptPaths(input.preparation, input.request, options.trustedProviderExtensions);
         return { ok: true };
       } catch (error) {
         return { ok: false, classification: "incompatible", reason: boundedMessage(error) };
@@ -505,9 +548,9 @@ export function createArcStandaloneReviewAdapter(options: ArcStandaloneReviewOpt
     async execute(attempt: ArcPreparedReviewAttempt, signal: AbortSignal, observer: ArcAdapterObserver): Promise<ArcAdapterExecution> {
       if (process.platform === "win32") throw new Error("standalone review is unsupported on win32");
       if (ownedProcesses.has(attempt.attemptId)) throw new Error(`attempt ${attempt.attemptId} already owns an active process`);
-      const reviewerPaths = await validateAttemptPaths(attempt, options.trustedProviderExtensions);
+      const { reviewerPaths, guardConfig } = await validateAttemptPaths(attempt, attempt.request, options.trustedProviderExtensions, attempt.attemptId);
       const args = buildArguments(options, attempt, reviewerPaths);
-      await requireFreshArtifacts(attempt);
+      await requireFreshArtifacts(attempt, guardConfig.reportPath);
       const env = await privateEnvironment(attempt, options.processEnv);
       const identity: ArcReviewLaunchIdentity = { adapter: "standalone", attemptId: attempt.attemptId, requestId: randomUUID(), runnerProcessInstanceId: randomUUID() };
       await observer.persistBeforeDispatch(identity);
@@ -545,12 +588,14 @@ export function createArcStandaloneReviewAdapter(options: ArcStandaloneReviewOpt
         const earlyLifecycle = lifecycleBeforeArtifacts(processResult);
         if (earlyLifecycle) return failedExecution(identity, receipt, processResult, termination, earlyLifecycle, processResult.observationError ?? earlyLifecycle, diagnostics.diagnostics);
         if (diagnostics.error) return failedExecution(identity, receipt, processResult, termination, "malformed_report", diagnostics.error, diagnostics.diagnostics);
+        try { await readBoundGuardConfig(attempt, attempt.attemptId); }
+        catch (error) { return failedExecution(identity, receipt, processResult, termination, "guard_failed", boundedMessage(error), diagnostics.diagnostics); }
         let acknowledgement: ArcReviewGuardAcknowledgement;
         try { acknowledgement = await readAcknowledgement(attempt); }
         catch (error) { return failedExecution(identity, receipt, processResult, termination, "guard_failed", boundedMessage(error), diagnostics.diagnostics); }
         if (await hasGuardEvidence(attempt.reportRoot)) return failedExecution(identity, receipt, processResult, termination, "guard_failed", "guard evidence records blocked or overflowed calls", diagnostics.diagnostics);
         let report: unknown;
-        try { report = await readReport(attempt); }
+        try { report = await readReport(guardConfig.reportPath); }
         catch (error) { return failedExecution(identity, receipt, processResult, termination, "malformed_report", boundedMessage(error), diagnostics.diagnostics); }
         const validated = validateArcReviewerReport(report, attempt.reviewInputDigest);
         if (!validated.ok) return failedExecution(identity, receipt, processResult, termination, "malformed_report", validated.errors.slice(0, 8).join("; "), diagnostics.diagnostics);

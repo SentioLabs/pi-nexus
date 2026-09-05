@@ -335,7 +335,7 @@ test('nonzero, signal, timeout, malformed/oversize protocol, bad reports, ack lo
 });
 
 test('all bounded stdout remains strict JSON lines after diagnostic retention fills', async (t) => {
-  for (const mode of ['malformed-tail-lines', 'malformed-tail-bytes']) {
+  for (const mode of ['malformed-tail-lines', 'malformed-tail-bytes', 'blank-tail-lines']) {
     await t.test(mode, async (t) => {
       const value = await scenario(t, mode);
       const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
@@ -345,6 +345,11 @@ test('all bounded stdout remains strict JSON lines after diagnostic retention fi
       assert.match(execution.boundedDiagnostics[0], /stdout line/i);
     });
   }
+  await t.test('CRLF with one trailing terminator', async (t) => {
+    const value = await scenario(t, 'valid-crlf');
+    const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+    assert.equal(execution.lifecycle, 'succeeded');
+  });
 });
 
 test('missing executable has no dispatch receipt and returns not-started spawn failure', async (t) => {
@@ -499,17 +504,24 @@ test('prompt requires canonical source and every public material but excludes pr
       assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
     });
   }
-  await t.test('source-root substring', async (t) => {
-    const value = await scenario(t);
-    value.options.buildPrompt = () => ({
-      systemPrompt: [value.attempt.manifestPath, ...value.reviewerMaterials, path.join(value.sourceRoot, 'a.ts')].join('\n'),
-      task: 'Review the listed files.',
+  for (const [label, changedPath] of [
+    ['source-root child', (value) => path.join(value.sourceRoot, 'a.ts')],
+    ['source-root filename suffix', (value) => `${value.sourceRoot}.bak`],
+    ['material filename suffix', (value) => `${path.join(value.inputRoot, 'materials/task.md')}.bak`],
+  ]) {
+    await t.test(label, async (t) => {
+      const value = await scenario(t);
+      const replacedPath = label.startsWith('material') ? path.join(value.inputRoot, 'materials/task.md') : value.sourceRoot;
+      value.options.buildPrompt = () => ({
+        systemPrompt: [value.attempt.manifestPath, ...value.reviewerMaterials.filter((entry) => entry !== replacedPath), changedPath(value)].join('\n'),
+        task: 'Review the listed files.',
+      });
+      await assert.rejects(
+        () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver()),
+        /prompt omitted canonical review path/i,
+      );
     });
-    await assert.rejects(
-      () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver()),
-      /prompt omitted canonical review path/i,
-    );
-  });
+  }
   const value = await scenario(t);
   const prompt = value.options.buildPrompt(value.attempt);
   assert.equal(`${prompt.systemPrompt}\n${prompt.task}`.includes(value.attempt.baselinePath), false);
@@ -546,6 +558,55 @@ test('ambient private directories and prompts omitting canonical review paths fa
     const observer = createObserver();
     await assert.rejects(() => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer), /canonical review path/i);
     assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
+  });
+});
+
+test('preflight and execute bind guard authority to preparation references and the complete attempt', async (t) => {
+  await t.test('changed input authority is never adopted as the baseline', async (t) => {
+    const value = await scenario(t);
+    const config = JSON.parse(await readFile(value.attempt.guardConfigPath, 'utf8'));
+    config.inputRoots = [value.repositoryRoot];
+    await chmod(value.attempt.guardConfigPath, 0o600);
+    await writeFile(value.attempt.guardConfigPath, JSON.stringify(config));
+    await chmod(value.attempt.guardConfigPath, 0o400);
+    const preparation = Object.fromEntries([
+      'stateDir', 'inputRoot', 'runtimeRoot', 'reportRoot', 'manifestPath', 'diffPath',
+      'guardExtensionPath', 'guardConfigPath', 'reportSchemaPath', 'guardAcknowledgementPath',
+      'reviewInputDigest', 'baselineDigest', 'baselinePath', 'baselineArtifactDigest',
+      'inputDescriptorPath', 'inputDescriptorArtifactDigest',
+    ].map((key) => [key, value.attempt[key]]));
+    assert.equal(Object.hasOwn(preparation, 'attemptId'), false);
+    const adapter = createArcStandaloneReviewAdapter(value.options);
+    const preflight = await adapter.preflight({ request: value.request, preparation });
+    assert.equal(preflight.ok, false);
+    assert.match(preflight.reason, /guard config|inputRoots|prepared input/i);
+    await assert.rejects(
+      () => adapter.execute(value.attempt, new AbortController().signal, createObserver()),
+      /guard config|inputRoots|prepared input/i,
+    );
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  });
+
+  await t.test('attempt identity is checked only when execute receives it', async (t) => {
+    const value = await scenario(t);
+    const config = JSON.parse(await readFile(value.attempt.guardConfigPath, 'utf8'));
+    config.attemptId = 'different-attempt';
+    await chmod(value.attempt.guardConfigPath, 0o600);
+    await writeFile(value.attempt.guardConfigPath, JSON.stringify(config));
+    await chmod(value.attempt.guardConfigPath, 0o400);
+    const preparation = Object.fromEntries([
+      'stateDir', 'inputRoot', 'runtimeRoot', 'reportRoot', 'manifestPath', 'diffPath',
+      'guardExtensionPath', 'guardConfigPath', 'reportSchemaPath', 'guardAcknowledgementPath',
+      'reviewInputDigest', 'baselineDigest', 'baselinePath', 'baselineArtifactDigest',
+      'inputDescriptorPath', 'inputDescriptorArtifactDigest',
+    ].map((key) => [key, value.attempt[key]]));
+    const adapter = createArcStandaloneReviewAdapter(value.options);
+    assert.deepEqual(await adapter.preflight({ request: value.request, preparation }), { ok: true });
+    await assert.rejects(
+      () => adapter.execute(value.attempt, new AbortController().signal, createObserver()),
+      /attemptId|attempt identity/i,
+    );
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
   });
 });
 
