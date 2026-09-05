@@ -10,17 +10,12 @@ import { fileURLToPath } from "node:url";
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = path.join(packageRoot, "scripts/migrate-git-spice-plugin.py");
 const runtimeManifest = [
-  ["commands/continue.md", "prompts/git-spice-continue.md"],
-  ["commands/init.md", "prompts/git-spice-init.md"],
-  ["commands/new.md", "prompts/git-spice-new.md"],
-  ["commands/restack.md", "prompts/git-spice-restack.md"],
-  ["commands/stack.md", "prompts/git-spice-stack.md"],
-  ["commands/submit.md", "prompts/git-spice-submit.md"],
-  ["commands/sync.md", "prompts/git-spice-sync.md"],
-  ["skills/git-spice/SKILL.md", "skills/git-spice/SKILL.md"],
+  ["commands/continue.md", "prompts/git-spice-continue.md"], ["commands/init.md", "prompts/git-spice-init.md"],
+  ["commands/new.md", "prompts/git-spice-new.md"], ["commands/restack.md", "prompts/git-spice-restack.md"],
+  ["commands/stack.md", "prompts/git-spice-stack.md"], ["commands/submit.md", "prompts/git-spice-submit.md"],
+  ["commands/sync.md", "prompts/git-spice-sync.md"], ["skills/git-spice/SKILL.md", "skills/git-spice/SKILL.md"],
   ["skills/stacking-workflow/SKILL.md", "skills/stacking-workflow/SKILL.md"],
-  ["agents/stack-doctor.md", "agents/stack-doctor.md"],
-  ["agents/stacker.md", "agents/stacker.md"],
+  ["agents/stack-doctor.md", "agents/stack-doctor.md"], ["agents/stacker.md", "agents/stacker.md"],
 ];
 const requiredSourcePaths = [...runtimeManifest.map(([source]) => source), ".claude-plugin/plugin.json"];
 const temporaryRoots = new Set();
@@ -130,8 +125,16 @@ const rawSourceFiles = () => ({
     "- **base** — the branch a given branch was created from. Stored as metadata by git-spice.",
     "",
     "## Command map",
+    "> **Interactive prompts**: several commands open an interactive prompt when arguments are omitted (`branch checkout` with no name, `branch delete` with no name, `repo init` without `--trunk`, `commit pick` with no ref) or are inherently interactive (`stack edit`, `downstack edit`, `branch edit`, `commit split`, `branch split` without flags). In non-interactive runs — scripts, tool calls, subagents — always pass explicit arguments, and add the global `--no-prompt` flag to fail fast instead of hanging on a prompt. Leave the inherently-interactive commands to the user.",
     "git-spice operations are *local-first*. Auth is only needed for `submit`/`sync` (network operations).",
     "| Initialize git-spice in this repo | `git-spice repo init --trunk=<name> --remote=<name>` (`git-spice r i`) |",
+    "| Commit staged changes here | `git-spice commit create -m \"<message>\"` (`git-spice cc -m \"<message>\"`) |",
+    "| Amend the tip commit | `git-spice commit amend --no-edit` (`git-spice ca --no-edit`) |",
+    "| Squash this branch's commits into one | `git-spice branch squash --no-edit` (`git-spice bsq --no-edit`) |",
+    "| Split a commit interactively | `git-spice commit split` (`git-spice csp`) |",
+    "| Interactively edit/reorder this branch's commits | `git-spice branch edit` (`git-spice be`) — interactive |",
+    "| Reorder branches in the stack | `git-spice stack edit` (`git-spice se`) — interactive |",
+    "| Reorder branches below the current one | `git-spice downstack edit` (`git-spice dse`) — interactive |",
     "> Prefer `git-spice commit ...` over raw `git commit` while inside a stack. The git-spice variants restack everything above the current branch automatically; `git commit` leaves upstack branches misaligned and you'll have to run `git-spice upstack restack` yourself.",
     "git-spice rebases run `git rebase` under the hood. Conflicts pause the operation. **Resolve with the git-spice variants, not raw git:**",
     "2. Run `git-spice rebase continue`. git-spice resumes its multi-branch operation (e.g., a stack restack continues onto the next branch).",
@@ -144,6 +147,8 @@ const rawSourceFiles = () => ({
     "After conflicts, run `git-spice rebase continue` (`git-spice rbc`).",
     "```bash",
     "git-spice branch create feat-a",
+    "git-spice commit amend          # or commit create — both auto-restack upstack",
+    "git-spice commit amend",
     "```",
     "",
     "## Dispatching the subagents",
@@ -156,6 +161,8 @@ const rawSourceFiles = () => ({
     "",
     "Use `git-spice branch create <slug>` for a completed task.",
     "After conflicts, run `git-spice rebase continue`.",
+    "git-spice commit amend            # or 'commit create' for a follow-up commit",
+    "- I committed with `git commit` instead of `git-spice commit create`.",
     "",
     "## Driving with subagents",
     "Dispatch via the Task tool with `subagent_type: git-spice:stacker` or `subagent_type: git-spice:stack-doctor`.",
@@ -211,29 +218,18 @@ const mutationAnchorPatterns = {
   submit: /git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|<scope>) submit(?=[\s`])/g,
 };
 const expectedCommandAnchorCounts = {
-  "commands/continue.md": 4,
-  "commands/init.md": 6,
-  "commands/new.md": 5,
-  "commands/restack.md": 5,
-  "commands/stack.md": 2,
-  "commands/submit.md": 4,
-  "commands/sync.md": 3,
-  "skills/git-spice/SKILL.md": 96,
-  "skills/stacking-workflow/SKILL.md": 12,
-  "agents/stack-doctor.md": 24,
-  "agents/stacker.md": 10,
+  "commands/continue.md": 4, "commands/init.md": 6, "commands/new.md": 5,
+  "commands/restack.md": 5, "commands/stack.md": 2, "commands/submit.md": 4, "commands/sync.md": 3,
+  "skills/git-spice/SKILL.md": 96, "skills/stacking-workflow/SKILL.md": 12,
+  "agents/stack-doctor.md": 24, "agents/stacker.md": 10,
 };
 const expectedMutationAnchorCounts = {
-  "commands/continue.md": { rebaseContinue: 2, rebaseAbort: 1 },
-  "commands/init.md": { init: 1, reset: 1 },
-  "commands/new.md": { branchCreate: 4 },
-  "commands/restack.md": { restack: 4 },
-  "commands/submit.md": { submit: 2 },
-  "commands/sync.md": { sync: 1 },
+  "commands/continue.md": { rebaseContinue: 2, rebaseAbort: 1 }, "commands/init.md": { init: 1, reset: 1 },
+  "commands/new.md": { branchCreate: 4 }, "commands/restack.md": { restack: 4 },
+  "commands/submit.md": { submit: 2 }, "commands/sync.md": { sync: 1 },
   "skills/git-spice/SKILL.md": { init: 3, reset: 2, branchCreate: 12, rebaseContinue: 3, rebaseAbort: 2, restack: 11, sync: 3, submit: 8 },
   "skills/stacking-workflow/SKILL.md": { branchCreate: 1, rebaseContinue: 1, restack: 1, sync: 1, submit: 1 },
-  "agents/stack-doctor.md": { init: 2, rebaseContinue: 3, restack: 7, submit: 3 },
-  "agents/stacker.md": { branchCreate: 3, submit: 2 },
+  "agents/stack-doctor.md": { init: 2, rebaseContinue: 3, restack: 7, submit: 3 }, "agents/stacker.md": { branchCreate: 3, submit: 2 },
 };
 const aliasCommandAnchorPattern = /(?<![\w-])git-spice(?= (?:r|ls|ll|bdi|bc|btr|dstr|cc|ca|csp|cf|cp|bco|br|usr|dsr|sr|rr|bsq|bsp|be|bfo|bon|uso|se|dse|brn|bd|sd|usd|buntr|bs|dss|uss|ss|rs|rbc|rba)(?:\s|`|\)))/g;
 const expectedAliasNames = {
@@ -243,15 +239,24 @@ const expectedAliasNames = {
   rbc: 1, rba: 1,
 };
 const expectedAliasCommandAnchorCounts = { "skills/git-spice/SKILL.md": 40 };
+const editorOpeningAnchors = [
+  ["commit create", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? commit create(?=[^\w-]|$)/g],
+  ["commit create alias", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? cc(?=[^\w-]|$)/g],
+  ["commit amend", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? commit amend(?=[^\w-]|$)/g],
+  ["commit amend alias", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? ca(?=[^\w-]|$)/g],
+  ["branch squash", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? branch squash(?=[^\w-]|$)/g],
+  ["branch squash alias", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? bsq(?=[^\w-]|$)/g],
+  ["commit create", "skills/stacking-workflow/SKILL.md", /git-spice(?: --no-prompt)? commit create(?=[^\w-]|$)/g],
+  ["commit amend", "skills/stacking-workflow/SKILL.md", /git-spice(?: --no-prompt)? commit amend(?=[^\w-]|$)/g],
+  ["direct commit create alternative", "skills/git-spice/SKILL.md", /# or commit create —/g],
+  ["direct commit create alternative", "skills/stacking-workflow/SKILL.md", /# or 'commit create' for/g],
+];
 
 const mutationPadding = {
-  reset: "Fixture reset mutation: `git-spice repo init --reset`.",
-  init: "Fixture init mutation: `git-spice repo init`.",
+  reset: "Fixture reset mutation: `git-spice repo init --reset`.", init: "Fixture init mutation: `git-spice repo init`.",
   branchCreate: "Fixture branch mutation: `git-spice branch create <fixture> -m \"fixture\"`.",
-  rebaseContinue: "Fixture continue mutation: `git-spice rebase continue`.",
-  rebaseAbort: "Fixture abort mutation: `git-spice rebase abort`.",
-  restack: "Fixture restack mutation: `git-spice branch restack`.",
-  sync: "Fixture sync mutation: `git-spice repo sync`.",
+  rebaseContinue: "Fixture continue mutation: `git-spice rebase continue`.", rebaseAbort: "Fixture abort mutation: `git-spice rebase abort`.",
+  restack: "Fixture restack mutation: `git-spice branch restack`.", sync: "Fixture sync mutation: `git-spice repo sync`.",
   submit: "Fixture submit mutation: `git-spice stack submit --fill`.",
 };
 
@@ -461,6 +466,21 @@ const assertSafeRebaseContinuation = (text, context) => {
   for (const command of commands) assert.equal(command, "git-spice --no-prompt rebase continue --no-edit", context);
 };
 
+const assertSafeEditorOpeningGuidance = (gitSpice, stacking) => {
+  assert.match(gitSpice, /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/);
+  assert.match(gitSpice, /commit amend --no-edit\s+# or commit create -m "<message>"/);
+  assert.match(stacking, /commit amend --no-edit\s+# or 'commit create -m "<message>"'/);
+  assert.match(stacking, /instead of `git-spice --no-prompt commit create -m "<message>"`/);
+  const combined = `${gitSpice}\n${stacking}`;
+  for (const pattern of [
+    /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/,
+    /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*(?:--no-edit|--message|-m|--message-file|-F)(?:\s|=|`|$))/,
+  ]) assert.doesNotMatch(combined, pattern);
+  assert.match(gitSpice, /inherently interactive command-map entries are terminal-only examples; do not execute them through Pi\/tool subprocesses/);
+};
+
 test("migration CLI parses positional and option source forms without a digest bypass", () => {
   const help = execFileSync("python3", [migrationScript, "--help"], { encoding: "utf8" });
   assert.match(help, /\[--source SOURCE\]/);
@@ -487,21 +507,13 @@ test("migration CLI parses positional and option source forms without a digest b
 test("invalid source fails before rewriting installed resources", () => {
   const source = makeTemporaryDirectory("pi-git-spice-invalid-");
   const packageCopy = createTemporaryPackage();
-  writeFixtureFile(packageCopy.root, "prompts/sentinel.txt", "original prompts\n");
-  writeFixtureFile(packageCopy.root, "skills/sentinel.txt", "original skills\n");
-  writeFixtureFile(packageCopy.root, "agents/sentinel.txt", "original agents\n");
-  const sentinels = new Map([
-    ["prompts", Buffer.from("original prompts\n")],
-    ["skills", Buffer.from("original skills\n")],
-    ["agents", Buffer.from("original agents\n")],
-  ]);
+  const sentinels = installedSentinels(packageCopy.root);
   const result = runMigration(packageCopy.script, source, packageCopy.root, {
     expectedDigests: {},
     productionCli: true,
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Missing expected paths/);
-  assert.equal(readFileSync(path.join(packageCopy.root, "prompts/sentinel.txt"), "utf8"), "original prompts\n");
   assertRollback(packageCopy.root, sentinels);
 });
 
@@ -559,8 +571,11 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   assert.match(prompts["commands/submit.md"], /reject prompt controls and conflicting draft controls/i);
   assert.doesNotMatch(prompts["commands/submit.md"], /<extra-flags>/);
 
-  for (const relative of ["skills/git-spice/SKILL.md", "skills/stacking-workflow/SKILL.md"]) {
-    const output = readFileSync(path.join(packageCopy.root, relative), "utf8");
+  const generatedSkills = Object.fromEntries(["skills/git-spice/SKILL.md", "skills/stacking-workflow/SKILL.md"].map((relative) => [
+    relative, readFileSync(path.join(packageCopy.root, relative), "utf8"),
+  ]));
+  assertSafeEditorOpeningGuidance(generatedSkills["skills/git-spice/SKILL.md"], generatedSkills["skills/stacking-workflow/SKILL.md"]);
+  for (const [relative, output] of Object.entries(generatedSkills)) {
     assert.match(output, /If the subagent tool is available, list agents first/);
     assert.match(output, /git-spice\.stacker/);
     assert.match(output, /direct workflow instead/);
@@ -625,35 +640,20 @@ test("every repeated git-spice reference survives semantic transformation", () =
 });
 
 const validPluginMetadata = () => JSON.parse(rawSourceFiles()[".claude-plugin/plugin.json"]);
+const changedPluginMetadata = (change) => {
+  const metadata = validPluginMetadata();
+  change(metadata);
+  return JSON.stringify(metadata);
+};
 const metadataVariants = [
-  ["plugin metadata missing field", () => {
-    const metadata = validPluginMetadata();
-    delete metadata.homepage;
-    return JSON.stringify(metadata);
-  }, /fields must exactly match.*missing=.*homepage/s],
+  ["plugin metadata missing field", () => changedPluginMetadata((metadata) => { delete metadata.homepage; }), /fields must exactly match.*missing=.*homepage/s],
   ["plugin metadata duplicate top-level key", () => rawSourceFiles()[".claude-plugin/plugin.json"].replace('"name": "git-spice",', '"name": "git-spice",\n  "name": "duplicate",'), /Duplicate JSON key.*name/],
   ["plugin metadata duplicate nested key", () => rawSourceFiles()[".claude-plugin/plugin.json"].replace('"name": "Fixture",', '"name": "Fixture",\n    "name": "duplicate",'), /Duplicate JSON key.*name/],
-  ["plugin metadata unknown field", () => {
-    const metadata = validPluginMetadata();
-    metadata.future = true;
-    return JSON.stringify(metadata);
-  }, /fields must exactly match.*unknown=.*future/s],
+  ["plugin metadata unknown field", () => changedPluginMetadata((metadata) => { metadata.future = true; }), /fields must exactly match.*unknown=.*future/s],
   ["plugin metadata malformed JSON", () => "{ not-json\n", /Invalid source plugin\.json/],
-  ["plugin metadata whitespace-only scalar", () => {
-    const metadata = validPluginMetadata();
-    metadata.description = "   \t";
-    return JSON.stringify(metadata);
-  }, /description must be a non-empty string/],
-  ["plugin metadata whitespace-only author scalar", () => {
-    const metadata = validPluginMetadata();
-    metadata.author.url = "  ";
-    return JSON.stringify(metadata);
-  }, /author must have non-empty string name and url/],
-  ["plugin metadata whitespace-only keyword", () => {
-    const metadata = validPluginMetadata();
-    metadata.keywords = ["git-spice", "  "];
-    return JSON.stringify(metadata);
-  }, /keywords must be a string array of non-empty values/],
+  ["plugin metadata whitespace-only scalar", () => changedPluginMetadata((metadata) => { metadata.description = "   \t"; }), /description must be a non-empty string/],
+  ["plugin metadata whitespace-only author scalar", () => changedPluginMetadata((metadata) => { metadata.author.url = "  "; }), /author must have non-empty string name and url/],
+  ["plugin metadata whitespace-only keyword", () => changedPluginMetadata((metadata) => { metadata.keywords = ["git-spice", "  "]; }), /keywords must be a string array of non-empty values/],
 ];
 
 const promptFrontmatterVariants = [
@@ -694,19 +694,23 @@ const failureVariants = [
   ["duplicated semantic prose anchor", "commands/init.md", () => sourceFiles()["commands/init.md"] + "Confirm you're inside a git repository:\n", /Expected exactly one source text occurrence/],
 ];
 
+const assertMigrationFailure = (relative, content, diagnostic, requireSourcePath = false) => {
+  const source = createSourceFixture({ [relative]: `${content}\n` });
+  const packageCopy = createTemporaryPackage();
+  const sentinels = installedSentinels(packageCopy.root);
+  const result = runMigration(packageCopy.script, source, packageCopy.root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, diagnostic);
+  if (requireSourcePath) assert.match(result.stderr, new RegExp(relative.replaceAll("/", "\\/")));
+  assertRollback(packageCopy.root, sentinels);
+};
+
 for (const [name, relative, makeContent, diagnostic] of failureVariants) {
-  test(`${name} fails before installation`, () => {
-    const source = createSourceFixture({ [relative]: `${makeContent()}\n` });
-    const packageCopy = createTemporaryPackage();
-    const sentinels = installedSentinels(packageCopy.root);
-    const result = runMigration(packageCopy.script, source, packageCopy.root);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, diagnostic);
-    assertRollback(packageCopy.root, sentinels);
-  });
+  test(`${name} fails before installation`, () => assertMigrationFailure(relative, makeContent(), diagnostic));
 }
 
 const guardedMutationAnchors = [
+  ...editorOpeningAnchors.map(([operation, relative, pattern]) => [operation, relative, pattern, new RegExp(`${operation} editor-opening anchor cardinality`)]),
   ["init/reset", "commands/init.md", mutationAnchorPatterns.reset, /reset mutation anchor cardinality/],
   ["init/reconfiguration", "commands/init.md", mutationAnchorPatterns.init, /init mutation anchor cardinality/],
   ["branch create", "commands/new.md", mutationAnchorPatterns.branchCreate, /branch create mutation anchor cardinality/],
@@ -728,20 +732,17 @@ const mutateAnchorCardinality = (content, pattern, variant) => {
     return `${content}\nDuplicated mutation: \`${matches[0]}${suffix}\`.\n`;
   }
   if (pattern === commandAnchorPattern) return content.replace(new RegExp(pattern.source), "git-spice  ");
-  return content.replace(new RegExp(pattern.source), matches[0].replace("git-spice ", "git-spice  "));
+  const drifted = matches[0].includes("git-spice ")
+    ? matches[0].replace("git-spice ", "git-spice  ")
+    : matches[0].replace("commit create", "commit  create");
+  return content.replace(new RegExp(pattern.source), drifted);
 };
 
 for (const [operation, relative, pattern, diagnostic] of guardedMutationAnchors) {
   for (const variant of ["zero", "duplicate", "drifted"]) {
-    test(`${operation} rejects ${variant} mutation anchors before installation`, () => {
-      const source = createSourceFixture({ [relative]: mutateAnchorCardinality(sourceFiles()[relative], pattern, variant) });
-      const packageCopy = createTemporaryPackage();
-      const sentinels = installedSentinels(packageCopy.root);
-      const result = runMigration(packageCopy.script, source, packageCopy.root);
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, diagnostic);
-      assertRollback(packageCopy.root, sentinels);
-    });
+    test(`${operation} rejects ${variant} mutation anchors before installation`, () => assertMigrationFailure(
+      relative, mutateAnchorCardinality(sourceFiles()[relative], pattern, variant), diagnostic, true,
+    ));
   }
 }
 

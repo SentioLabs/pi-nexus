@@ -38,7 +38,7 @@ git-spice operations are *local-first*. Auth is only needed for `submit`/`sync` 
 
 Sorted by intent, not alphabet — find the verb you mean, copy the command. Long forms shown; both built-in shorthands and one-letter aliases are listed.
 
-> **Interactive prompts**: several commands open an interactive prompt when arguments are omitted (`branch checkout` with no name, `branch delete` with no name, `repo init` without `--trunk`, `commit pick` with no ref) or are inherently interactive (`stack edit`, `downstack edit`, `branch edit`, `commit split`, `branch split` without flags). In non-interactive runs — scripts, tool calls, subagents — always pass explicit arguments, and add the global `--no-prompt` flag to fail fast instead of hanging on a prompt. Leave the inherently-interactive commands to the user.
+> **Interactive prompts**: several commands open an interactive prompt when arguments are omitted (`branch checkout` with no name, `branch delete` with no name, `repo init` without `--trunk`, `commit pick` with no ref) or are inherently interactive (`stack edit`, `downstack edit`, `branch edit`, `commit split`, `branch split` without flags). In non-interactive runs — scripts, tool calls, subagents — always pass explicit arguments, and add the global `--no-prompt` flag to fail fast instead of hanging on a prompt. The inherently interactive command-map entries are terminal-only examples; do not execute them through Pi/tool subprocesses.
 
 ### Setup
 
@@ -83,8 +83,8 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 
 | Intent | Command |
 |---|---|
-| Commit staged changes here | `git-spice --no-prompt commit create` (`git-spice --no-prompt cc`) |
-| Amend the tip commit | `git-spice --no-prompt commit amend` (`git-spice --no-prompt ca`) |
+| Commit staged changes here | `git-spice --no-prompt commit create -m "<message>"` (`git-spice --no-prompt cc -m "<message>"`) |
+| Amend the tip commit | `git-spice --no-prompt commit amend --no-edit` (`git-spice --no-prompt ca --no-edit`) |
 | Split a commit interactively | `git-spice --no-prompt commit split` (`git-spice --no-prompt csp`) |
 | Apply staged changes as fixup to commit X | `git-spice --no-prompt commit fixup <ref>` (`git-spice --no-prompt cf`) |
 | Cherry-pick a commit onto this branch | `git-spice --no-prompt commit pick <ref>` (`git-spice --no-prompt cp`) |
@@ -111,7 +111,7 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 | Restack this branch + everything below | `git-spice --no-prompt downstack restack` (`git-spice --no-prompt dsr`) |
 | Restack the whole stack | `git-spice --no-prompt stack restack` (`git-spice --no-prompt sr`) |
 | Restack every tracked branch in the repo | `git-spice --no-prompt repo restack` (`git-spice --no-prompt rr`) |
-| Squash this branch's commits into one | `git-spice --no-prompt branch squash` (`git-spice --no-prompt bsq`) |
+| Squash this branch's commits into one | `git-spice --no-prompt branch squash --no-edit` (`git-spice --no-prompt bsq --no-edit`) |
 | Split this branch at chosen commits | `git-spice --no-prompt branch split` (`git-spice --no-prompt bsp`) |
 | Interactively edit/reorder this branch's commits | `git-spice --no-prompt branch edit` (`git-spice --no-prompt be`) — interactive; restacks upstack after |
 | Fold (merge) this branch into its base | `git-spice --no-prompt branch fold` (`git-spice --no-prompt bfo`) |
@@ -191,7 +191,7 @@ git-spice --no-prompt log long   # confirm the shape
 ```bash
 git-spice --no-prompt down                  # drop down to feat-b
 # edit files, git add
-git-spice --no-prompt commit amend          # or commit create — both auto-restack upstack
+git-spice --no-prompt commit amend --no-edit # or commit create -m "<message>" — both auto-restack upstack
 ```
 
 ### Submit and iterate
@@ -201,7 +201,7 @@ git-spice --no-prompt stack submit --fill <draft-flag> # push all, open PRs, fil
 # Reviewer leaves feedback on feat-b
 git-spice --no-prompt branch checkout feat-b
 # fix, git add
-git-spice --no-prompt commit amend
+git-spice --no-prompt commit amend --no-edit
 git-spice --no-prompt stack submit --fill <draft-flag> # idempotent — only changed branches force-push
 ```
 

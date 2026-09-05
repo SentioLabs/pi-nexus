@@ -133,14 +133,16 @@ REQUIRED_GENERATED_LITERALS = {
         ("git-spice --no-prompt repo sync --restack", 2),
     ),
     "skills/git-spice/SKILL.md": (
-        ("name: git-spice\n", 1),
-        ("license: MIT\n", 1),
-        (DISPATCH_CONTRACT, 1),
+        ("name: git-spice\n", 1), ("license: MIT\n", 1), (DISPATCH_CONTRACT, 1),
+        ('git-spice --no-prompt commit create -m "<message>"', 1), ('git-spice --no-prompt cc -m "<message>"', 1),
+        ("git-spice --no-prompt commit amend --no-edit", 3), ("git-spice --no-prompt ca --no-edit", 1),
+        ("git-spice --no-prompt branch squash --no-edit", 1), ("git-spice --no-prompt bsq --no-edit", 1),
+        ("inherently interactive command-map entries are terminal-only examples; do not execute them through Pi/tool subprocesses", 1),
     ),
     "skills/stacking-workflow/SKILL.md": (
-        ("name: stacking-workflow\n", 1),
-        ("license: MIT\n", 1),
-        (DISPATCH_CONTRACT, 1),
+        ("name: stacking-workflow\n", 1), ("license: MIT\n", 1), (DISPATCH_CONTRACT, 1),
+        ('git-spice --no-prompt commit create -m "<message>"', 1),
+        ("git-spice --no-prompt commit amend --no-edit", 1), ('commit create -m "<message>"', 2),
     ),
     "agents/stacker.md": (
         ("name: stacker\npackage: git-spice\n", 1),
@@ -213,6 +215,20 @@ EXPECTED_MUTATION_ANCHORS = {
     "agents/stack-doctor.md": {"init": 2, "rebase continue": 3, "restack": 7, "submit": 3},
     "agents/stacker.md": {"branch create": 3, "submit": 2},
 }
+EDITOR_OPENING_COMMANDS = {
+    "skills/git-spice/SKILL.md": (
+        ("commit create", "commit create", 1), ("commit create alias", "cc", 1),
+        ("commit amend", "commit amend", 3), ("commit amend alias", "ca", 1),
+        ("branch squash", "branch squash", 1), ("branch squash alias", "bsq", 1),
+    ),
+    "skills/stacking-workflow/SKILL.md": (("commit create", "commit create", 1), ("commit amend", "commit amend", 1)),
+}
+DIRECT_COMMIT_CREATE_ALTERNATIVES = {
+    "skills/git-spice/SKILL.md": ("# or commit create —", '# or commit create -m "<message>" —'),
+    "skills/stacking-workflow/SKILL.md": ("# or 'commit create' for", '# or \'commit create -m "<message>"\' for'),
+}
+MESSAGE_OPTION_PATTERN = re.compile(r"(?:^|\s)(?:-m|--message|-F|--message-file)(?:\s|=)")
+NO_EDIT_OR_MESSAGE_PATTERN = re.compile(r"(?:^|\s)(?:--no-edit|-m|--message|-F|--message-file)(?:\s|=|$)")
 
 SUBMIT_DRAFT_CONTRACT = """## Explicit submit draft state
 
@@ -369,6 +385,15 @@ def checked_sub(pattern: re.Pattern[str], replacement, text: str, expected: int,
 
 
 def validate_transformation_anchors(text: str, context: str) -> None:
+    for label, command, expected in EDITOR_OPENING_COMMANDS.get(context, ()):
+        actual = len(editor_opening_pattern(command).findall(text))
+        if actual != expected:
+            raise RuntimeError(f"Expected exactly {expected} {label} editor-opening anchor cardinality while patching {context}, found {actual}")
+    if context in DIRECT_COMMIT_CREATE_ALTERNATIVES:
+        source, _ = DIRECT_COMMIT_CREATE_ALTERNATIVES[context]
+        actual = text.count(source)
+        if actual != 1:
+            raise RuntimeError(f"Expected exactly 1 direct commit create alternative editor-opening anchor cardinality while patching {context}, found {actual}")
     expected_mutations = EXPECTED_MUTATION_ANCHORS.get(context, {})
     for label in ("reset", "init", "branch create", "rebase continue", "rebase abort", "restack", "sync", "submit"):
         expected = expected_mutations.get(label, 0)
@@ -546,6 +571,29 @@ def make_alias_mutations_explicit(text: str, context: str) -> str:
     return text
 
 
+def editor_opening_pattern(command: str) -> re.Pattern[str]:
+    return re.compile(rf"git-spice(?: --no-prompt)? {re.escape(command)}(?P<arguments>[^`\n]*)")
+
+
+def make_editor_opening_commands_explicit(text: str, context: str) -> str:
+    for label, command, expected in EDITOR_OPENING_COMMANDS.get(context, ()):
+        pattern = editor_opening_pattern(command)
+
+        def replacement(match: re.Match[str], label=label, command=command) -> str:
+            executable, comment = split_command_comment(match.group("arguments"))
+            safety = MESSAGE_OPTION_PATTERN if label.startswith("commit create") else NO_EDIT_OR_MESSAGE_PATTERN
+            if not safety.search(executable):
+                executable += ' -m "<message>"' if label.startswith("commit create") else " --no-edit"
+            suffix = " " + executable.strip() if executable else ""
+            return f"git-spice --no-prompt {command}{suffix}{comment}"
+
+        text = checked_sub(pattern, replacement, text, expected, context, f"{label} editor-opening anchors")
+    if context in DIRECT_COMMIT_CREATE_ALTERNATIVES:
+        source, target = DIRECT_COMMIT_CREATE_ALTERNATIVES[context]
+        text = checked_sub(re.compile(re.escape(source)), target, text, 1, context, "direct commit create alternative editor-opening anchor")
+    return text
+
+
 def make_rebase_continuations_noninteractive(text: str, context: str) -> str:
     expected = EXPECTED_MUTATION_ANCHORS.get(context, {}).get("rebase continue", 0)
     pattern = re.compile(r"git-spice --no-prompt rebase continue(?!\s+--no-edit)")
@@ -627,6 +675,7 @@ def transform_executable_guidance(text: str, context: str) -> str:
     validate_transformation_anchors(text, context)
     text = make_commands_noninteractive(text, context)
     text = make_alias_mutations_explicit(text, context)
+    text = make_editor_opening_commands_explicit(text, context)
     text = make_rebase_continuations_noninteractive(text, context)
     text = make_branch_creations_explicit(text, context)
     text = make_init_mutations_explicit(text, context)
@@ -691,6 +740,12 @@ def transform_git_spice_skill(text: str) -> str:
     validate_transformation_anchors(body, context)
     body = replace_section(body, "## Dispatching the subagents", "## Configuration", "## Dispatching optional Pi subagents\n\n" + DISPATCH_CONTRACT, context)
     body = transform_prompt_references(body, context)
+    body = require_replace(
+        body,
+        "Leave the inherently-interactive commands to the user.",
+        "The inherently interactive command-map entries are terminal-only examples; do not execute them through Pi/tool subprocesses.",
+        context,
+    )
     body = transform_executable_guidance(body, context)
     body = require_replace(
         body,

@@ -71,7 +71,7 @@ Reviewer comments on a mid-stack branch:
 git-spice --no-prompt branch checkout <branch-with-comments>
 # fix the issues
 git add <files>
-git-spice --no-prompt commit amend            # or 'commit create' for a follow-up commit
+git-spice --no-prompt commit amend --no-edit # or 'commit create -m "<message>"' for a follow-up commit
 git-spice --no-prompt stack submit --fill <draft-flag> # idempotent — only the changed branch + its upstack force-push
 ```
 
@@ -92,7 +92,7 @@ git-spice --no-prompt repo sync --restack # pulls trunk, deletes the merged bran
 
 For CLI mechanics — restacking after a base moves, resolving rebase conflicts, fixing untracked branches — see the recovery section in the `git-spice` skill. The points below are the *workflow* mistakes that show up at this layer, not the CLI ones.
 
-- **"I committed with `git commit` instead of `git-spice --no-prompt commit create`"** — the branch advanced but upstack didn't restack. Fix: `git-spice --no-prompt upstack restack`.
+- **"I committed with `git commit` instead of `git-spice --no-prompt commit create -m "<message>"`"** — the branch advanced but upstack didn't restack. Fix: `git-spice --no-prompt upstack restack`.
 - **"The stack got too tall."** Sizing problem. Fold the bottom two with `git-spice --no-prompt branch fold`, or — if it's a *time* problem rather than a size one — land the bottom branches now and don't wait for the top.
 - **"A branch grew too big and needs splitting."** Sizing problem. `git-spice --no-prompt branch split` at chosen commits (interactive — hand it to the user in unattended runs).
 - **"I rebased manually / a teammate force-pushed my base."** This is CLI recovery territory; defer to the `git-spice` skill's recovery section.

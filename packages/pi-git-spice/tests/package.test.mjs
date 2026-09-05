@@ -38,19 +38,7 @@ const expectedSourceSha256 = {
   "agents/stack-doctor.md": "d1afbff2da29e95f9645ee2c63f3888f7d875748a1766a2b06b624b145e9566e",
   "agents/stacker.md": "c5f7055f7b60d9ee5014d39fe7f28680a485a807bfb7f10bda06f58ff12c50e1",
 };
-const expectedGeneratedDigestPaths = [
-  "agents/stack-doctor.md",
-  "agents/stacker.md",
-  "prompts/git-spice-continue.md",
-  "prompts/git-spice-init.md",
-  "prompts/git-spice-new.md",
-  "prompts/git-spice-restack.md",
-  "prompts/git-spice-stack.md",
-  "prompts/git-spice-submit.md",
-  "prompts/git-spice-sync.md",
-  "skills/git-spice/SKILL.md",
-  "skills/stacking-workflow/SKILL.md",
-].sort();
+const expectedGeneratedDigestPaths = [...migrationContract.runtime].sort();
 const reviewedGeneratedSha256 = {
   "agents/stack-doctor.md": "163885ec4a57fcc3587199d82c34ed584aa972c393b1b2ec2b84878fc835599d",
   "agents/stacker.md": "4ab2da81685cf6a97fba23546fe20b7929e580f7cdf6d05e92299e74a67a0425",
@@ -61,20 +49,13 @@ const reviewedGeneratedSha256 = {
   "prompts/git-spice-stack.md": "3e031ef21aa66a1e8f525be32b69cf5efd18e435bd5d4fa764235edef06b70f2",
   "prompts/git-spice-submit.md": "c5ce194c3f989ea5b3bfbf66f6726c1c23318ee67c61f50cdb713fdf8f244437",
   "prompts/git-spice-sync.md": "7f72f317bdda57d3b15c04b000e3bf5d6e23bedb7fddd816652cc0fdbbeeb474",
-  "skills/git-spice/SKILL.md": "5bd01732856e6295eec9108fde700664de08004760787df430a7cbfc82f4410e",
-  "skills/stacking-workflow/SKILL.md": "e3b8a55ba89a3a81b65f50487826c28c54c3b850182c4a391515a86e9ac3c4c0",
+  "skills/git-spice/SKILL.md": "4569125f5320b0c338fa598c123858f6792cbcbd8248b301bb61aaa3715bbae7",
+  "skills/stacking-workflow/SKILL.md": "68fc552ee021f69a89407b359288374361f4b50446ad6d58758d6fad779f6402",
 };
 const expectedPackedPaths = [
-  "CHANGELOG.md",
-  "LICENSE",
-  "README.md",
-  ...expectedGeneratedDigestPaths,
-  "extensions/git-spice-workflow.ts",
-  "package.json",
-  "src/adapters/command-runner.ts",
-  "src/adapters/git.ts",
-  "src/core/contracts.ts",
-  "src/core/ports.ts",
+  "CHANGELOG.md", "LICENSE", "README.md", ...expectedGeneratedDigestPaths,
+  "extensions/git-spice-workflow.ts", "package.json",
+  "src/adapters/command-runner.ts", "src/adapters/git.ts", "src/core/contracts.ts", "src/core/ports.ts",
 ].sort();
 
 test("production pins the exact reviewed upstream source bytes", () => {
@@ -115,7 +96,6 @@ test("generator and focused tests remain within approved line-count limits", () 
   assert.ok(generatorLines <= 1000, `generator has ${generatorLines} physical lines`);
   assert.ok(migrationTestLines + packageTestLines <= 1200, `focused tests have ${migrationTestLines + packageTestLines} physical lines`);
 });
-
 test("package exposes the exact Pi git-spice runtime and publishable metadata", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "@sentiolabs/pi-git-spice");
@@ -176,6 +156,23 @@ test("skills and agents retain Pi identities, optional dispatch, and fresh conte
   assert.match(doctor, /tools: bash, read, find, grep/);
   assert.match(doctor, /inheritProjectContext: true\ndefaultContext: fresh/);
   assert.doesNotMatch(`${stacker}\n${doctor}`, /model: sonnet|subagent_type|  - (?:Bash|Read|Write|Edit|Glob|Grep)\n/);
+});
+test("generated editor-opening guidance is safe for tool subprocesses", () => {
+  const gitSpice = readText("skills/git-spice/SKILL.md");
+  const stacking = readText("skills/stacking-workflow/SKILL.md");
+  assert.match(gitSpice, /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/);
+  assert.match(gitSpice, /commit amend --no-edit\s+# or commit create -m "<message>"/);
+  assert.match(stacking, /commit amend --no-edit\s+# or 'commit create -m "<message>"'/);
+  assert.match(stacking, /instead of `git-spice --no-prompt commit create -m "<message>"`/);
+  const combined = expectedGeneratedDigestPaths.map(readText).join("\n");
+  for (const unsafe of [
+    /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/,
+    /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*(?:--no-edit|--message|-m|--message-file|-F)(?:\s|=|`|$))/,
+  ]) assert.doesNotMatch(combined, unsafe);
+  assert.match(gitSpice, /inherently interactive command-map entries are terminal-only examples; do not execute them through Pi\/tool subprocesses/);
+  for (const operation of ["commit split", "branch edit", "stack edit", "downstack edit"]) assert.match(gitSpice, new RegExp(operation));
 });
 
 test("generated resources omit obsolete executable and report placeholders", () => {
