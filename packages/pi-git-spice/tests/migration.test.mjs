@@ -755,7 +755,7 @@ for (const [name, snippet] of [
   ["fenced closing-parenthesis argument", "```text\ngit-spice )\n```"],
 ]) {
   test(`code-region punctuation reaches command validation for ${name}`, () => {
-    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand/);
+    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand|unsupported shell syntax/);
   });
 }
 
@@ -768,7 +768,7 @@ for (const [name, snippet] of [
   ["fenced attached close paren", "```text\ngit-spice)\n```"],
 ]) {
   test(`attached punctuation reaches command validation: ${name}`, () => {
-    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand/);
+    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand|unsupported shell syntax/);
   });
 }
 
@@ -894,6 +894,18 @@ const auditSyntheticDetails = (text) => {
   return spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
 };
 
+const actualPosixShellArgv = (command) => {
+  const capture = [
+    "git-spice() {",
+    "  python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' \"$@\"",
+    "}",
+    command,
+  ].join("\n");
+  const result = spawnSync("/bin/sh", ["-c", capture], { encoding: "utf8" });
+  assert.equal(result.status, 0, `${JSON.stringify(command)}\n${result.stderr}`);
+  return ["git-spice", ...JSON.parse(result.stdout)];
+};
+
 const identifierKinds = [
   ["prompt", "/git-spice-init", "exact registered git-spice prompt identifier"],
   ["agent", "git-spice.stacker", "exact registered git-spice agent identifier"],
@@ -926,7 +938,7 @@ for (const [kind, identifier, expectedReason] of identifierKinds) {
 for (const [kind, identifier] of identifierKinds) {
   test(`whole-token normalization rejects laundering around ${kind} identifiers`, () => {
     for (const leading of ["!", ";", ":", "?", "&&", "||", "λ"]) {
-      assertDiscoveryFailureBeforeMutation(`See ${leading}${identifier}`, /unclassified git-spice subcommand/);
+      assertDiscoveryFailureBeforeMutation(`See ${leading}${identifier}`, /unclassified git-spice subcommand|unsupported shell syntax/);
     }
     for (const nearMiss of [
       `${identifier}attached`,
@@ -938,7 +950,7 @@ for (const [kind, identifier] of identifierKinds) {
       `)))))))${identifier}(((((((`,
       `${")".repeat(1024)}${identifier}${"(".repeat(1024)}`,
     ]) {
-      assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`, /unclassified git-spice subcommand/);
+      assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`, /unclassified git-spice subcommand|unsupported shell syntax/);
     }
   });
 }
@@ -1079,7 +1091,7 @@ test("an unmatched multiline inline span containing git-spice fails closed", () 
 });
 
 test("unsafe fenced backticks retain fenced classification and roll back", () => {
-  assertDiscoveryFailureBeforeMutation("```text\n`git-spice future mutate`\n````", /unclassified git-spice subcommand/);
+  assertDiscoveryFailureBeforeMutation("```text\n`git-spice future mutate`\n````", /unsupported shell syntax.*command substitution/);
 });
 
 for (const [identifier, snippet] of [
@@ -1181,12 +1193,12 @@ for (const heading of [
 }
 
 for (const [snippet, expectedArguments] of [
-  ["`git-spice.`", ["."]],
-  ["`git-spice#future`", ["#future"]],
+  ["`git-spice.`", null],
+  ["`git-spice#future`", null],
   ["`prefix git-spice`", []],
   ["`prefix git-spice future mutate`", ["future", "mutate"]],
 ]) {
-  test(`occurrence-anchored extraction reaches command classification: ${snippet}`, () => {
+  test(`indexed extraction reaches command classification only for a complete word: ${snippet}`, () => {
     const packageCopy = createTemporaryPackage();
     const python = [
       "import importlib.util, json, pathlib, sys",
@@ -1208,7 +1220,7 @@ for (const [snippet, expectedArguments] of [
     ].join("\n");
     const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), [expectedArguments]);
+    assert.deepEqual(JSON.parse(result.stdout), expectedArguments === null ? [] : [expectedArguments]);
   });
 }
 
@@ -1216,9 +1228,64 @@ test("malformed occurrence tail quoting fails closed with target diagnostics", (
   assertDiscoveryFailureBeforeMutation('`prefix git-spice "unterminated`', /malformed executable occurrence/);
 });
 
-test("unsupported shell process substitution fails closed with target diagnostics", () => {
-  assertDiscoveryFailureBeforeMutation("`git-spice --no-prompt log long > >(cat output)`", /unsupported shell syntax/);
+for (const [name, command] of [
+  ["plain words", "git-spice --no-prompt log long"],
+  ["concatenated quote fragments", `git-spice --no-prompt l"o"g l'ong'`],
+  ["empty quoted fragment", 'git-spice --no-prompt log l""ong'],
+  ["unquoted backslash escape", String.raw`git-spice --no\-prompt log long`],
+  ["single-quoted metacharacters", String.raw`git-spice --no-prompt branch create topic -m 'literal $HOME * ? [ab] {x} \q'`],
+  ["ordinary double-quote backslash", String.raw`git-spice --no-prompt branch create topic -m "literal\q"`],
+  ["special double-quote backslashes", String.raw`git-spice --no-prompt branch create topic -m "cash:\$ tick:\` quote:\" slash:\\ done"`],
+  ["line continuation", "git-spice --no-prompt log \\\nlong"],
+]) {
+  test(`bounded lexer argv matches /bin/sh for accepted ${name}`, () => {
+    const result = auditSyntheticDetails(command);
+    assert.equal(result.status, 0, result.stderr);
+    const [occurrence] = JSON.parse(result.stdout);
+    assert.deepEqual(occurrence.argv, actualPosixShellArgv(command));
+  });
+}
+
+test("unsupported prefix expansion reports the affected occurrence location", () => {
+  const result = auditSyntheticDetails([
+    "~~~bash",
+    "git-spice --no-prompt log long",
+    "$PREFIX git-spice --no-prompt log long",
+    "~~~",
+  ].join("\n"));
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /prompts\/git-spice-stack\.md at line 3, column 9/);
+  assert.match(result.stderr, /unsupported shell syntax.*parameter expansion/);
 });
+
+test("approved placeholder words remain literal authoritative argv", () => {
+  const command = "git-spice --no-prompt branch create <name> -m <message>";
+  const result = auditSyntheticDetails(command);
+  assert.equal(result.status, 0, result.stderr);
+  const [occurrence] = JSON.parse(result.stdout);
+  assert.deepEqual(occurrence.argv, ["git-spice", "--no-prompt", "branch", "create", "<name>", "-m", "<message>"]);
+});
+
+for (const [name, snippet, diagnostic] of [
+  ["backtick command substitution", "~~~bash\ngit-spice --no-prompt log long `printf -- --prompt`\n~~~", /unsupported shell syntax.*command substitution/],
+  ["brace expansion", "`git-spice --no-prompt repo sync --{,} --restack=upstack`", /unsupported shell syntax.*brace expansion/],
+  ["quoted ordinary backslash", String.raw`git-spice "--no\-prompt" log long`, /unclassified git-spice subcommand|explicit --no-prompt/],
+  ["pathname star expansion", "`git-spice --no-prompt log long *`", /unsupported shell syntax.*pathname expansion/],
+  ["pathname question expansion", "`git-spice --no-prompt log long ?`", /unsupported shell syntax.*pathname expansion/],
+  ["pathname bracket expansion", "`git-spice --no-prompt log long [ab]*`", /unsupported shell syntax.*pathname expansion/],
+  ["embedded bracket pathname expansion", "`git-spice --no-prompt log long prefix[name]suffix`", /unsupported shell syntax.*pathname expansion/],
+  ["extended pathname expansion", "`git-spice --no-prompt log long @(long)`", /unsupported shell syntax.*pathname expansion/],
+  ["dollar command substitution", "`git-spice --no-prompt log long $(printf -- --prompt)`", /unsupported shell syntax.*command substitution/],
+  ["braced parameter expansion", "`git-spice --no-prompt log long ${PROMPT}`", /unsupported shell syntax.*parameter expansion/],
+  ["plain parameter expansion", "`git-spice --no-prompt log long $PROMPT`", /unsupported shell syntax.*parameter expansion/],
+  ["arithmetic substitution", "`git-spice --no-prompt log long $((1 + 1))`", /unsupported shell syntax.*arithmetic expansion/],
+  ["tilde expansion", "`git-spice --no-prompt log long ~`", /unsupported shell syntax.*tilde expansion/],
+  ["process substitution", "`git-spice --no-prompt log long > >(cat output)`", /unsupported shell syntax.*process substitution/],
+]) {
+  test(`unprovable shell argv fails closed before mutation: ${name}`, () => {
+    assertGeneratedArgvFailureBeforeMutation(snippet, diagnostic);
+  });
+}
 
 test("inventory classifies every reference and executable occurrence exactly once with a reason", () => {
   const packageCopy = createTemporaryPackage();
@@ -1249,7 +1316,7 @@ test("inventory classifies every reference and executable occurrence exactly onc
   assert.ok(occurrences.every(({ reason }) => !/capitalized|tabular|Markdown-formatted|cue word|frontmatter|heading|punctuation/i.test(reason)), "classification reasons are mechanical or manifest-backed");
 });
 
-test("authoritative audit work scales near-linearly across many spans and occurrences", () => {
+test("one physical command containing multiple git-spice literals fails closed without quadratic rescans", () => {
   const packageCopy = createTemporaryPackage();
   const python = [
     "import importlib.util, json, pathlib, sys",
@@ -1259,26 +1326,59 @@ test("authoritative audit work scales near-linearly across many spans and occurr
     "spec.loader.exec_module(module)",
     "module.PROSE_REFERENCE_MANIFEST = {target: () for _, target in module.RUNTIME_MANIFEST}",
     "def measured(size):",
-    "    text = '\\n'.join('`git-spice --no-prompt log long`' for _ in range(size))",
+    "    text = ' '.join('git-spice --no-prompt log long' for _ in range(size))",
     "    operations = 0",
+    "    error = None",
     "    def trace(frame, event, argument):",
     "        nonlocal operations",
     "        if event == 'line' and frame.f_code.co_filename == str(script): operations += 1",
     "        return trace",
     "    sys.settrace(trace)",
-    "    try: occurrences = module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), text)",
-    "    finally: sys.settrace(None)",
-    "    return {'operations': operations, 'occurrences': len(occurrences)}",
-    "print(json.dumps([measured(100), measured(200)]))",
+    "    try:",
+    "        module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), text)",
+    "    except RuntimeError as caught:",
+    "        error = str(caught)",
+    "    finally:",
+    "        sys.settrace(None)",
+    "    return {'operations': operations, 'error': error}",
+    "print(json.dumps([measured(size) for size in (50, 100, 200, 400)]))",
   ].join("\n");
   const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  const [small, large] = JSON.parse(result.stdout);
-  assert.deepEqual([small.occurrences, large.occurrences], [100, 200]);
-  assert.ok(
-    large.operations <= small.operations * 2.35 + 5_000,
-    `doubling input should remain near-linear: ${small.operations} -> ${large.operations}`,
-  );
+  const measurements = JSON.parse(result.stdout);
+  for (const [index, measurement] of measurements.entries()) {
+    const size = 50 * (2 ** index);
+    assert.match(measurement.error ?? "", /multiple git-spice occurrences in one shell command/);
+    assert.ok(
+      measurement.operations <= (size * 3_000) + 25_000,
+      `${size} occurrences exceeded the conservative linear budget: ${measurement.operations}`,
+    );
+    if (index > 0) {
+      const previous = measurements[index - 1];
+      assert.ok(
+        measurement.operations <= (previous.operations * 2.25) + 10_000,
+        `doubling input should remain near-linear: ${previous.operations} -> ${measurement.operations}`,
+      );
+    }
+  }
+});
+
+test("one multiline fenced region indexes separators and continuations into exact argv", () => {
+  const text = [
+    "~~~bash",
+    "git-spice --no-prompt log long; git-spice --no-prompt auth status",
+    "git-spice --no-prompt branch \\",
+    "  restack && git-spice --no-prompt rs --restack=upstack",
+    "~~~",
+  ].join("\n");
+  const result = auditSyntheticDetails(text);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).map(({ argv }) => argv), [
+    ["git-spice", "--no-prompt", "log", "long"],
+    ["git-spice", "--no-prompt", "auth", "status"],
+    ["git-spice", "--no-prompt", "branch", "restack"],
+    ["git-spice", "--no-prompt", "rs", "--restack=upstack"],
+  ]);
 });
 
 const proseManifestContextCases = [

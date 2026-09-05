@@ -767,8 +767,6 @@ class SourceLine:
     end: int
     text: str
     number: int
-    continued_source_end: int = 0
-    wrapper_content_end: int | None = None
 
 
 @dataclass
@@ -779,9 +777,9 @@ class GitSpiceOccurrence:
     column: int
     region: MarkdownRegion
     physical_line: str
+    physical_line_start: int = 0
     segment_start: int = 0
     segment_end: int = 0
-    source_end: int = 0
     classification: str | None = None
     reason: str | None = None
     argv: list[str] | None = None
@@ -1117,15 +1115,6 @@ def _source_lines(text: str) -> list[SourceLine]:
         number += 1
     final_physical_end = len(text) - 1 if text.endswith("\r") else len(text)
     lines.append(SourceLine(start, len(text), text[start:final_physical_end], number))
-    for index in range(len(lines) - 1, -1, -1):
-        line = lines[index]
-        stripped = line.text.strip()
-        if stripped.startswith("<") and stripped.endswith(">"):
-            line.wrapper_content_end = line.start + len(line.text.rstrip()) - 1
-        if _physical_line_continues(line.text) and index + 1 < len(lines):
-            line.continued_source_end = lines[index + 1].continued_source_end
-        else:
-            line.continued_source_end = line.end
     return lines
 
 
@@ -1163,17 +1152,9 @@ def inventory_git_spice_occurrences(text: str, regions: list[MarkdownRegion]) ->
             match.start() - line.start + 1,
             region,
             line.text,
+            physical_line_start=line.start,
             segment_start=segment_start,
             segment_end=segment_end,
-            source_end=(
-                line.wrapper_content_end
-                if line.wrapper_content_end is not None
-                else (
-                    region.content_end
-                    if region.kind in {"inline_code", "fenced_code"}
-                    else line.continued_source_end
-                )
-            ),
         ))
     return occurrences
 
@@ -1203,37 +1184,6 @@ def _exact_metadata_identifier_reference(occurrence: GitSpiceOccurrence) -> bool
 
 def _exact_markdown_heading_reference(occurrence: GitSpiceOccurrence) -> bool:
     return occurrence.physical_line == "# git-spice"
-
-
-def _unquoted_comment_index(line: str) -> int | None:
-    quote = None
-    index = 0
-    while index < len(line):
-        character = line[index]
-        if quote == "'":
-            if character == "'":
-                quote = None
-            index += 1
-            continue
-        if quote == '"':
-            if character == "\\" and index + 1 < len(line):
-                index += 2
-                continue
-            if character == '"':
-                quote = None
-            index += 1
-            continue
-        if character == "\\" and index + 1 < len(line):
-            index += 2
-            continue
-        if character in {"'", '"'}:
-            quote = character
-            index += 1
-            continue
-        if character == "#" and (index == 0 or line[index - 1].isspace() or line[index - 1] in ";&|()"):
-            return index
-        index += 1
-    return None
 
 
 def _manifest_entries(path: Path) -> tuple[ProseReferenceManifestEntry, ...]:
@@ -1328,164 +1278,401 @@ def classify_occurrence(
     return _classify(occurrence, "executable", EXECUTABLE_OCCURRENCE_REASON)
 
 
-_PLACEHOLDER_TOKEN = re.compile(r"<[^<>\s]+>")
+_PLACEHOLDER_TOKEN = re.compile(r"(?:<[A-Za-z][A-Za-z0-9-]*>|\[name\])")
 _REDIRECTION_OPERATORS = ("&>>", "&>", ">>", ">|", ">&", "<&", "<>", ">", "<")
 
 
-def _physical_line_continues(line: str) -> bool:
-    comment = _unquoted_comment_index(line)
-    if comment is not None:
-        line = line[:comment]
-    trailing_backslashes = len(line) - len(line.rstrip("\\"))
-    return trailing_backslashes % 2 == 1
+@dataclass(frozen=True)
+class ShellWord:
+    start: int
+    end: int
+    value: str
+    in_argv: bool
+
+
+@dataclass(frozen=True)
+class ShellCommandSegment:
+    start: int
+    end: int
+    words: tuple[ShellWord, ...]
+    error: tuple[int, str] | None
+
+
+class ShellSyntaxError(ValueError):
+    def __init__(self, detail: str, offset: int, segment_start: int):
+        super().__init__(detail)
+        self.offset = offset
+        self.segment_start = segment_start
+
+
+class ShellOccurrenceError(ValueError):
+    def __init__(self, detail: str, occurrence: GitSpiceOccurrence):
+        super().__init__(detail)
+        self.occurrence = occurrence
+
+
+def _shell_expansion_error(text: str, index: int, end: int) -> str:
+    if text.startswith("$((", index, end):
+        return "unsupported shell syntax: arithmetic expansion"
+    if text.startswith("$(", index, end):
+        return "unsupported shell syntax: command substitution"
+    return "unsupported shell syntax: parameter expansion"
 
 
 def _redirection_operator(text: str, index: int, end: int) -> str | None:
-    if text.startswith("<<", index, end):
-        raise ValueError("unsupported shell syntax: here-document redirection")
-    if text[index] in "<>" and index + 1 < end and text[index + 1] == "(":
-        raise ValueError("unsupported shell syntax: process substitution")
     return next(
         (operator for operator in _REDIRECTION_OPERATORS if text.startswith(operator, index, end)),
         None,
     )
 
 
-def _shell_argv_tail(text: str, start: int, end: int) -> list[str]:
-    """Lex one occurrence tail, omitting shell controls and redirections from argv."""
-    arguments = []
-    word = []
-    word_started = False
+def _index_shell_commands(
+    text: str,
+    region: MarkdownRegion,
+    start: int,
+) -> tuple[list[ShellCommandSegment], int]:
+    """Tokenize one occurrence-bearing logical line once into shell command segments."""
+    segments = []
+    words = []
+    word_parts = []
+    word_start = None
     word_is_plain = True
     discard_word = False
     needs_redirection_operand = False
-    separated = False
-    index = start
+    index = max(region.content_start, start)
+    end = region.content_end
+    segment_start = index
+    line_error = None
+    wrapper_end = None
 
-    def begin_word() -> None:
-        nonlocal discard_word, needs_redirection_operand, word_started
-        if not word_started:
-            word_started = True
+    def record_error(detail: str, offset: int) -> None:
+        nonlocal line_error
+        if line_error is None:
+            line_error = (offset, detail)
+
+    def begin_word(start: int) -> None:
+        nonlocal discard_word, needs_redirection_operand, word_start
+        if word_start is None:
+            word_start = start
             discard_word = needs_redirection_operand
             needs_redirection_operand = False
 
-    def finish_word() -> None:
-        nonlocal discard_word, word, word_is_plain, word_started
-        if word_started and not discard_word:
-            arguments.append("".join(word))
-        word = []
-        word_started = False
+    def finish_word(word_end: int) -> None:
+        nonlocal discard_word, word_is_plain, word_parts, word_start
+        if word_start is not None:
+            words.append(ShellWord(word_start, word_end, "".join(word_parts), not discard_word))
+        word_parts = []
+        word_start = None
         word_is_plain = True
         discard_word = False
 
+    def finish_segment(segment_end: int) -> None:
+        nonlocal needs_redirection_operand, segment_start, words
+        finish_word(segment_end)
+        if needs_redirection_operand:
+            record_error("shell redirection requires an operand", segment_end)
+            needs_redirection_operand = False
+        segments.append(ShellCommandSegment(
+            segment_start,
+            segment_end,
+            tuple(words),
+            line_error,
+        ))
+        words = []
+
     while index < end:
         character = text[index]
+        if wrapper_end == index:
+            wrapper_end = None
+            index += 1
+            continue
         if character == "\\":
             if index + 1 < end and text[index + 1] == "\n":
                 index += 2
                 continue
-            if index + 2 < end and text[index + 1:index + 3] == "\r\n":
-                index += 3
-                continue
             if index + 1 >= end:
-                raise ValueError("malformed shell escape at end of command")
-            begin_word()
-            word.append(text[index + 1])
+                record_error("malformed shell escape at end of command", index)
+                begin_word(index)
+                word_parts.append("\\")
+                index += 1
+                continue
+            begin_word(index)
+            word_parts.append(text[index + 1])
             word_is_plain = False
             index += 2
-            separated = False
             continue
+        if character in "\r\n":
+            finish_segment(index)
+            if character == "\r" and index + 1 < end and text[index + 1] == "\n":
+                index += 2
+            else:
+                index += 1
+            segment_start = index
+            line_error = None
+            wrapper_end = None
+            break
         if character.isspace():
-            if character in "\r\n":
-                if needs_redirection_operand:
-                    raise ValueError("shell redirection requires an operand")
-                finish_word()
-                break
-            finish_word()
-            separated = True
+            finish_word(index)
             index += 1
             continue
-        if character == "#" and not word_started and separated:
-            if needs_redirection_operand:
-                raise ValueError("shell redirection requires an operand")
+        if character == "#" and word_start is None:
+            comment_end = text.find("\n", index, end)
+            if comment_end == -1:
+                finish_segment(end)
+                index = end
+                segment_start = end
+            else:
+                finish_segment(comment_end)
+                index = comment_end + 1
+                segment_start = index
+                line_error = None
+                wrapper_end = None
             break
         if character in {"'", '"'}:
-            begin_word()
+            begin_word(index)
             word_is_plain = False
             quote = character
             index += 1
             while index < end and text[index] != quote:
-                if quote == '"' and text[index] in {"$", "`"}:
-                    raise ValueError("unsupported shell syntax: expansion in quoted word")
+                if quote == '"' and text[index] == "$":
+                    record_error(_shell_expansion_error(text, index, end), index)
+                    word_parts.append("$")
+                    index += 1
+                    continue
+                if quote == '"' and text[index] == "`":
+                    record_error("unsupported shell syntax: command substitution", index)
+                    word_parts.append("`")
+                    index += 1
+                    continue
                 if quote == '"' and text[index] == "\\":
                     if index + 1 >= end:
-                        raise ValueError("malformed shell escape in quoted word")
-                    if text[index + 1] == "\n":
+                        record_error("malformed shell escape in quoted word", index)
+                        word_parts.append("\\")
+                        index += 1
+                        continue
+                    escaped = text[index + 1]
+                    if escaped == "\n":
                         index += 2
                         continue
-                    if index + 2 < end and text[index + 1:index + 3] == "\r\n":
-                        index += 3
+                    if escaped in {'$', '`', '"', "\\"}:
+                        word_parts.append(escaped)
+                        index += 2
                         continue
-                    word.append(text[index + 1])
-                    index += 2
+                    word_parts.append("\\")
+                    index += 1
                     continue
-                word.append(text[index])
+                word_parts.append(text[index])
                 index += 1
             if index >= end:
-                raise ValueError("No closing quotation")
+                record_error("No closing quotation", index)
+                continue
             index += 1
-            separated = False
             continue
         if character == "$":
-            raise ValueError("unsupported shell syntax: expansion")
+            record_error(_shell_expansion_error(text, index, end), index)
+            begin_word(index)
+            word_parts.append(character)
+            index += 1
+            continue
         if character == "`":
-            finish_word()
-            break
+            record_error("unsupported shell syntax: command substitution", index)
+            begin_word(index)
+            word_parts.append(character)
+            index += 1
+            continue
 
         placeholder = _PLACEHOLDER_TOKEN.match(text, index, end)
         if placeholder is not None:
-            begin_word()
-            word.append(placeholder.group())
-            index = placeholder.end()
-            separated = False
-            continue
+            placeholder_value = placeholder.group()
+            optional_name = placeholder_value == "[name]"
+            optional_name_is_standalone = (
+                word_start is None
+                and (
+                    placeholder.end() == end
+                    or text[placeholder.end()].isspace()
+                )
+            )
+            if not optional_name or optional_name_is_standalone:
+                begin_word(index)
+                word_parts.append(placeholder_value)
+                word_is_plain = False
+                index = placeholder.end()
+                continue
+        if character == "<" and word_start is None and not words and text.startswith("<paste ", index, end):
+            line_end = text.find("\n", index, end)
+            if line_end == -1:
+                line_end = end
+            trimmed_line_end = line_end
+            while trimmed_line_end > index and text[trimmed_line_end - 1].isspace():
+                trimmed_line_end -= 1
+            if trimmed_line_end > index and text[trimmed_line_end - 1] == ">":
+                wrapper_end = trimmed_line_end - 1
+                index += 1
+                segment_start = index
+                continue
 
+        if text.startswith("<<", index, end):
+            record_error("unsupported shell syntax: here-document redirection", index)
+            begin_word(index)
+            word_parts.append("<<")
+            index += 2
+            continue
+        if character in "<>" and index + 1 < end and text[index + 1] == "(":
+            record_error("unsupported shell syntax: process substitution", index)
+            begin_word(index)
+            word_parts.append(text[index:index + 2])
+            index += 2
+            continue
         redirection = _redirection_operator(text, index, end)
         if redirection is not None:
             if needs_redirection_operand:
-                raise ValueError("shell redirection requires an operand")
-            if word_started:
-                io_number = word_is_plain and bool(word) and all(part.isdigit() for part in word)
+                record_error("shell redirection requires an operand", index)
+                needs_redirection_operand = False
+            if word_start is not None:
+                io_number = word_is_plain and bool(word_parts) and all(part.isdigit() for part in word_parts)
+                finish_word(index)
                 if io_number:
-                    word = []
-                    word_started = False
-                    word_is_plain = True
-                    discard_word = False
-                else:
-                    finish_word()
+                    words.pop()
             needs_redirection_operand = True
             index += len(redirection)
-            separated = False
             continue
+        if text.startswith("((", index, end):
+            record_error("unsupported shell syntax: arithmetic command", index)
+            begin_word(index)
+            word_parts.append("((")
+            index += 2
+            continue
+        if (
+            character == "("
+            and word_start is not None
+            and word_parts
+            and word_parts[-1].endswith(("@", "+", "!", "?", "*"))
+        ):
+            record_error("unsupported shell syntax: pathname expansion", index)
         if character in ";&|()":
             if needs_redirection_operand:
-                raise ValueError("shell redirection requires an operand")
-            finish_word()
-            break
+                record_error("shell redirection requires an operand", index)
+                needs_redirection_operand = False
+            finish_segment(index)
+            if text.startswith("&&", index, end) or text.startswith("||", index, end):
+                index += 2
+            else:
+                index += 1
+            segment_start = index
+            continue
+        if character in "{}":
+            record_error("unsupported shell syntax: brace expansion", index)
+        elif character in "*?[]":
+            record_error("unsupported shell syntax: pathname expansion", index)
+        elif character == "~":
+            record_error("unsupported shell syntax: tilde expansion", index)
 
-        begin_word()
-        word.append(character)
+        begin_word(index)
+        word_parts.append(character)
         index += 1
-        separated = False
 
-    if needs_redirection_operand:
-        raise ValueError("shell redirection requires an operand")
-    finish_word()
-    return arguments
+    if index >= end and (segment_start < end or words or word_start is not None or needs_redirection_operand):
+        finish_segment(end)
+    return segments, index
 
 
-def extract_invocation_from_occurrence(text: str, occurrence: GitSpiceOccurrence) -> list[str]:
-    return ["git-spice", *_shell_argv_tail(text, occurrence.end, occurrence.source_end)]
+def _indexed_invocations(
+    text: str,
+    region: MarkdownRegion,
+    occurrences: list[GitSpiceOccurrence],
+) -> dict[int, list[str]]:
+    invocations = {}
+    executable_occurrences = [
+        occurrence for occurrence in occurrences
+        if occurrence.classification == "executable"
+    ]
+    executable_index = 0
+    occurrence_index = 0
+    while executable_index < len(executable_occurrences):
+        first_executable = executable_occurrences[executable_index]
+        scope_start = max(region.content_start, first_executable.physical_line_start)
+        segments, scope_end = _index_shell_commands(text, region, scope_start)
+        if scope_end <= scope_start:
+            raise ShellOccurrenceError(
+                "unclassified git-spice subcommand: empty shell command scope",
+                first_executable,
+            )
+
+        while occurrence_index < len(occurrences) and occurrences[occurrence_index].start < scope_start:
+            occurrence_index += 1
+        scope_occurrence_end = occurrence_index
+        while scope_occurrence_end < len(occurrences) and occurrences[scope_occurrence_end].start < scope_end:
+            scope_occurrence_end += 1
+        scoped_occurrences = occurrences[occurrence_index:scope_occurrence_end]
+        scoped_index = 0
+
+        for segment in segments:
+            while scoped_index < len(scoped_occurrences) and scoped_occurrences[scoped_index].start < segment.start:
+                scoped_index += 1
+            segment_occurrence_end = scoped_index
+            while (
+                segment_occurrence_end < len(scoped_occurrences)
+                and scoped_occurrences[segment_occurrence_end].start < segment.end
+            ):
+                segment_occurrence_end += 1
+            segment_occurrences = scoped_occurrences[scoped_index:segment_occurrence_end]
+            scoped_index = segment_occurrence_end
+            if not segment_occurrences:
+                continue
+
+            mapped = []
+            word_index = 0
+            for occurrence in segment_occurrences:
+                while word_index < len(segment.words) and segment.words[word_index].end <= occurrence.start:
+                    word_index += 1
+                if (
+                    word_index < len(segment.words)
+                    and segment.words[word_index].start <= occurrence.start
+                    and occurrence.end <= segment.words[word_index].end
+                ):
+                    mapped.append((occurrence, word_index))
+
+            segment_executables = [
+                occurrence for occurrence in segment_occurrences
+                if occurrence.classification == "executable"
+            ]
+            if segment_executables and segment.error is not None:
+                offset, detail = segment.error
+                raise ShellSyntaxError(detail, offset, segment.start)
+            if segment_executables and len(mapped) > 1:
+                raise ShellOccurrenceError(
+                    "multiple git-spice occurrences in one shell command argv",
+                    segment_executables[0],
+                )
+            mapped_by_start = {occurrence.start: index for occurrence, index in mapped}
+            for occurrence in segment_executables:
+                invocation_word_index = mapped_by_start.get(occurrence.start)
+                if invocation_word_index is None:
+                    raise ShellOccurrenceError(
+                        "unclassified git-spice subcommand: occurrence is not shell argv",
+                        occurrence,
+                    )
+                invocation_word = segment.words[invocation_word_index]
+                if not invocation_word.in_argv or invocation_word.value != "git-spice":
+                    raise ShellOccurrenceError(
+                        "unclassified git-spice subcommand: occurrence is not a complete shell word",
+                        occurrence,
+                    )
+                invocations[occurrence.start] = [
+                    "git-spice",
+                    *(
+                        word.value for word in segment.words[invocation_word_index + 1:]
+                        if word.in_argv
+                    ),
+                ]
+
+        occurrence_index = scope_occurrence_end
+        while (
+            executable_index < len(executable_occurrences)
+            and executable_occurrences[executable_index].start < scope_end
+        ):
+            executable_index += 1
+    return invocations
 
 
 def parse_git_spice_arguments(arguments: list[str]) -> tuple[list[str], bool, bool]:
@@ -1714,11 +1901,57 @@ def audit_git_spice_occurrences(path: Path, text: str) -> list[GitSpiceOccurrenc
             missing_reason,
         ))
 
-    for occurrence in executable_occurrences:
+    occurrences_by_region: dict[int, list[GitSpiceOccurrence]] = {}
+    for occurrence in occurrences:
+        occurrences_by_region.setdefault(id(occurrence.region), []).append(occurrence)
+
+    indexed_invocations: dict[int, list[str]] = {}
+    for region_occurrences in occurrences_by_region.values():
+        region_executables = [
+            occurrence for occurrence in region_occurrences
+            if occurrence.classification == "executable"
+        ]
+        if not region_executables:
+            continue
         try:
-            invocation = extract_invocation_from_occurrence(text, occurrence)
-        except ValueError as error:
-            raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"malformed executable occurrence: {error}")) from error
+            indexed_invocations.update(_indexed_invocations(
+                text,
+                region_occurrences[0].region,
+                region_occurrences,
+            ))
+        except ShellSyntaxError as error:
+            candidates = [
+                occurrence for occurrence in region_executables
+                if error.segment_start <= occurrence.start <= error.offset
+            ]
+            diagnostic_occurrence = candidates[-1] if candidates else next(
+                (
+                    occurrence for occurrence in region_executables
+                    if occurrence.start >= error.segment_start
+                ),
+                region_executables[0],
+            )
+            raise RuntimeError(_occurrence_diagnostic(
+                path,
+                diagnostic_occurrence,
+                f"malformed executable occurrence: {error}",
+            )) from error
+        except ShellOccurrenceError as error:
+            raise RuntimeError(_occurrence_diagnostic(
+                path,
+                error.occurrence,
+                f"malformed executable occurrence: {error}",
+            )) from error
+
+    for occurrence in executable_occurrences:
+        invocation = indexed_invocations.get(occurrence.start)
+        if invocation is None:
+            raise RuntimeError(_occurrence_diagnostic(
+                path,
+                occurrence,
+                "malformed executable occurrence: unclassified git-spice subcommand: "
+                "occurrence did not map to an indexed shell command",
+            ))
         occurrence.argv = invocation
         command = " ".join(invocation)
         try:

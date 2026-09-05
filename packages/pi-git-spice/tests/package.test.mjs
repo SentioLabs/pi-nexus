@@ -200,6 +200,8 @@ test("legacy pathless audits, boundary inference, and package Markdown parsers a
     "_shell_position_" + "reason",
     "_terminal_dot_" + "boundary",
     "validate_generated_" + "commands",
+    "_shell_argv_" + "tail",
+    "extract_invocation_from_" + "occurrence",
   ];
   const probe = [
     "import importlib.util, json, sys",
@@ -316,6 +318,42 @@ test("shell redirections and post-terminator flags cannot launder any safety pol
     assert.match(result.error, diagnostic, `${policy} ${mode}`);
     assert.match(result.error, /prompts\/git-spice-stack\.md.*line 1, column 2/, `${policy} ${mode}`);
   }
+});
+
+test("package audit fails closed when shell expansion could change argv", () => {
+  const cases = [
+    { name: "backtick substitution", text: "~~~bash\ngit-spice --no-prompt log long `printf -- --prompt`\n~~~" },
+    { name: "brace expansion", text: "`git-spice --no-prompt repo sync --{,} --restack=upstack`" },
+    { name: "pathname expansion", text: "`git-spice --no-prompt log long *`" },
+    { name: "command substitution", text: "`git-spice --no-prompt log long $(printf x)`" },
+    { name: "braced parameter expansion", text: "`git-spice --no-prompt log long ${VALUE}`" },
+    { name: "plain parameter expansion", text: "`git-spice --no-prompt log long $VALUE`" },
+    { name: "arithmetic expansion", text: "`git-spice --no-prompt log long $((1 + 1))`" },
+  ];
+  const results = auditSyntheticCases(cases);
+  for (const [index, result] of results.entries()) {
+    assert.equal(result.ok, false, `${cases[index].name} unexpectedly passed`);
+    assert.match(result.error, /unsupported shell syntax/);
+    assert.match(result.error, /prompts\/git-spice-stack\.md.*line \d+, column \d+/);
+  }
+});
+
+test("package audit preserves fixed quoted argv and literal placeholders", () => {
+  const cases = auditSyntheticCases([
+    { text: String.raw`git-spice --no-prompt branch create topic -m "literal\q"` },
+    { text: "git-spice --no-prompt branch create <name> -m <message>" },
+    { text: String.raw`git-spice "--no\-prompt" log long` },
+  ]);
+  assert.deepEqual(cases[0], {
+    ok: true,
+    argv: [["git-spice", "--no-prompt", "branch", "create", "topic", "-m", String.raw`literal\q`]],
+  });
+  assert.deepEqual(cases[1], {
+    ok: true,
+    argv: [["git-spice", "--no-prompt", "branch", "create", "<name>", "-m", "<message>"]],
+  });
+  assert.equal(cases[2].ok, false);
+  assert.match(cases[2].error, /unclassified git-spice subcommand|explicit --no-prompt/);
 });
 
 test("positive occurrence audit rejects an unapproved generic reference reason", () => {
