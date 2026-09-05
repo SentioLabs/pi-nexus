@@ -759,23 +759,24 @@ const sourceSnapshotProbe = (directory, body, beforeBuild = "") => [
   "source = pathlib.Path(sys.argv[2])",
   `temporary = pathlib.Path(module.PACKAGE_ROOT) / '${directory}'`,
   "temporary.mkdir()",
-  "snapshot = module.validate_source(source, json.loads(sys.argv[3]))",
+  "snapshot = module.load_validated_source(source, json.loads(sys.argv[3]))",
   beforeBuild,
   "generated = module.build_generated_tree(snapshot, temporary)",
   body,
 ].join("\n");
 const generatedTreeProbe = (body) => sourceSnapshotProbe("validator-probe", `${body}\nmodule.validate_generated_tree(generated)`);
 
-test("validated source snapshot alone determines generated and installed bytes", () => {
+test("validate_source returns None and migrate installs one immutable validated snapshot", () => {
   const relative = "commands/stack.md";
   const [reviewed, unreviewed] = ["opaque-reviewed-snapshot-block", "unreviewed-post-validation-mutation"];
   const source = createSourceFixture({ [relative]: `${sourceFiles()[relative]}\n${reviewed}\n` });
   const packageCopy = createTemporaryPackage();
-  const mutation = [`target = source / ${JSON.stringify(relative)}`,
-    "assert not hasattr(snapshot, '__setitem__'), 'source snapshot must be immutable'",
-    `target.write_bytes(target.read_bytes().replace(b'${reviewed}', b'${unreviewed}'))`].join("\n");
-  const installation = "module.validate_generated_tree(generated)\nmodule.install_generated_tree(generated, module.PACKAGE_ROOT)";
-  const result = runProbe(sourceSnapshotProbe("snapshot-probe", installation, mutation), packageCopy, source);
+  const interception = ["expected = json.loads(sys.argv[3])", "assert module.validate_source(source, expected) is None", "calls = []", "original_load = module.load_validated_source",
+    "def mutating_load(source, expected_digests):", "    snapshot = original_load(source, expected_digests); calls.append(snapshot)",
+    "    assert not hasattr(snapshot, '__setitem__'), 'source snapshot must be immutable'", `    target = source / ${JSON.stringify(relative)}; target.write_bytes(target.read_bytes().replace(b'${reviewed}', b'${unreviewed}'))`,
+    "    return snapshot", "module.load_validated_source = mutating_load"].join("\n");
+  const migration = "module.migrate(source, module.PACKAGE_ROOT, expected)\nassert len(calls) == 1, 'migrate must load one source snapshot'";
+  const result = runProbe(sourceSnapshotProbe("snapshot-probe", migration, interception), packageCopy, source);
   assert.equal(result.status, 0, result.stderr);
   const installed = readFileSync(path.join(packageCopy.root, "prompts/git-spice-stack.md"), "utf8");
   assert.match(installed, new RegExp(reviewed));

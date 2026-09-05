@@ -286,9 +286,9 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def validate_source(
+def load_validated_source(
     source: Path,
-    expected_digests: Mapping[str, str] = PINNED_SOURCE_SHA256,
+    expected_digests: Mapping[str, str],
 ) -> Mapping[str, bytes]:
     expected_digest_paths = set(expected_digests)
     required_paths = set(REQUIRED_SOURCE_PATHS)
@@ -331,6 +331,14 @@ def validate_source(
             _, expected_tools, _ = AGENT_CONFIG[source_relative]
             parse_agent_frontmatter(text, expected_tools, source_relative)
     return snapshot
+
+
+def validate_source(
+    source: Path,
+    expected_digests: Mapping[str, str] = PINNED_SOURCE_SHA256,
+) -> None:
+    load_validated_source(source, expected_digests)
+    return None
 
 
 def require_replace(text: str, old: str, new: str, context: str) -> str:
@@ -907,7 +915,7 @@ def migrate(
     package_root: Path = PACKAGE_ROOT,
     expected_digests: Mapping[str, str] = PINNED_SOURCE_SHA256,
 ) -> None:
-    source_snapshot = validate_source(source, expected_digests)
+    source_snapshot = load_validated_source(source, expected_digests)
     temporary_root = Path(tempfile.mkdtemp(prefix="pi-git-spice-generated-"))
     try:
         generated = build_generated_tree(source_snapshot, temporary_root)
