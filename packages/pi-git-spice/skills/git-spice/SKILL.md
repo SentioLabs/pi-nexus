@@ -89,7 +89,7 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 | Apply staged changes as fixup to commit X | `git-spice --no-prompt commit fixup <ref>` (`git-spice --no-prompt cf`) |
 | Cherry-pick a commit onto this branch | `git-spice --no-prompt commit pick <ref>` (`git-spice --no-prompt cp`) |
 
-> Prefer `git-spice --no-prompt commit ...` over raw `git commit` while inside a stack. The git-spice variants restack everything above the current branch automatically; `git commit` leaves upstack branches misaligned and you'll have to run `git-spice --no-prompt upstack restack` yourself.
+> Prefer the concrete git-spice commit commands listed above over raw `git commit` while inside a stack. The git-spice variants restack everything above the current branch automatically; `git commit` leaves upstack branches misaligned and you'll have to run `git-spice --no-prompt upstack restack` yourself.
 
 ### Navigate
 

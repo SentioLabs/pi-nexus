@@ -69,7 +69,7 @@ Branches built:
 ...
 
 Final stack:
-<paste git-spice --no-prompt log long>
+<paste final stack log output>
 
 Concerns / next steps:
 - <one bullet per non-blocking concern>

@@ -87,7 +87,7 @@ Remaining concerns / proposed next steps:
 - <bullets — for NEEDS_CONFIRMATION, list the exact commands you'd run>
 
 Final state:
-<paste git-spice --no-prompt log long and git status>
+<paste final stack log and git status output>
 ```
 
 - `FIXED` — stack is healthy, all symptoms resolved, verified with `git-spice --no-prompt log long`.
