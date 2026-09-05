@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from types import MappingProxyType
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_CANDIDATES = (
@@ -131,8 +132,16 @@ REQUIRED_GENERATED_LITERALS = {
     "prompts/git-spice-sync.md": (
         ("git-spice --no-prompt repo sync --restack", 2),
     ),
-    "skills/git-spice/SKILL.md": ((DISPATCH_CONTRACT, 1),),
-    "skills/stacking-workflow/SKILL.md": ((DISPATCH_CONTRACT, 1),),
+    "skills/git-spice/SKILL.md": (
+        ("name: git-spice\n", 1),
+        ("license: MIT\n", 1),
+        (DISPATCH_CONTRACT, 1),
+    ),
+    "skills/stacking-workflow/SKILL.md": (
+        ("name: stacking-workflow\n", 1),
+        ("license: MIT\n", 1),
+        (DISPATCH_CONTRACT, 1),
+    ),
     "agents/stacker.md": (
         ("name: stacker\npackage: git-spice\n", 1),
         ("tools: bash, read, write, edit, find, grep", 1),
@@ -240,10 +249,16 @@ def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, obj
     return result
 
 
-def validate_metadata(source: Path) -> None:
-    metadata_path = source / SOURCE_METADATA_PATH
+def decode_source_bytes(raw: bytes, context: str | Path) -> str:
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf8"), object_pairs_hook=reject_duplicate_json_keys)
+        return raw.decode("utf8")
+    except UnicodeDecodeError as error:
+        raise RuntimeError(f"Source file is not valid UTF-8: {context}: {error}") from error
+
+
+def validate_metadata(raw: bytes, metadata_path: Path) -> None:
+    try:
+        metadata = json.loads(decode_source_bytes(raw, metadata_path), object_pairs_hook=reject_duplicate_json_keys)
     except json.JSONDecodeError as error:
         raise RuntimeError(f"Invalid source plugin.json at {metadata_path}: {error}") from error
     if not isinstance(metadata, dict):
@@ -274,7 +289,7 @@ def sha256_file(path: Path) -> str:
 def validate_source(
     source: Path,
     expected_digests: Mapping[str, str] = PINNED_SOURCE_SHA256,
-) -> None:
+) -> Mapping[str, bytes]:
     expected_digest_paths = set(expected_digests)
     required_paths = set(REQUIRED_SOURCE_PATHS)
     if expected_digest_paths != required_paths:
@@ -284,25 +299,30 @@ def validate_source(
             "Source digest keys must exactly match REQUIRED_SOURCE_PATHS; "
             f"missing={missing_digest_paths!r}, extra={extra_digest_paths!r}"
         )
-    missing = [relative for relative in REQUIRED_SOURCE_PATHS if not (source / relative).is_file()]
+    inventory = {
+        path.relative_to(source).as_posix(): path
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    missing = [relative for relative in REQUIRED_SOURCE_PATHS if relative not in inventory]
     if missing:
         raise RuntimeError("Source plugin does not look like the Claude git-spice plugin:\nMissing expected paths:\n" + "\n".join(f"- {path}" for path in missing))
     expected = required_paths | set(INTENTIONALLY_IGNORED_SOURCE_PATHS)
-    actual = {path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file()}
-    unclassified = sorted(actual - expected)
+    unclassified = sorted(set(inventory) - expected)
     if unclassified:
         raise RuntimeError("Unclassified source file(s) would be omitted from pi-git-spice generation:\n" + "\n".join(f"- {path}" for path in unclassified))
+    snapshot = MappingProxyType({relative: inventory[relative].read_bytes() for relative in REQUIRED_SOURCE_PATHS})
     drift = []
-    for relative in REQUIRED_SOURCE_PATHS:
+    for relative, raw in snapshot.items():
         expected_digest = expected_digests[relative]
-        actual_digest = sha256_file(source / relative)
+        actual_digest = hashlib.sha256(raw).hexdigest()
         if actual_digest != expected_digest:
             drift.append(f"- {relative}: expected={expected_digest} actual={actual_digest}")
     if drift:
         raise RuntimeError("Source digest drift from reviewed upstream bytes:\n" + "\n".join(drift))
-    validate_metadata(source)
+    validate_metadata(snapshot[SOURCE_METADATA_PATH], source / SOURCE_METADATA_PATH)
     for source_relative, _ in RUNTIME_MANIFEST:
-        text = (source / source_relative).read_text(encoding="utf8")
+        text = decode_source_bytes(snapshot[source_relative], source / source_relative)
         if source_relative.startswith("commands/"):
             parse_prompt_frontmatter(text, source_relative)
         elif source_relative.startswith("skills/"):
@@ -310,6 +330,7 @@ def validate_source(
         else:
             _, expected_tools, _ = AGENT_CONFIG[source_relative]
             parse_agent_frontmatter(text, expected_tools, source_relative)
+    return snapshot
 
 
 def require_replace(text: str, old: str, new: str, context: str) -> str:
@@ -736,10 +757,10 @@ def transform_agent(source_relative: str, text: str) -> str:
     ))
 
 
-def build_generated_tree(source: Path, temporary_root: Path) -> Path:
+def build_generated_tree(source_snapshot: Mapping[str, bytes], temporary_root: Path) -> Path:
     generated = temporary_root / "generated"
     for source_relative, target_relative in RUNTIME_MANIFEST:
-        text = (source / source_relative).read_text(encoding="utf8")
+        text = decode_source_bytes(source_snapshot[source_relative], source_relative)
         if source_relative.startswith("commands/"):
             output = transform_prompt(source_relative, text)
         elif source_relative == "skills/git-spice/SKILL.md":
@@ -886,10 +907,10 @@ def migrate(
     package_root: Path = PACKAGE_ROOT,
     expected_digests: Mapping[str, str] = PINNED_SOURCE_SHA256,
 ) -> None:
-    validate_source(source, expected_digests)
+    source_snapshot = validate_source(source, expected_digests)
     temporary_root = Path(tempfile.mkdtemp(prefix="pi-git-spice-generated-"))
     try:
-        generated = build_generated_tree(source, temporary_root)
+        generated = build_generated_tree(source_snapshot, temporary_root)
         validate_generated_tree(generated)
         install_generated_tree(generated, package_root, move=rename_path, remove=remove_tree)
     except BaseException as operation_error:

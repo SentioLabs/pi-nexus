@@ -9,20 +9,20 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = path.join(packageRoot, "scripts/migrate-git-spice-plugin.py");
-const requiredSourcePaths = [
-  "commands/continue.md",
-  "commands/init.md",
-  "commands/new.md",
-  "commands/restack.md",
-  "commands/stack.md",
-  "commands/submit.md",
-  "commands/sync.md",
-  "skills/git-spice/SKILL.md",
-  "skills/stacking-workflow/SKILL.md",
-  "agents/stack-doctor.md",
-  "agents/stacker.md",
-  ".claude-plugin/plugin.json",
+const runtimeManifest = [
+  ["commands/continue.md", "prompts/git-spice-continue.md"],
+  ["commands/init.md", "prompts/git-spice-init.md"],
+  ["commands/new.md", "prompts/git-spice-new.md"],
+  ["commands/restack.md", "prompts/git-spice-restack.md"],
+  ["commands/stack.md", "prompts/git-spice-stack.md"],
+  ["commands/submit.md", "prompts/git-spice-submit.md"],
+  ["commands/sync.md", "prompts/git-spice-sync.md"],
+  ["skills/git-spice/SKILL.md", "skills/git-spice/SKILL.md"],
+  ["skills/stacking-workflow/SKILL.md", "skills/stacking-workflow/SKILL.md"],
+  ["agents/stack-doctor.md", "agents/stack-doctor.md"],
+  ["agents/stacker.md", "agents/stacker.md"],
 ];
+const requiredSourcePaths = [...runtimeManifest.map(([source]) => source), ".claude-plugin/plugin.json"];
 const temporaryRoots = new Set();
 
 const makeTemporaryDirectory = (prefix) => {
@@ -516,6 +516,20 @@ test("unclassified source files fail closed", () => {
   assertRollback(packageCopy.root, sentinels);
 });
 
+test("malformed UTF-8 reports its source path before installed-root mutation", () => {
+  const relative = "commands/stack.md";
+  const source = createSourceFixture();
+  writeFileSync(path.join(source, relative), Buffer.concat([readFileSync(path.join(source, relative)), Buffer.from([0xff])]));
+  const packageCopy = createTemporaryPackage();
+  installedSentinels(packageCopy.root);
+  const before = runtimeSnapshot(packageCopy.root);
+  const result = runMigration(packageCopy.script, source, packageCopy.root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /commands\/stack\.md[\s\S]*UTF-8|UTF-8[\s\S]*commands\/stack\.md/i);
+  assertRuntimeSnapshot(packageCopy.root, before);
+  assertNoTransactionDebris(packageCopy.root);
+});
+
 test("fixture regeneration is byte-for-byte deterministic", () => {
   const source = createSourceFixture();
   const packageCopy = createTemporaryPackage();
@@ -537,10 +551,7 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   assert.match(combinedPrompts, /separate explicit confirmation/i);
   assert.match(combinedPrompts, /draft/i);
   assert.doesNotMatch(combinedPrompts, /\/git-spice:/);
-  for (const [relative, output] of Object.entries(prompts)) {
-    assert.match(output, /Fixture source body remains\./);
-    assert.match(output, /\/git-spice-stack/);
-  }
+  for (const output of Object.values(prompts)) assert.match(output, /\/git-spice-stack/);
   assertSafeBranchCreation(prompts["commands/new.md"], "new prompt");
   assertSafeRebaseContinuation(prompts["commands/continue.md"], "continue prompt");
   assert.match(prompts["commands/continue.md"], /missing configuration[\s\S]*report[\s\S]*rather than enabling prompts/i);
@@ -585,15 +596,30 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   assert.match(doctor, /ambiguous[\s\S]*missing configuration[\s\S]*rather than enabling prompts/i);
 });
 
-test("prompt source revisions and every git-spice reference survive semantic transformation", () => {
-  const revised = sourceFiles()["commands/restack.md"]
-    .replace("Run `git-spice stack restack`", "Fixture prompt revision: preserve this instruction. Run `git-spice stack restack`")
-    .replace("/git-spice:continue", "/git-spice:continue and /git-spice:continue");
+test("all runtime resource bodies preserve distinct opaque multiline blocks byte-for-byte", () => {
+  const blocks = Object.fromEntries(runtimeManifest.map(([source], index) => [source,
+    `opaque-begin-${index}:${source}\n  untouched payload ${index} <> & punctuation\nopaque-end-${index}:${source}`]));
+  const overrides = Object.fromEntries(runtimeManifest.map(([source]) => [source, `${sourceFiles()[source].trimEnd()}\n\n${blocks[source]}\n`]));
+  const source = createSourceFixture(overrides);
+  const packageCopy = createTemporaryPackage();
+  assert.equal(runMigration(packageCopy.script, source, packageCopy.root).status, 0);
+  for (const [sourceRelative, targetRelative] of runtimeManifest) {
+    const output = readFileSync(path.join(packageCopy.root, targetRelative));
+    for (const [otherRelative, block] of Object.entries(blocks)) {
+      const marker = Buffer.from(block);
+      const first = output.indexOf(marker);
+      assert.equal(first >= 0, otherRelative === sourceRelative, `${targetRelative} marker from ${otherRelative}`);
+      if (first >= 0) assert.equal(output.indexOf(marker, first + marker.length), -1, `${targetRelative} duplicate marker`);
+    }
+  }
+});
+
+test("every repeated git-spice reference survives semantic transformation", () => {
+  const revised = sourceFiles()["commands/restack.md"].replace("/git-spice:continue", "/git-spice:continue and /git-spice:continue");
   const source = createSourceFixture({ "commands/restack.md": revised });
   const packageCopy = createTemporaryPackage();
   assert.equal(runMigration(packageCopy.script, source, packageCopy.root).status, 0);
   const output = readFileSync(path.join(packageCopy.root, "prompts/git-spice-restack.md"), "utf8");
-  assert.match(output, /Fixture prompt revision: preserve this instruction/);
   assert.equal((output.match(/\/git-spice-continue/g) ?? []).length, 2);
   assert.doesNotMatch(output, /\/git-spice:continue/);
 });
@@ -680,29 +706,6 @@ for (const [name, relative, makeContent, diagnostic] of failureVariants) {
   });
 }
 
-test("git-spice skill preserves ordinary upstream prose byte-for-byte", () => {
-  const source = createSourceFixture();
-  const packageCopy = createTemporaryPackage();
-  assert.equal(runMigration(packageCopy.script, source, packageCopy.root).status, 0);
-  const output = readFileSync(path.join(packageCopy.root, "skills/git-spice/SKILL.md"), "utf8");
-  for (const sentence of [
-    "git-spice is a CLI for managing **stacks of dependent Git branches**.",
-    "git-spice operations are *local-first*.",
-    "git-spice rebases run `git rebase` under the hood.",
-    "git-spice won't auto-advance",
-  ]) {
-    assert.equal(output.split(sentence).length - 1, 1, sentence);
-  }
-  for (const rewrite of [
-    "The git-spice CLI manages **stacks of dependent Git branches**.",
-    "The git-spice CLI's operations are *local-first*.",
-    "The git-spice CLI runs `git rebase` under the hood.",
-    "`git-spice` won't auto-advance",
-  ]) {
-    assert.equal(output.includes(rewrite), false, rewrite);
-  }
-});
-
 const guardedMutationAnchors = [
   ["init/reset", "commands/init.md", mutationAnchorPatterns.reset, /reset mutation anchor cardinality/],
   ["init/reconfiguration", "commands/init.md", mutationAnchorPatterns.init, /init mutation anchor cardinality/],
@@ -748,19 +751,36 @@ const runProbe = (python, packageCopy, source) => spawnSync(
   { cwd: packageCopy.root, encoding: "utf8" },
 );
 
-const generatedTreeProbe = (body) => [
+const sourceSnapshotProbe = (directory, body, beforeBuild = "") => [
   "import importlib.util, json, pathlib, sys",
   "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
   "module = importlib.util.module_from_spec(spec)",
   "spec.loader.exec_module(module)",
   "source = pathlib.Path(sys.argv[2])",
-  "temporary = pathlib.Path(module.PACKAGE_ROOT) / 'validator-probe'",
+  `temporary = pathlib.Path(module.PACKAGE_ROOT) / '${directory}'`,
   "temporary.mkdir()",
-  "module.validate_source(source, json.loads(sys.argv[3]))",
-  "generated = module.build_generated_tree(source, temporary)",
+  "snapshot = module.validate_source(source, json.loads(sys.argv[3]))",
+  beforeBuild,
+  "generated = module.build_generated_tree(snapshot, temporary)",
   body,
-  "module.validate_generated_tree(generated)",
 ].join("\n");
+const generatedTreeProbe = (body) => sourceSnapshotProbe("validator-probe", `${body}\nmodule.validate_generated_tree(generated)`);
+
+test("validated source snapshot alone determines generated and installed bytes", () => {
+  const relative = "commands/stack.md";
+  const [reviewed, unreviewed] = ["opaque-reviewed-snapshot-block", "unreviewed-post-validation-mutation"];
+  const source = createSourceFixture({ [relative]: `${sourceFiles()[relative]}\n${reviewed}\n` });
+  const packageCopy = createTemporaryPackage();
+  const mutation = [`target = source / ${JSON.stringify(relative)}`,
+    "assert not hasattr(snapshot, '__setitem__'), 'source snapshot must be immutable'",
+    `target.write_bytes(target.read_bytes().replace(b'${reviewed}', b'${unreviewed}'))`].join("\n");
+  const installation = "module.validate_generated_tree(generated)\nmodule.install_generated_tree(generated, module.PACKAGE_ROOT)";
+  const result = runProbe(sourceSnapshotProbe("snapshot-probe", installation, mutation), packageCopy, source);
+  assert.equal(result.status, 0, result.stderr);
+  const installed = readFileSync(path.join(packageCopy.root, "prompts/git-spice-stack.md"), "utf8");
+  assert.match(installed, new RegExp(reviewed));
+  assert.doesNotMatch(installed, new RegExp(unreviewed));
+});
 
 test("generated-tree validation rejects required Pi literal cardinality drift", () => {
   const source = createSourceFixture();
@@ -775,6 +795,25 @@ test("generated-tree validation rejects required Pi literal cardinality drift", 
   assert.match(result.stderr, /required literal.*cardinality/i);
 });
 
+for (const [relative, literal] of [
+  ["skills/git-spice/SKILL.md", "name: git-spice\n"], ["skills/git-spice/SKILL.md", "license: MIT\n"],
+  ["skills/stacking-workflow/SKILL.md", "name: stacking-workflow\n"], ["skills/stacking-workflow/SKILL.md", "license: MIT\n"],
+]) {
+  test(`generated-tree validation rejects corrupted ${relative} ${literal.trim()}`, () => {
+    const source = createSourceFixture();
+    const packageCopy = createTemporaryPackage();
+    const mutation = [
+      `target = generated / ${JSON.stringify(relative)}`,
+      `literal = ${JSON.stringify(literal)}`,
+      "target.write_text(target.read_text().replace(literal, 'corrupted: value\\n', 1))",
+    ].join("\n");
+    const result = runProbe(generatedTreeProbe(mutation), packageCopy, source);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(relative.replaceAll("/", "\\/")));
+    assert.match(result.stderr, /literal=.*expected=1.*actual=0|expected=1.*actual=0.*literal=/is);
+  });
+}
+
 test("generated-tree validation rejects forbidden Pi-delta literals", () => {
   const source = createSourceFixture();
   const packageCopy = createTemporaryPackage();
@@ -787,18 +826,7 @@ test("generated-tree validation rejects forbidden Pi-delta literals", () => {
   assert.match(result.stderr, /forbidden generated content/i);
 });
 
-const installationProbe = (injection) => [
-  "import importlib.util, json, pathlib, sys",
-  "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
-  "module = importlib.util.module_from_spec(spec)",
-  "spec.loader.exec_module(module)",
-  "source = pathlib.Path(sys.argv[2])",
-  "temporary = pathlib.Path(module.PACKAGE_ROOT) / 'installation-probe'",
-  "temporary.mkdir()",
-  "module.validate_source(source, json.loads(sys.argv[3]))",
-  "generated = module.build_generated_tree(source, temporary)",
-  injection,
-].join("\n");
+const installationProbe = (injection) => sourceSnapshotProbe("installation-probe", injection);
 
 const transactionDirectories = (root) => readdirSync(root).filter((name) => name.startsWith(".pi-git-spice-install-"));
 
