@@ -47,7 +47,7 @@ Sorted by intent, not alphabet — find the verb you mean, copy the command. Lon
 | Initialize git-spice in this repo | `git-spice --no-prompt repo init --trunk=<name> --remote=<name>` (`git-spice --no-prompt r i --trunk=<name> --remote=<name>`) |
 | Re-init / change trunk or remote | `git-spice --no-prompt repo init --trunk=<b> --remote=<r>` |
 | Reset all tracking, keep branches | `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset` |
-| Log in to GitHub/GitLab/Bitbucket | `git-spice --no-prompt auth login` |
+| Log in to GitHub/GitLab/Bitbucket | `git-spice auth login` — terminal-only; do not execute via a Pi/tool subprocess. |
 | Check who you're logged in as | `git-spice --no-prompt auth status` |
 | Log out | `git-spice --no-prompt auth logout` |
 
@@ -85,7 +85,7 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 |---|---|
 | Commit staged changes here | `git-spice --no-prompt commit create -m "<message>"` (`git-spice --no-prompt cc -m "<message>"`) |
 | Amend the tip commit | `git-spice --no-prompt commit amend --no-edit` (`git-spice --no-prompt ca --no-edit`) |
-| Split a commit interactively | `git-spice --no-prompt commit split` (`git-spice --no-prompt csp`) |
+| Split a commit interactively | `git-spice commit split` (`git-spice csp`) — terminal-only; do not execute via a Pi/tool subprocess. |
 | Apply staged changes as fixup to commit X | `git-spice --no-prompt commit fixup <ref>` (`git-spice --no-prompt cf`) |
 | Cherry-pick a commit onto this branch | `git-spice --no-prompt commit pick <ref>` (`git-spice --no-prompt cp`) |
 
@@ -112,13 +112,13 @@ Supported forges: **GitHub, GitLab, Bitbucket** only (self-hosted instances work
 | Restack the whole stack | `git-spice --no-prompt stack restack` (`git-spice --no-prompt sr`) |
 | Restack every tracked branch in the repo | `git-spice --no-prompt repo restack` (`git-spice --no-prompt rr`) |
 | Squash this branch's commits into one | `git-spice --no-prompt branch squash --no-edit` (`git-spice --no-prompt bsq --no-edit`) |
-| Split this branch at chosen commits | `git-spice --no-prompt branch split` (`git-spice --no-prompt bsp`) |
-| Interactively edit/reorder this branch's commits | `git-spice --no-prompt branch edit` (`git-spice --no-prompt be`) — interactive; restacks upstack after |
+| Split this branch at chosen commits | `git-spice branch split` (`git-spice bsp`) — terminal-only; do not execute via a Pi/tool subprocess. |
+| Interactively edit/reorder this branch's commits | `git-spice branch edit` (`git-spice be`) — terminal-only; do not execute via a Pi/tool subprocess. Restacks upstack after. |
 | Fold (merge) this branch into its base | `git-spice --no-prompt branch fold` (`git-spice --no-prompt bfo`) |
 | Move this branch onto a new base, leave upstack alone | `git-spice --no-prompt branch onto <base>` (`git-spice --no-prompt bon`) |
 | Move this branch + upstack onto a new base | `git-spice --no-prompt upstack onto <base>` (`git-spice --no-prompt uso`) |
-| Reorder branches in the stack | `git-spice --no-prompt stack edit` (`git-spice --no-prompt se`) — interactive |
-| Reorder branches below the current one | `git-spice --no-prompt downstack edit` (`git-spice --no-prompt dse`) — interactive |
+| Reorder branches in the stack | `git-spice stack edit` (`git-spice se`) — terminal-only; do not execute via a Pi/tool subprocess. |
+| Reorder branches below the current one | `git-spice downstack edit` (`git-spice dse`) — terminal-only; do not execute via a Pi/tool subprocess. |
 | Rename | `git-spice --no-prompt branch rename <new>` (`git-spice --no-prompt brn`) |
 | Delete branch (retargets upstack; add `--restack` to also rebase it) | `git-spice --no-prompt branch delete <name>` (`git-spice --no-prompt bd`) |
 | Delete every branch in the current stack | `git-spice --no-prompt stack delete` (`git-spice --no-prompt sd`) |
@@ -191,7 +191,7 @@ git-spice --no-prompt log long   # confirm the shape
 ```bash
 git-spice --no-prompt down                  # drop down to feat-b
 # edit files, git add
-git-spice --no-prompt commit amend --no-edit # or commit create -m "<message>" — both auto-restack upstack
+git-spice --no-prompt commit amend --no-edit          # or commit create -m "<message>" — both auto-restack upstack
 ```
 
 ### Submit and iterate
@@ -254,7 +254,7 @@ The **stacker** subagent encapsulates this loop and is what you should dispatch 
 
 ## Don't
 
-- **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice --no-prompt upstack restack`, or `git-spice --no-prompt branch edit` when the user is driving interactively.
+- **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. Use `git-spice --no-prompt upstack restack`, or `git-spice branch edit` — terminal-only; do not execute via a Pi/tool subprocess.
 - **Don't `git push --force`** on a tracked branch. Use `git-spice --no-prompt <scope> submit <draft-flag>` — git-spice uses `--force-with-lease` semantics and updates only the branches that need it.
 - **Don't delete tracked branches with `git branch -D`.** Use `git-spice --no-prompt branch delete` so upstack branches get re-parented.
 - **Don't assume `gs`** is git-spice in commands you write. Always `git-spice`.

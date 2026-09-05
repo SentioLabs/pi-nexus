@@ -46,7 +46,7 @@ Map symptoms to likely root causes:
 | Branches exist in git but not in `log long --all` | untracked | Gather or derive each exact untracked branch name and the exact top branch name first. If branch names are ambiguous or missing configuration prevents deriving them, report it and stop rather than enabling prompts. Run `git-spice --no-prompt branch track <branch>` for each branch, or `git-spice --no-prompt downstack track <top-branch>` for whole-stack tracking. |
 | Upstack branches flagged "needs restack" right after a sync or delete | `repo sync` / `branch delete` ran without `--restack` — they only retarget | `git-spice --no-prompt stack restack` (one stack) or `git-spice --no-prompt repo restack` (all) |
 | `log long` shows wrong trunk | trunk reconfigured or repo init ran with wrong `--trunk` | `git-spice --no-prompt repo init --trunk=<correct> --remote=<name>` |
-| Submit errors with auth message | token expired or scope insufficient | `git-spice --no-prompt auth login` (user must run interactively) |
+| Submit errors with auth message | token expired or scope insufficient | `git-spice auth login` — terminal-only; do not execute via a Pi/tool subprocess. |
 | Submit errors with "branch up to date" but PR isn't | nav-comment edge case or stale CR cache | `git-spice --no-prompt <scope> submit --force <draft-flag>` after confirming the local branch is right |
 | Stack is correct locally but PR descriptions are stale | submit ran without `--fill` and the prompt was canceled | re-run `git-spice --no-prompt <scope> submit --fill <draft-flag>` |
 

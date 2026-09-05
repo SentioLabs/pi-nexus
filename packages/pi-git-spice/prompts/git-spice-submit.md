@@ -5,7 +5,7 @@ argument-hint: [branch|upstack|downstack|stack] [extra flags]
 
 Submit the stack (or a slice of it) as PRs/MRs.
 
-1. Confirm auth: `git-spice --no-prompt auth status`. If not logged in, stop and instruct the user to run `git-spice --no-prompt auth login` themselves (interactive). Don't proceed with an unauthenticated submit.
+1. Confirm auth: `git-spice --no-prompt auth status`. If not logged in, stop and instruct the user to run `git-spice auth login` themselves — terminal-only; do not execute via a Pi/tool subprocess. Don't proceed with an unauthenticated submit.
 2. Parse `$ARGUMENTS`:
    - First word, if one of `branch`, `upstack`, `downstack`, `stack` → that's the scope.
    - No scope given → default to `stack`.

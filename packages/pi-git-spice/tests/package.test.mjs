@@ -6,6 +6,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  forbiddenManualSubprocessCommands,
+  manualInteractiveOutput,
+} from "./migration-fixtures.mjs";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = join(packageRoot, "scripts/migrate-git-spice-plugin.py");
@@ -17,7 +21,10 @@ const migrationContract = JSON.parse(execFileSync("python3", [
     "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
     "module = importlib.util.module_from_spec(spec)",
     "spec.loader.exec_module(module)",
-    "print(json.dumps({'commit': module.REVIEWED_UPSTREAM_COMMIT, 'pins': module.PINNED_SOURCE_SHA256, 'required': module.REQUIRED_SOURCE_PATHS, 'runtime': [target for _, target in module.RUNTIME_MANIFEST]}))",
+    "payload = {'commit': module.REVIEWED_UPSTREAM_COMMIT, 'pins': module.PINNED_SOURCE_SHA256}",
+    "payload['required'] = module.REQUIRED_SOURCE_PATHS",
+    "payload['runtime'] = [target for _, target in module.RUNTIME_MANIFEST]",
+    "print(json.dumps(payload))",
   ].join("; "),
   migrationScript,
 ], { encoding: "utf8" }));
@@ -40,22 +47,23 @@ const expectedSourceSha256 = {
 };
 const expectedGeneratedDigestPaths = [...migrationContract.runtime].sort();
 const reviewedGeneratedSha256 = {
-  "agents/stack-doctor.md": "163885ec4a57fcc3587199d82c34ed584aa972c393b1b2ec2b84878fc835599d",
+  "agents/stack-doctor.md": "5753ecd3dea9c6bf1049dab9ecffaf6759393ca88f859b3b87daa576d3728331",
   "agents/stacker.md": "4ab2da81685cf6a97fba23546fe20b7929e580f7cdf6d05e92299e74a67a0425",
   "prompts/git-spice-continue.md": "247113435a61483022c2b48b422f1b89095a54be1f6f8f2a32bb1d242bd14750",
-  "prompts/git-spice-init.md": "2dbaee08e95087a9e236cb6af88cc13e1f01127c9dff2aebbb3bd5564ab3c8e1",
+  "prompts/git-spice-init.md": "540662e772d69507ff6c546474c6e93982295388fdadd86a43389ff8931c2fe7",
   "prompts/git-spice-new.md": "e553eb03f97707965a3e590c75f0c9b592ba2000a975ea0a57d6c7fdd796d986",
   "prompts/git-spice-restack.md": "4f05ecb3dd230b8880deb9b097694719995ea3984137f8aff264de970711afb2",
   "prompts/git-spice-stack.md": "3e031ef21aa66a1e8f525be32b69cf5efd18e435bd5d4fa764235edef06b70f2",
-  "prompts/git-spice-submit.md": "c5ce194c3f989ea5b3bfbf66f6726c1c23318ee67c61f50cdb713fdf8f244437",
+  "prompts/git-spice-submit.md": "407cecef12baf0cbc01b35d41ad2811926ce0dfe87316ceb2f5acf086aa45d05",
   "prompts/git-spice-sync.md": "7f72f317bdda57d3b15c04b000e3bf5d6e23bedb7fddd816652cc0fdbbeeb474",
-  "skills/git-spice/SKILL.md": "4569125f5320b0c338fa598c123858f6792cbcbd8248b301bb61aaa3715bbae7",
-  "skills/stacking-workflow/SKILL.md": "68fc552ee021f69a89407b359288374361f4b50446ad6d58758d6fad779f6402",
+  "skills/git-spice/SKILL.md": "6f20f206373f04568c14b20667948369df6ceb0d4f2c6cdb30a550f547129cb0",
+  "skills/stacking-workflow/SKILL.md": "509f249fe1caa4947d1d365d2ffab0ffc155b9f40a81f1015ba3f5847db77c7c",
 };
 const expectedPackedPaths = [
   "CHANGELOG.md", "LICENSE", "README.md", ...expectedGeneratedDigestPaths,
   "extensions/git-spice-workflow.ts", "package.json",
-  "src/adapters/command-runner.ts", "src/adapters/git.ts", "src/core/contracts.ts", "src/core/ports.ts",
+  "src/adapters/command-runner.ts", "src/adapters/git.ts",
+  "src/core/contracts.ts", "src/core/ports.ts",
 ].sort();
 
 test("production pins the exact reviewed upstream source bytes", () => {
@@ -75,7 +83,11 @@ test("generated resources match the reviewed SHA-256 map", async () => {
 });
 
 test("migration source contains no removed Markdown, occurrence, shell, or argv parser subsystem", () => {
-  const source = readText("scripts/migrate-git-spice-plugin.py");
+  const source = [
+    "scripts/migrate-git-spice-plugin.py",
+    "scripts/migration_contracts.py",
+    "scripts/migration_install.py",
+  ].map(readText).join("\n");
   for (const name of [
     "MarkdownRegion", "SourceLine", "GitSpiceOccurrence", "ProseReferenceManifestEntry",
     "RegisteredIdentifierKind", "RegisteredIdentifierGroup", "ShellWord", "ShellCommandSegment",
@@ -89,13 +101,15 @@ test("migration source contains no removed Markdown, occurrence, shell, or argv 
   }
 });
 
-test("generator and focused tests remain within approved line-count limits", () => {
-  const generatorLines = readText("scripts/migrate-git-spice-plugin.py").split("\n").length;
-  const migrationTestLines = readText("tests/migration.test.mjs").split("\n").length;
-  const packageTestLines = readText("tests/package.test.mjs").split("\n").length;
-  assert.ok(generatorLines <= 1000, `generator has ${generatorLines} physical lines`);
-  assert.ok(migrationTestLines + packageTestLines <= 1200, `focused tests have ${migrationTestLines + packageTestLines} physical lines`);
+test("generator and focused tests retain readable size headroom", () => {
+  const physicalLines = (relative) => readText(relative).trimEnd().split("\n").length;
+  const generatorLines = physicalLines("scripts/migrate-git-spice-plugin.py");
+  const focusedTestLines = physicalLines("tests/migration.test.mjs")
+    + physicalLines("tests/package.test.mjs");
+  assert.ok(generatorLines <= 900, `generator has ${generatorLines} physical lines`);
+  assert.ok(focusedTestLines <= 1100, `focused tests have ${focusedTestLines} physical lines`);
 });
+
 test("package exposes the exact Pi git-spice runtime and publishable metadata", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "@sentiolabs/pi-git-spice");
@@ -103,7 +117,6 @@ test("package exposes the exact Pi git-spice runtime and publishable metadata", 
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.repository.directory, "packages/pi-git-spice");
   assert.deepEqual(pkg.pi, {
-    extensions: ["./extensions/git-spice-workflow.ts"],
     skills: ["./skills"],
     prompts: ["./prompts/*.md"],
     subagents: { agents: ["./agents"] },
@@ -157,22 +170,40 @@ test("skills and agents retain Pi identities, optional dispatch, and fresh conte
   assert.match(doctor, /inheritProjectContext: true\ndefaultContext: fresh/);
   assert.doesNotMatch(`${stacker}\n${doctor}`, /model: sonnet|subagent_type|  - (?:Bash|Read|Write|Edit|Glob|Grep)\n/);
 });
-test("generated editor-opening guidance is safe for tool subprocesses", () => {
+
+test("generated command guidance separates unattended and manual-only execution", () => {
   const gitSpice = readText("skills/git-spice/SKILL.md");
   const stacking = readText("skills/stacking-workflow/SKILL.md");
-  assert.match(gitSpice, /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/);
-  assert.match(gitSpice, /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/);
-  assert.match(gitSpice, /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/);
+  assert.match(
+    gitSpice,
+    /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/,
+  );
+  assert.match(
+    gitSpice,
+    /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/,
+  );
+  assert.match(
+    gitSpice,
+    /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/,
+  );
   assert.match(gitSpice, /commit amend --no-edit\s+# or commit create -m "<message>"/);
   assert.match(stacking, /commit amend --no-edit\s+# or 'commit create -m "<message>"'/);
   assert.match(stacking, /instead of `git-spice --no-prompt commit create -m "<message>"`/);
   const combined = expectedGeneratedDigestPaths.map(readText).join("\n");
-  for (const unsafe of [
+  assert.doesNotMatch(
+    combined,
     /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/,
-    /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*(?:--no-edit|--message|-m|--message-file|-F)(?:\s|=|`|$))/,
-  ]) assert.doesNotMatch(combined, unsafe);
-  assert.match(gitSpice, /inherently interactive command-map entries are terminal-only examples; do not execute them through Pi\/tool subprocesses/);
-  for (const operation of ["commit split", "branch edit", "stack edit", "downstack edit"]) assert.match(gitSpice, new RegExp(operation));
+  );
+  assert.doesNotMatch(
+    combined,
+    /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*--no-edit)/,
+  );
+  for (const [, relative, literal] of manualInteractiveOutput) {
+    assert.equal(readText(relative).split(literal).length - 1, 1, `${relative}: ${literal}`);
+  }
+  for (const command of forbiddenManualSubprocessCommands) {
+    assert.equal(combined.includes(`git-spice --no-prompt ${command}`), false, command);
+  }
 });
 
 test("generated resources omit obsolete executable and report placeholders", () => {

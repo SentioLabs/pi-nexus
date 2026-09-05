@@ -8,8 +8,14 @@ import json
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 from types import MappingProxyType
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import migration_contracts as contracts
+import migration_install as installer
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_CANDIDATES = (
@@ -52,6 +58,19 @@ if set(PINNED_SOURCE_SHA256) != set(REQUIRED_SOURCE_PATHS):
     raise RuntimeError("Pinned source digest keys must exactly match REQUIRED_SOURCE_PATHS")
 
 GENERATED_ROOTS = tuple(sorted({Path(target).parts[0] for _, target in RUNTIME_MANIFEST}))
+MANUAL_SUBPROCESS_COMMANDS = (
+    "auth login",
+    "commit split",
+    "csp",
+    "branch split",
+    "bsp",
+    "branch edit",
+    "be",
+    "stack edit",
+    "se",
+    "downstack edit",
+    "dse",
+)
 FORBIDDEN_GENERATED = (
     "/git-spice:",
     "subagent_type",
@@ -66,179 +85,7 @@ FORBIDDEN_GENERATED = (
     "git-spice --no-prompt commit ...",
     "<paste git-spice --no-prompt log long>",
     "<paste git-spice --no-prompt log long and git status>",
-)
-
-PROMPT_ANCHORS = {
-    "commands/continue.md": "Resume — or abort — a git-spice operation that was paused on a rebase conflict.",
-    "commands/init.md": "Confirm you're inside a git repository:",
-    "commands/new.md": "Create a new branch on top of the current one with `git-spice branch create`.",
-    "commands/restack.md": "Rebase one or more branches onto their (current) bases.",
-    "commands/stack.md": "Run `git-spice log long` and present the output to the user verbatim",
-    "commands/submit.md": "Submit the stack (or a slice of it) as PRs/MRs.",
-    "commands/sync.md": "Sync with the remote: pull trunk, delete merged branches, restack survivors.",
-}
-
-PROMPT_SAFETY_APPENDICES = {
-    "commands/continue.md": """## Pi execution safety
-
-For unattended continuation, use `git-spice --no-prompt rebase continue --no-edit`. Interactive commit-message editing is terminal-only; do not open an editor through Pi. For missing configuration, report it rather than enabling prompts.
-""",
-    "commands/init.md": """## Pi execution safety
-
-Do not run argumentless initialization in Pi. Gather an explicit trunk and remote through an available user-question tool, or through plain chat when that tool is unavailable; if either value is unavailable, stop. Run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. For `--reset`, disclose that it forgets all git-spice tracking relationships while leaving Git branches, and obtain a separate explicit confirmation before running `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`.
-""",
-    "commands/new.md": """## Pi execution safety
-
-Gather an explicit branch name and commit message through an available user-question tool or plain chat before a populated branch creation. Use `git-spice --no-prompt branch create <name> -m <message>` for populated changes; add `-a` only after explicit approval. On a clean tree, use `git-spice --no-prompt branch create <name> --no-commit`.
-""",
-    "commands/restack.md": """## Pi execution safety
-
-Execute only an explicit restack scope with `--no-prompt`. If configuration is missing, report it rather than enabling prompts.
-""",
-    "commands/stack.md": """## Pi execution safety
-
-Inspect with `git-spice --no-prompt log long`; report missing configuration rather than enabling prompts.
-""",
-    "commands/submit.md": """## Pi execution safety
-
-Resolve `--draft` or `--no-draft` from arguments, then `spice.submit.draft`, then an available user-question tool or plain chat; stop if no value is available. Reject prompt controls and conflicting draft controls so the resolved draft state remains explicit. Use `git-spice --no-prompt <scope> submit --dry-run --fill <draft-flag>` first, then `git-spice --no-prompt <scope> submit --fill <draft-flag>`. Documented optional submit flags may be included only after those checks. The `--update-only` exception applies only when it proves no new Change Request can be created; otherwise the explicit draft flag is mandatory. Do not enable prompts for missing configuration.
-""",
-    "commands/sync.md": """## Pi execution safety
-
-Execute `git-spice --no-prompt repo sync --restack`; report missing configuration rather than enabling prompts.
-""",
-}
-
-DISPATCH_CONTRACT = """If the subagent tool is available, list agents first. Dispatch only an executable, non-disabled git-spice.stacker or git-spice.stack-doctor with fresh context and complete inputs. Never run both against the same checkout concurrently. If the tool or named agent is unavailable, run the documented direct workflow instead."""
-
-REQUIRED_GENERATED_LITERALS = {
-    "prompts/git-spice-continue.md": (
-        ("git-spice --no-prompt rebase continue --no-edit", 3),
-    ),
-    "prompts/git-spice-init.md": (
-        ("git-spice --no-prompt repo init --trunk=<name> --remote=<name>", 4),
-        ("separate explicit confirmation", 1),
-    ),
-    "prompts/git-spice-new.md": (
-        ("git-spice --no-prompt branch create <name> -m <message>", 1),
-        ("git-spice --no-prompt branch create <name> --no-commit", 2),
-        ("add `-a` only after explicit approval", 1),
-    ),
-    "prompts/git-spice-submit.md": (
-        ("git-spice --no-prompt <scope> submit --dry-run --fill <draft-flag>", 2),
-        ("git-spice --no-prompt <scope> submit --fill <draft-flag>", 2),
-        ("resolved draft state remains explicit", 2),
-    ),
-    "prompts/git-spice-sync.md": (
-        ("git-spice --no-prompt repo sync --restack", 2),
-    ),
-    "skills/git-spice/SKILL.md": (
-        ("name: git-spice\n", 1), ("license: MIT\n", 1), (DISPATCH_CONTRACT, 1),
-        ('git-spice --no-prompt commit create -m "<message>"', 1), ('git-spice --no-prompt cc -m "<message>"', 1),
-        ("git-spice --no-prompt commit amend --no-edit", 3), ("git-spice --no-prompt ca --no-edit", 1),
-        ("git-spice --no-prompt branch squash --no-edit", 1), ("git-spice --no-prompt bsq --no-edit", 1),
-        ("inherently interactive command-map entries are terminal-only examples; do not execute them through Pi/tool subprocesses", 1),
-    ),
-    "skills/stacking-workflow/SKILL.md": (
-        ("name: stacking-workflow\n", 1), ("license: MIT\n", 1), (DISPATCH_CONTRACT, 1),
-        ('git-spice --no-prompt commit create -m "<message>"', 1),
-        ("git-spice --no-prompt commit amend --no-edit", 1), ('commit create -m "<message>"', 2),
-    ),
-    "agents/stacker.md": (
-        ("name: stacker\npackage: git-spice\n", 1),
-        ("tools: bash, read, write, edit, find, grep", 1),
-        ("inheritProjectContext: true\ndefaultContext: fresh", 1),
-        ("<paste final stack log output>", 1),
-    ),
-    "agents/stack-doctor.md": (
-        ("name: stack-doctor\npackage: git-spice\n", 1),
-        ("tools: bash, read, find, grep", 1),
-        ("inheritProjectContext: true\ndefaultContext: fresh", 1),
-        ("<paste final stack log and git status output>", 1),
-    ),
-}
-
-AGENT_CONFIG = {
-    "agents/stacker.md": ("stacker", ["Bash", "Read", "Write", "Edit", "Glob", "Grep"], "## Non-interactive discipline"),
-    "agents/stack-doctor.md": ("stack-doctor", ["Bash", "Read", "Glob", "Grep"], "## Diagnosis checklist"),
-}
-TOOL_MAP = {"Bash": "bash", "Read": "read", "Write": "write", "Edit": "edit", "Glob": "find", "Grep": "grep"}
-
-COMMAND_NAMES = r"(?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>)"
-COMMAND_ANCHOR_PATTERN = re.compile(rf"(?<![\w-])git-spice(?= {COMMAND_NAMES}(?:\s|`|$))")
-ALIAS_NAMES = (
-    "r", "ls", "ll", "bdi", "bc", "btr", "dstr", "cc", "ca", "csp", "cf", "cp", "bco", "br",
-    "usr", "dsr", "sr", "rr", "bsq", "bsp", "be", "bfo", "bon", "uso", "se", "dse", "brn", "bd",
-    "sd", "usd", "buntr", "bs", "dss", "uss", "ss", "rs", "rbc", "rba",
-)
-ALIAS_ANCHOR_PATTERN = re.compile(r"(?<![\w-])git-spice(?= (?:" + "|".join(ALIAS_NAMES) + r")(?:\s|`|\)))")
-MUTATION_ANCHOR_PATTERNS = {
-    "reset": re.compile(r"git-spice(?: --no-prompt)? repo init(?=[^`\n]*--reset)"),
-    "init": re.compile(r"git-spice(?: --no-prompt)? repo init(?![^`\n]*--reset)(?=[\s`])"),
-    "branch create": re.compile(r"git-spice(?: --no-prompt)? branch create(?=[\s`])"),
-    "rebase continue": re.compile(r"git-spice(?: --no-prompt)? rebase continue(?=[\s`])"),
-    "rebase abort": re.compile(r"git-spice(?: --no-prompt)? rebase abort(?=[\s`])"),
-    "restack": re.compile(r"git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|repo) restack(?=[\s`])"),
-    "sync": re.compile(r"git-spice(?: --no-prompt)? repo sync(?=[\s`])"),
-    "submit": re.compile(r"git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|<scope>) submit(?=[\s`])"),
-}
-EXPECTED_COMMAND_ANCHORS = {
-    "commands/continue.md": 4,
-    "commands/init.md": 6,
-    "commands/new.md": 5,
-    "commands/restack.md": 5,
-    "commands/stack.md": 2,
-    "commands/submit.md": 4,
-    "commands/sync.md": 3,
-    "skills/git-spice/SKILL.md": 96,
-    "skills/stacking-workflow/SKILL.md": 12,
-    "agents/stack-doctor.md": 24,
-    "agents/stacker.md": 10,
-}
-EXPECTED_ALIAS_ANCHORS = {"skills/git-spice/SKILL.md": 40}
-EXPECTED_ALIAS_NAMES = {
-    "r": 1, "ls": 2, "ll": 2, "bdi": 1, "bc": 1, "btr": 1, "dstr": 1, "cc": 1, "ca": 1,
-    "csp": 1, "cf": 1, "cp": 1, "bco": 1, "br": 1, "usr": 1, "dsr": 1, "sr": 1, "rr": 1,
-    "bsq": 1, "bsp": 1, "be": 1, "bfo": 1, "bon": 1, "uso": 1, "se": 1, "dse": 1, "brn": 1,
-    "bd": 1, "sd": 1, "usd": 1, "buntr": 1, "bs": 1, "dss": 1, "uss": 1, "ss": 1, "rs": 1,
-    "rbc": 1, "rba": 1,
-}
-EXPECTED_MUTATION_ANCHORS = {
-    "commands/continue.md": {"rebase continue": 2, "rebase abort": 1},
-    "commands/init.md": {"init": 1, "reset": 1},
-    "commands/new.md": {"branch create": 4},
-    "commands/restack.md": {"restack": 4},
-    "commands/submit.md": {"submit": 2},
-    "commands/sync.md": {"sync": 1},
-    "skills/git-spice/SKILL.md": {"init": 3, "reset": 2, "branch create": 12, "rebase continue": 3, "rebase abort": 2, "restack": 11, "sync": 3, "submit": 8},
-    "skills/stacking-workflow/SKILL.md": {"branch create": 1, "rebase continue": 1, "restack": 1, "sync": 1, "submit": 1},
-    "agents/stack-doctor.md": {"init": 2, "rebase continue": 3, "restack": 7, "submit": 3},
-    "agents/stacker.md": {"branch create": 3, "submit": 2},
-}
-EDITOR_OPENING_COMMANDS = {
-    "skills/git-spice/SKILL.md": (
-        ("commit create", "commit create", 1), ("commit create alias", "cc", 1),
-        ("commit amend", "commit amend", 3), ("commit amend alias", "ca", 1),
-        ("branch squash", "branch squash", 1), ("branch squash alias", "bsq", 1),
-    ),
-    "skills/stacking-workflow/SKILL.md": (("commit create", "commit create", 1), ("commit amend", "commit amend", 1)),
-}
-DIRECT_COMMIT_CREATE_ALTERNATIVES = {
-    "skills/git-spice/SKILL.md": ("# or commit create —", '# or commit create -m "<message>" —'),
-    "skills/stacking-workflow/SKILL.md": ("# or 'commit create' for", '# or \'commit create -m "<message>"\' for'),
-}
-MESSAGE_OPTION_PATTERN = re.compile(r"(?:^|\s)(?:-m|--message|-F|--message-file)(?:\s|=)")
-NO_EDIT_OR_MESSAGE_PATTERN = re.compile(r"(?:^|\s)(?:--no-edit|-m|--message|-F|--message-file)(?:\s|=|$)")
-
-SUBMIT_DRAFT_CONTRACT = """## Explicit submit draft state
-
-Before every create-capable direct submit workflow, resolve draft state from an explicit argument, then `spice.submit.draft`, then a Pi user-question tool or plain chat. Execute with an explicit `<draft-flag>` chosen as `--draft` or `--no-draft`; never rely on an implicit draft state. The `--update-only` exception applies only when that flag proves no new Change Request can be created; otherwise never omit the draft flag.
-"""
-INIT_SAFETY_CONTRACT = """## Explicit initialization and reset safety
-
-For every initialization, reconfiguration, or recovery path, gather both trunk and remote from explicit arguments, a Pi user-question tool, or plain chat. Always run `git-spice --no-prompt repo init --trunk=<name> --remote=<name>`. A reset forgets all git-spice tracking relationships while leaving Git branches; disclose that impact and require a separate explicit confirmation before running `git-spice --no-prompt repo init --trunk=<name> --remote=<name> --reset`.
-"""
-
+) + tuple(f"git-spice --no-prompt {command}" for command in MANUAL_SUBPROCESS_COMMANDS)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Regenerate Pi git-spice resources from the Claude git-spice plugin source.")
@@ -253,7 +100,10 @@ def resolve_source_path(args: argparse.Namespace) -> Path:
     raw = args.source_option or args.source
     if raw:
         return Path(raw).expanduser().resolve()
-    return next((candidate.expanduser().resolve() for candidate in DEFAULT_SOURCE_CANDIDATES if candidate.exists()), DEFAULT_SOURCE_CANDIDATES[0].expanduser().resolve())
+    return next(
+        (candidate.expanduser().resolve() for candidate in DEFAULT_SOURCE_CANDIDATES if candidate.exists()),
+        DEFAULT_SOURCE_CANDIDATES[0].expanduser().resolve(),
+    )
 
 
 def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -298,10 +148,6 @@ def validate_metadata(raw: bytes, metadata_path: Path) -> None:
         raise RuntimeError(f"Source plugin.json keywords must be a string array of non-empty values: {metadata_path}")
 
 
-def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def load_validated_source(
     source: Path,
     expected_digests: Mapping[str, str],
@@ -322,7 +168,11 @@ def load_validated_source(
     }
     missing = [relative for relative in REQUIRED_SOURCE_PATHS if relative not in inventory]
     if missing:
-        raise RuntimeError("Source plugin does not look like the Claude git-spice plugin:\nMissing expected paths:\n" + "\n".join(f"- {path}" for path in missing))
+        details = "\n".join(f"- {path}" for path in missing)
+        raise RuntimeError(
+            "Source plugin does not look like the Claude git-spice plugin:\n"
+            f"Missing expected paths:\n{details}"
+        )
     expected = required_paths | set(INTENTIONALLY_IGNORED_SOURCE_PATHS)
     unclassified = sorted(set(inventory) - expected)
     if unclassified:
@@ -344,7 +194,7 @@ def load_validated_source(
         elif source_relative.startswith("skills/"):
             validate_skill_frontmatter(text, Path(source_relative).parts[1], source_relative)
         else:
-            _, expected_tools, _ = AGENT_CONFIG[source_relative]
+            _, expected_tools, _ = contracts.AGENT_CONFIG[source_relative]
             parse_agent_frontmatter(text, expected_tools, source_relative)
     return snapshot
 
@@ -384,34 +234,42 @@ def checked_sub(pattern: re.Pattern[str], replacement, text: str, expected: int,
     return result
 
 
-def validate_transformation_anchors(text: str, context: str) -> None:
-    for label, command, expected in EDITOR_OPENING_COMMANDS.get(context, ()):
-        actual = len(editor_opening_pattern(command).findall(text))
-        if actual != expected:
-            raise RuntimeError(f"Expected exactly {expected} {label} editor-opening anchor cardinality while patching {context}, found {actual}")
-    if context in DIRECT_COMMIT_CREATE_ALTERNATIVES:
-        source, _ = DIRECT_COMMIT_CREATE_ALTERNATIVES[context]
+def validate_exact_transform_anchors(text: str, context: str) -> None:
+    for source, _ in contracts.MANUAL_INTERACTIVE_TRANSFORMS.get(context, ()):
         actual = text.count(source)
         if actual != 1:
-            raise RuntimeError(f"Expected exactly 1 direct commit create alternative editor-opening anchor cardinality while patching {context}, found {actual}")
-    expected_mutations = EXPECTED_MUTATION_ANCHORS.get(context, {})
+            raise RuntimeError(
+                "Expected exactly 1 manual-interactive source anchor cardinality "
+                f"while patching {context}, found {actual}: {source[:80]!r}"
+            )
+    for label, source, _, expected in contracts.EDITOR_OPENING_TRANSFORMS.get(context, ()):
+        actual = text.count(source)
+        if actual != expected:
+            raise RuntimeError(
+                f"Expected exactly {expected} {label} editor-opening anchor cardinality "
+                f"while patching {context}, found {actual}"
+            )
+
+
+def validate_transformation_anchors(text: str, context: str) -> None:
+    expected_mutations = contracts.EXPECTED_MUTATION_ANCHORS.get(context, {})
     for label in ("reset", "init", "branch create", "rebase continue", "rebase abort", "restack", "sync", "submit"):
         expected = expected_mutations.get(label, 0)
-        actual = len(MUTATION_ANCHOR_PATTERNS[label].findall(text))
+        actual = len(contracts.MUTATION_ANCHOR_PATTERNS[label].findall(text))
         if actual != expected:
             raise RuntimeError(f"Expected exactly {expected} {label} mutation anchor cardinality while patching {context}, found {actual}")
-    expected_aliases = EXPECTED_ALIAS_ANCHORS.get(context, 0)
-    aliases = len(ALIAS_ANCHOR_PATTERN.findall(text))
+    expected_aliases = contracts.EXPECTED_ALIAS_ANCHORS.get(context, 0)
+    aliases = len(contracts.ALIAS_ANCHOR_PATTERN.findall(text))
     if aliases != expected_aliases:
         raise RuntimeError(f"Expected exactly {expected_aliases} alias command anchor cardinality while patching {context}, found {aliases}")
     if context == "skills/git-spice/SKILL.md":
-        for alias, expected in EXPECTED_ALIAS_NAMES.items():
+        for alias, expected in contracts.EXPECTED_ALIAS_NAMES.items():
             pattern = re.compile(rf"(?<![\w-])git-spice {re.escape(alias)}(?=\s|`|\))")
             actual = len(pattern.findall(text))
             if actual != expected:
                 raise RuntimeError(f"Expected exactly {expected} {alias!r} alias command anchor cardinality while patching {context}, found {actual}")
-    expected_commands = EXPECTED_COMMAND_ANCHORS[context]
-    commands = len(COMMAND_ANCHOR_PATTERN.findall(text))
+    expected_commands = contracts.EXPECTED_COMMAND_ANCHORS[context]
+    commands = len(contracts.COMMAND_ANCHOR_PATTERN.findall(text))
     if commands != expected_commands:
         raise RuntimeError(f"Expected exactly {expected_commands} command anchor cardinality while patching {context}, found {commands}")
 
@@ -536,18 +394,18 @@ def transform_prompt_references(body: str, context: str) -> str:
 
 def make_commands_noninteractive(text: str, context: str) -> str:
     text = checked_sub(
-        COMMAND_ANCHOR_PATTERN,
+        contracts.COMMAND_ANCHOR_PATTERN,
         "git-spice --no-prompt",
         text,
-        EXPECTED_COMMAND_ANCHORS[context],
+        contracts.EXPECTED_COMMAND_ANCHORS[context],
         context,
         "command prefixes",
     )
     return checked_sub(
-        ALIAS_ANCHOR_PATTERN,
+        contracts.ALIAS_ANCHOR_PATTERN,
         "git-spice --no-prompt",
         text,
-        EXPECTED_ALIAS_ANCHORS.get(context, 0),
+        contracts.EXPECTED_ALIAS_ANCHORS.get(context, 0),
         context,
         "alias command prefixes",
     )
@@ -571,31 +429,14 @@ def make_alias_mutations_explicit(text: str, context: str) -> str:
     return text
 
 
-def editor_opening_pattern(command: str) -> re.Pattern[str]:
-    return re.compile(rf"git-spice(?: --no-prompt)? {re.escape(command)}(?P<arguments>[^`\n]*)")
-
-
-def make_editor_opening_commands_explicit(text: str, context: str) -> str:
-    for label, command, expected in EDITOR_OPENING_COMMANDS.get(context, ()):
-        pattern = editor_opening_pattern(command)
-
-        def replacement(match: re.Match[str], label=label, command=command) -> str:
-            executable, comment = split_command_comment(match.group("arguments"))
-            safety = MESSAGE_OPTION_PATTERN if label.startswith("commit create") else NO_EDIT_OR_MESSAGE_PATTERN
-            if not safety.search(executable):
-                executable += ' -m "<message>"' if label.startswith("commit create") else " --no-edit"
-            suffix = " " + executable.strip() if executable else ""
-            return f"git-spice --no-prompt {command}{suffix}{comment}"
-
-        text = checked_sub(pattern, replacement, text, expected, context, f"{label} editor-opening anchors")
-    if context in DIRECT_COMMIT_CREATE_ALTERNATIVES:
-        source, target = DIRECT_COMMIT_CREATE_ALTERNATIVES[context]
-        text = checked_sub(re.compile(re.escape(source)), target, text, 1, context, "direct commit create alternative editor-opening anchor")
+def apply_editor_opening_transforms(text: str, context: str) -> str:
+    for _, source, target, _ in contracts.EDITOR_OPENING_TRANSFORMS.get(context, ()):
+        text = text.replace(source, target)
     return text
 
 
 def make_rebase_continuations_noninteractive(text: str, context: str) -> str:
-    expected = EXPECTED_MUTATION_ANCHORS.get(context, {}).get("rebase continue", 0)
+    expected = contracts.EXPECTED_MUTATION_ANCHORS.get(context, {}).get("rebase continue", 0)
     pattern = re.compile(r"git-spice --no-prompt rebase continue(?!\s+--no-edit)")
     return checked_sub(pattern, "git-spice --no-prompt rebase continue --no-edit", text, expected, context, "rebase continue mutations")
 
@@ -608,7 +449,7 @@ def split_command_comment(arguments: str) -> tuple[str, str]:
 
 
 def make_branch_creations_explicit(text: str, context: str) -> str:
-    expected = EXPECTED_MUTATION_ANCHORS.get(context, {}).get("branch create", 0)
+    expected = contracts.EXPECTED_MUTATION_ANCHORS.get(context, {}).get("branch create", 0)
     pattern = re.compile(r"git-spice --no-prompt branch create(?P<arguments>[^`\n]*)")
 
     def replacement(match: re.Match[str]) -> str:
@@ -623,7 +464,7 @@ def make_branch_creations_explicit(text: str, context: str) -> str:
 
 
 def make_init_mutations_explicit(text: str, context: str) -> str:
-    mutations = EXPECTED_MUTATION_ANCHORS.get(context, {})
+    mutations = contracts.EXPECTED_MUTATION_ANCHORS.get(context, {})
     expected = mutations.get("init", 0) + mutations.get("reset", 0)
     pattern = re.compile(r"git-spice --no-prompt repo init(?P<arguments>[^`\n]*)")
 
@@ -640,7 +481,7 @@ def make_init_mutations_explicit(text: str, context: str) -> str:
 
 
 def make_submit_drafts_explicit(text: str, context: str) -> str:
-    expected = EXPECTED_MUTATION_ANCHORS.get(context, {}).get("submit", 0)
+    expected = contracts.EXPECTED_MUTATION_ANCHORS.get(context, {}).get("submit", 0)
     pattern = re.compile(r"git-spice --no-prompt (?P<scope>branch|upstack|downstack|stack|<scope>) submit(?P<arguments>[^`\n]*)")
 
     def replacement(match: re.Match[str]) -> str:
@@ -658,7 +499,7 @@ def make_submit_drafts_explicit(text: str, context: str) -> str:
 
 
 def make_sync_restack_explicit(text: str, context: str) -> str:
-    expected = EXPECTED_MUTATION_ANCHORS.get(context, {}).get("sync", 0)
+    expected = contracts.EXPECTED_MUTATION_ANCHORS.get(context, {}).get("sync", 0)
     pattern = re.compile(r"git-spice --no-prompt repo sync(?P<arguments>[^`\n]*)")
 
     def replacement(match: re.Match[str]) -> str:
@@ -672,37 +513,56 @@ def make_sync_restack_explicit(text: str, context: str) -> str:
 
 
 def transform_executable_guidance(text: str, context: str) -> str:
-    validate_transformation_anchors(text, context)
+    manual_transforms = contracts.MANUAL_INTERACTIVE_TRANSFORMS.get(context, ())
+    text = apply_editor_opening_transforms(text, context)
     text = make_commands_noninteractive(text, context)
     text = make_alias_mutations_explicit(text, context)
-    text = make_editor_opening_commands_explicit(text, context)
     text = make_rebase_continuations_noninteractive(text, context)
     text = make_branch_creations_explicit(text, context)
     text = make_init_mutations_explicit(text, context)
     text = make_submit_drafts_explicit(text, context)
-    return make_sync_restack_explicit(text, context)
+    text = make_sync_restack_explicit(text, context)
+    for source, target in manual_transforms:
+        generated_anchor = source.replace("git-spice ", "git-spice --no-prompt ")
+        text = require_replace(text, generated_anchor, target, f"{context} manual-interactive output")
+    return text
 
 
 def transform_prompt(source_relative: str, text: str) -> str:
-    if source_relative not in PROMPT_SAFETY_APPENDICES:
+    if source_relative not in contracts.PROMPT_SAFETY_APPENDICES:
         raise RuntimeError(f"Unsupported source prompt: {source_relative}")
     fields, body = parse_prompt_frontmatter(text, source_relative)
+    validate_exact_transform_anchors(body, source_relative)
     validate_transformation_anchors(body, source_relative)
-    anchor = PROMPT_ANCHORS[source_relative]
+    anchor = contracts.PROMPT_ANCHORS[source_relative]
     require_replace(body, anchor, anchor, source_relative)
     body = transform_prompt_references(body, source_relative)
     if source_relative == "commands/init.md":
         body = require_replace(
             body,
-            "3. Run `git-spice repo init`. If `$ARGUMENTS` was provided, treat it as either a trunk branch name or `--trunk=<name> --remote=<name>` flags and pass it through. Otherwise let the interactive prompt run.",
-            "3. Resolve `$ARGUMENTS` to explicit `--trunk=<name> --remote=<name>` values. If either value is absent, gather it through an available user-question tool or plain chat; stop if it remains unavailable. Run `git-spice repo init --trunk=<name> --remote=<name>`.",
+            (
+                "3. Run `git-spice repo init`. If `$ARGUMENTS` was provided, treat it as either a trunk "
+                "branch name or `--trunk=<name> --remote=<name>` flags and pass it through. Otherwise let "
+                "the interactive prompt run."
+            ),
+            (
+                "3. Resolve `$ARGUMENTS` to explicit `--trunk=<name> --remote=<name>` values. If either "
+                "value is absent, gather it through an available user-question tool or plain chat; stop if "
+                "it remains unavailable. Run `git-spice repo init --trunk=<name> --remote=<name>`."
+            ),
             source_relative,
         )
     if source_relative == "commands/new.md":
         body = require_replace(
             body,
-            "1. Parse `$ARGUMENTS` as the branch name. If empty, ask the user for one (or note that git-spice will auto-generate from the commit message if `--no-commit` isn't used).",
-            "1. Parse `$ARGUMENTS` as the branch name. If empty, gather an explicit name through an available user-question tool or plain chat; stop if it remains unavailable.",
+            (
+                "1. Parse `$ARGUMENTS` as the branch name. If empty, ask the user for one (or note that "
+                "git-spice will auto-generate from the commit message if `--no-commit` isn't used)."
+            ),
+            (
+                "1. Parse `$ARGUMENTS` as the branch name. If empty, gather an explicit name through an "
+                "available user-question tool or plain chat; stop if it remains unavailable."
+            ),
             source_relative,
         )
     body = transform_executable_guidance(body, source_relative)
@@ -710,16 +570,28 @@ def transform_prompt(source_relative: str, text: str) -> str:
         body = require_replace(
             body,
             "   - Remaining tokens are passed through as flags.",
-            "   - Accept only documented optional submit flags; reject prompt controls and draft controls that conflict with the resolved explicit draft state.",
+            (
+                "   - Accept only documented optional submit flags; reject prompt controls and draft controls "
+                "that conflict with the resolved explicit draft state."
+            ),
             source_relative,
         )
         body = require_replace(
             body,
-            "4. Then run the real submit: `git-spice --no-prompt <scope> submit --fill <draft-flag> <extra-flags>`. The `--fill` flag populates title/body from commit messages so the run is non-interactive.",
-            "4. Reject prompt controls and conflicting draft controls, then run `git-spice --no-prompt <scope> submit --fill <draft-flag>`. The resolved draft state remains explicit. Documented optional submit flags may be included only after those checks. The `--fill` flag populates title/body from commit messages so the run is non-interactive.",
+            (
+                "4. Then run the real submit: `git-spice --no-prompt <scope> submit --fill <draft-flag> "
+                "<extra-flags>`. The `--fill` flag populates title/body from commit messages so the run is "
+                "non-interactive."
+            ),
+            (
+                "4. Reject prompt controls and conflicting draft controls, then run `git-spice --no-prompt "
+                "<scope> submit --fill <draft-flag>`. The resolved draft state remains explicit. Documented "
+                "optional submit flags may be included only after those checks. The `--fill` flag populates "
+                "title/body from commit messages so the run is non-interactive."
+            ),
             source_relative,
         )
-    body = body.rstrip() + "\n\n" + PROMPT_SAFETY_APPENDICES[source_relative].rstrip()
+    body = body.rstrip() + "\n\n" + contracts.PROMPT_SAFETY_APPENDICES[source_relative].rstrip()
     return render_prompt(fields, body)
 
 
@@ -737,8 +609,10 @@ def transform_git_spice_skill(text: str) -> str:
     context = "skills/git-spice/SKILL.md"
     normalized = validate_skill_frontmatter(text, "git-spice", context)
     frontmatter, body = split_frontmatter(normalized, context)
+    validate_exact_transform_anchors(body, context)
     validate_transformation_anchors(body, context)
-    body = replace_section(body, "## Dispatching the subagents", "## Configuration", "## Dispatching optional Pi subagents\n\n" + DISPATCH_CONTRACT, context)
+    dispatch = "## Dispatching optional Pi subagents\n\n" + contracts.DISPATCH_CONTRACT
+    body = replace_section(body, "## Dispatching the subagents", "## Configuration", dispatch, context)
     body = transform_prompt_references(body, context)
     body = require_replace(
         body,
@@ -753,7 +627,7 @@ def transform_git_spice_skill(text: str) -> str:
         "> Prefer the concrete git-spice commit commands listed above over raw `git commit` while inside a stack.",
         context,
     )
-    body = body.rstrip() + "\n\n" + INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + SUBMIT_DRAFT_CONTRACT.rstrip()
+    body = body.rstrip() + "\n\n" + contracts.INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + contracts.SUBMIT_DRAFT_CONTRACT.rstrip()
     return "---\n" + frontmatter + "\n---\n\n" + body.rstrip() + "\n"
 
 
@@ -761,31 +635,51 @@ def transform_stacking_workflow(text: str) -> str:
     context = "skills/stacking-workflow/SKILL.md"
     normalized = validate_skill_frontmatter(text, "stacking-workflow", context)
     frontmatter, body = split_frontmatter(normalized, context)
+    validate_exact_transform_anchors(body, context)
     validate_transformation_anchors(body, context)
-    body = replace_section(body, "## Driving with subagents", "## Don't", "## Driving with optional Pi subagents\n\n" + DISPATCH_CONTRACT, context)
+    dispatch = "## Driving with optional Pi subagents\n\n" + contracts.DISPATCH_CONTRACT
+    body = replace_section(body, "## Driving with subagents", "## Don't", dispatch, context)
     body = transform_prompt_references(body, context)
     body = transform_executable_guidance(body, context)
-    body = body.rstrip() + "\n\n" + SUBMIT_DRAFT_CONTRACT.rstrip()
+    body = body.rstrip() + "\n\n" + contracts.SUBMIT_DRAFT_CONTRACT.rstrip()
     return "---\n" + frontmatter + "\n---\n\n" + body.rstrip() + "\n"
 
 
 def transform_agent(source_relative: str, text: str) -> str:
-    name, expected_tools, anchor = AGENT_CONFIG[source_relative]
+    name, expected_tools, anchor = contracts.AGENT_CONFIG[source_relative]
     description, tools, body = parse_agent_frontmatter(text, expected_tools, source_relative)
+    validate_exact_transform_anchors(body, source_relative)
     validate_transformation_anchors(body, source_relative)
     require_replace(body, anchor, anchor, source_relative)
     if name == "stacker":
         body = require_replace(
             body,
-            "`git-spice branch create <prefix><slug>` (uses staged changes as the commit). The commit message defaults to the staged changes; if the task description maps to a clean conventional-commit subject, prefer `git-spice branch create <name> -m \"<subject>\"`.",
-            "`git-spice branch create <prefix><slug> -m \"<subject>\"`. Gather the subject explicitly; use `git-spice branch create <name> -m \"<subject>\"` rather than relying on defaults or opening an editor.",
+            (
+                "`git-spice branch create <prefix><slug>` (uses staged changes as the commit). The commit "
+                "message defaults to the staged changes; if the task description maps to a clean "
+                "conventional-commit subject, prefer `git-spice branch create <name> -m \"<subject>\"`."
+            ),
+            (
+                "`git-spice branch create <prefix><slug> -m \"<subject>\"`. Gather the subject explicitly; "
+                "use `git-spice branch create <name> -m \"<subject>\"` rather than relying on defaults or "
+                "opening an editor."
+            ),
             source_relative,
         )
     if name == "stack-doctor":
         body = require_replace(
             body,
-            "| Branches exist in git but not in `log long --all` | untracked | `git-spice branch track` per branch, or `git-spice downstack track` from the top |",
-            "| Branches exist in git but not in `log long --all` | untracked | Gather or derive each exact untracked branch name and the exact top branch name first. If branch names are ambiguous or missing configuration prevents deriving them, report it and stop rather than enabling prompts. Run `git-spice branch track <branch>` for each branch, or `git-spice downstack track <top-branch>` for whole-stack tracking. |",
+            (
+                "| Branches exist in git but not in `log long --all` | untracked | `git-spice branch "
+                "track` per branch, or `git-spice downstack track` from the top |"
+            ),
+            (
+                "| Branches exist in git but not in `log long --all` | untracked | Gather or derive each "
+                "exact untracked branch name and the exact top branch name first. If branch names are "
+                "ambiguous or missing configuration prevents deriving them, report it and stop rather than "
+                "enabling prompts. Run `git-spice branch track <branch>` for each branch, or `git-spice "
+                "downstack track <top-branch>` for whole-stack tracking. |"
+            ),
             source_relative,
         )
     body = transform_executable_guidance(body, source_relative)
@@ -803,8 +697,8 @@ def transform_agent(source_relative: str, text: str) -> str:
             "<paste final stack log and git status output>",
             source_relative,
         )
-        body = body.rstrip() + "\n\n" + INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + SUBMIT_DRAFT_CONTRACT.rstrip()
-    tool_names = ", ".join(TOOL_MAP[tool] for tool in tools)
+        body = body.rstrip() + "\n\n" + contracts.INIT_SAFETY_CONTRACT.rstrip() + "\n\n" + contracts.SUBMIT_DRAFT_CONTRACT.rstrip()
+    tool_names = ", ".join(contracts.TOOL_MAP[tool] for tool in tools)
     return "\n".join((
         "---",
         f"name: {name}",
@@ -850,14 +744,21 @@ def validate_generated_tree(temporary_root: Path) -> None:
     for forbidden in FORBIDDEN_GENERATED:
         if forbidden in combined:
             raise RuntimeError(f"Forbidden generated content: {forbidden!r}")
-    for relative, contracts in REQUIRED_GENERATED_LITERALS.items():
+    for relative, literal_contracts in contracts.REQUIRED_GENERATED_LITERALS.items():
         text = (temporary_root / relative).read_text(encoding="utf8")
-        for literal, expected_count in contracts:
+        for literal, expected_count in literal_contracts:
             actual_count = text.count(literal)
             if actual_count != expected_count:
                 raise RuntimeError(
                     f"Generated required literal cardinality mismatch for {relative}: "
                     f"expected={expected_count}, actual={actual_count}, literal={literal!r}"
+                )
+    for relative, transforms in contracts.MANUAL_INTERACTIVE_TRANSFORMS.items():
+        text = (temporary_root / dict(RUNTIME_MANIFEST)[relative]).read_text(encoding="utf8")
+        for _, target in transforms:
+            if text.count(target) != 1:
+                raise RuntimeError(
+                    f"Generated manual-interactive literal cardinality mismatch for {relative}: {target!r}"
                 )
 
 
@@ -870,99 +771,21 @@ def remove_tree(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def verify_installed_tree(generated: Path, package_root: Path) -> None:
+def install_generated_tree(
+    temporary_root: Path,
+    package_root: Path,
+    move=rename_path,
+    remove=remove_tree,
+) -> None:
     expected = {target for _, target in RUNTIME_MANIFEST}
-    actual = {
-        path.relative_to(package_root).as_posix()
-        for root in GENERATED_ROOTS
-        for path in (package_root / root).rglob("*")
-        if path.is_file()
-    }
-    if actual != expected:
-        raise RuntimeError(f"Installed generated resource verification failed: expected={sorted(expected)!r}, actual={sorted(actual)!r}")
-    for relative in expected:
-        installed = package_root / relative
-        source = generated / relative
-        if installed.read_bytes() != source.read_bytes():
-            raise RuntimeError(f"Installed generated resource verification failed: byte mismatch for {relative}")
-
-
-def rollback_installation(transaction: Path, package_root: Path, had_original: dict[str, bool], move, remove) -> list[str]:
-    backups = transaction / "backups"
-    staged = transaction / "staged"
-    errors = []
-    for root in reversed(GENERATED_ROOTS):
-        destination = package_root / root
-        backup = backups / root
-        if backup.exists():
-            try:
-                if destination.exists():
-                    remove(destination)
-            except BaseException as error:
-                errors.append(f"could not remove installed {root}: {error}")
-                continue
-            try:
-                move(backup, destination)
-            except BaseException as error:
-                errors.append(f"could not restore backup {root}: {error}")
-        elif not had_original[root] and destination.exists() and not (staged / root).exists():
-            try:
-                remove(destination)
-            except BaseException as error:
-                errors.append(f"could not remove newly installed {root}: {error}")
-    if errors:
-        return errors
-    try:
-        remove(transaction)
-    except BaseException as first_cleanup_error:
-        try:
-            remove(transaction)
-        except BaseException as second_cleanup_error:
-            errors.append(f"could not clean rollback artifacts: {first_cleanup_error}; retry: {second_cleanup_error}")
-    return errors
-
-
-def install_generated_tree(temporary_root: Path, package_root: Path, move=rename_path, remove=remove_tree) -> None:
-    transaction = None
-    had_original = {root: (package_root / root).exists() for root in GENERATED_ROOTS}
-    try:
-        transaction = Path(tempfile.mkdtemp(prefix=".pi-git-spice-install-", dir=package_root))
-        staged = transaction / "staged"
-        backups = transaction / "backups"
-        staged.mkdir()
-        backups.mkdir()
-        for root in GENERATED_ROOTS:
-            shutil.copytree(temporary_root / root, staged / root)
-        for root in GENERATED_ROOTS:
-            destination = package_root / root
-            if had_original[root]:
-                move(destination, backups / root)
-        for root in GENERATED_ROOTS:
-            move(staged / root, package_root / root)
-        verify_installed_tree(temporary_root, package_root)
-    except BaseException as install_error:
-        if transaction is None:
-            raise
-        rollback_errors = rollback_installation(transaction, package_root, had_original, move, remove)
-        if rollback_errors:
-            details = "; ".join(rollback_errors)
-            raise RuntimeError(
-                f"Failed to roll back generated resource installation: {details}. Recovery artifacts retained at: {transaction}"
-            ) from install_error
-        raise
-    try:
-        remove(transaction)
-    except BaseException as cleanup_error:
-        try:
-            remove(transaction)
-        except BaseException as retry_error:
-            raise RuntimeError(
-                f"Generated resource installation committed and verified, but cleanup failed: {cleanup_error}; retry: {retry_error}. "
-                f"Recovery artifacts retained at: {transaction}"
-            ) from cleanup_error
-        raise RuntimeError(
-            "Generated resource installation committed and verified, but cleanup was interrupted; transaction artifacts were removed"
-        ) from cleanup_error
+    installer.install_generated_tree(
+        temporary_root,
+        package_root,
+        GENERATED_ROOTS,
+        expected,
+        move,
+        remove,
+    )
 
 
 def migrate(

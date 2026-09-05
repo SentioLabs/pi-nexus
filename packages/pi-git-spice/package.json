@@ -62,9 +62,6 @@
     "typescript": "^5.9.3"
   },
   "pi": {
-    "extensions": [
-      "./extensions/git-spice-workflow.ts"
-    ],
     "skills": ["./skills"],
     "prompts": ["./prompts/*.md"],
     "subagents": {
