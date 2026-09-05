@@ -54,9 +54,9 @@ function validateInputPath(value: string, category = "Git path"): void {
 }
 
 function portableCaselessKey(value: string): string {
-  // Unicode upper-then-lower expands multi-character forms and unifies variants
-  // such as final sigma without depending on the host filesystem or locale.
-  return value.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+  // Lowering first sends capital variants to the same representative before the
+  // upper/lower expansion pass (for example, both sharp-s forms become "ss").
+  return value.normalize("NFC").toLowerCase().toUpperCase().toLowerCase().normalize("NFC");
 }
 
 function validatePathSet(paths: string[], category: string): void {

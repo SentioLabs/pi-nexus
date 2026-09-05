@@ -17,6 +17,7 @@ else if (mode === 'overflow') { process.stdout.write(Buffer.from(Array.from({ le
 else if (mode === 'nonzero') { process.stderr.write('bad'); process.exitCode=7; }
 else if (mode === 'sleep') setTimeout(() => {}, 10_000);
 else if (mode === 'ignore-term') { process.on('SIGTERM', () => {}); if (process.argv[3]) await import('node:fs/promises').then((fs) => fs.writeFile(process.argv[3], 'ready')); setInterval(() => {}, 1000); }
+else if (mode === 'exit-without-ready') process.exitCode = 0;
 else if (mode === 'close-stdin') { process.stdin.destroy(); setTimeout(() => {}, 30); }
 `);
 
@@ -24,6 +25,26 @@ const input = {
   command: process.execPath, args: [fixture, 'echo-stdin'], cwd: root, env: { ...process.env },
   timeoutMs: 500, stopGraceMs: 50, killGraceMs: 100, maxOutputBytes: 256,
 };
+
+async function waitForPath(file, { timeoutMs, signal }) {
+  const deadline = Date.now() + timeoutMs;
+  while (await access(file).then(() => false, () => true)) {
+    if (signal.aborted) throw new Error('readiness wait cancelled');
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('readiness was not observed before the test deadline');
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(finish, Math.min(5, remaining));
+      const onAbort = () => finish(new Error('readiness wait cancelled'));
+      function finish(error) {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        if (error) reject(error); else resolve();
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+  }
+}
 
 test('round trips binary stdin and never invokes a shell', async () => {
   const bytes = Uint8Array.from([0x00, 0xff, 0x61]);
@@ -100,13 +121,19 @@ test('deadline and abort remain live while observer never settles', async () => 
   const readyForDeadline = path.join(root, `deadline-ready-${Date.now()}`);
   const timeoutMs = 180;
   const deadlineStarted = Date.now();
-  const deadline = await runArcBoundedProcess({
-    ...input, args: [fixture, 'ignore-term', readyForDeadline], timeoutMs, stopGraceMs, killGraceMs,
-    onSpawn: async () => {
-      while (await access(readyForDeadline).then(() => false, () => true)) await new Promise((resolve) => setTimeout(resolve, 5));
-      return new Promise(() => {});
-    },
-  });
+  const deadlineReadyWait = new AbortController();
+  let deadline;
+  try {
+    deadline = await runArcBoundedProcess({
+      ...input, args: [fixture, 'ignore-term', readyForDeadline], timeoutMs, stopGraceMs, killGraceMs,
+      onSpawn: async () => {
+        await waitForPath(readyForDeadline, { timeoutMs, signal: deadlineReadyWait.signal });
+        return new Promise(() => {});
+      },
+    });
+  } finally {
+    deadlineReadyWait.abort();
+  }
   assert.equal(deadline.timedOut, true);
   assert.equal(deadline.termination, 'observed');
   assert.equal(deadline.signal, 'SIGKILL');
@@ -115,23 +142,48 @@ test('deadline and abort remain live while observer never settles', async () => 
 
   const readyForAbort = path.join(root, `abort-ready-${Date.now()}`);
   const controller = new AbortController();
+  const abortReadyWait = new AbortController();
   let abortedAt;
   const abortWhenReady = (async () => {
-    while (await access(readyForAbort).then(() => false, () => true)) await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForPath(readyForAbort, { timeoutMs: 500, signal: abortReadyWait.signal });
     abortedAt = Date.now();
     controller.abort();
   })();
-  const aborted = await runArcBoundedProcess({
-    ...input, args: [fixture, 'ignore-term', readyForAbort], timeoutMs: 2_000, stopGraceMs, killGraceMs,
-    signal: controller.signal, onSpawn: () => new Promise(() => {}),
-  });
-  await abortWhenReady;
+  let aborted;
+  try {
+    aborted = await runArcBoundedProcess({
+      ...input, args: [fixture, 'ignore-term', readyForAbort], timeoutMs: 2_000, stopGraceMs, killGraceMs,
+      signal: controller.signal, onSpawn: () => new Promise(() => {}),
+    });
+    await abortWhenReady;
+  } finally {
+    abortReadyWait.abort();
+    await abortWhenReady.catch(() => {});
+  }
   assert.equal(aborted.aborted, true);
   assert.equal(aborted.timedOut, false);
   assert.equal(aborted.termination, 'observed');
   assert.equal(aborted.signal, 'SIGKILL');
   assert.match(aborted.observationError, /abort|settle/i);
   assert.ok(Date.now() - abortedAt <= stopGraceMs + killGraceMs + schedulerToleranceMs);
+});
+
+test('missing readiness fails and settles promptly without an owned wait', async () => {
+  const ready = path.join(root, `missing-ready-${Date.now()}`);
+  const readyWait = new AbortController();
+  const started = Date.now();
+  let result;
+  try {
+    result = await runArcBoundedProcess({
+      ...input, args: [fixture, 'exit-without-ready'], timeoutMs: 500,
+      onSpawn: () => waitForPath(ready, { timeoutMs: 60, signal: readyWait.signal }),
+    });
+  } finally {
+    readyWait.abort();
+  }
+  assert.equal(result.termination, 'observed');
+  assert.match(result.observationError, /readiness was not observed/i);
+  assert.ok(Date.now() - started < 500);
 });
 
 test('a delayed observer prevents successful settlement until it resolves', async () => {

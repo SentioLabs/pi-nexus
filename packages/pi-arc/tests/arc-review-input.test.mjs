@@ -222,6 +222,23 @@ test('rejects collisions in nested directory components using deterministic Unic
   }
 });
 
+test('rejects sharp-s case expansion collisions at leaves and directory prefixes', async () => {
+  for (const [left, right] of [['ẞ.txt', 'ß.txt'], ['ẞ/a', 'ß/b']]) {
+    const range = await makeRange();
+    await fs.mkdir(path.join(range.repo, path.dirname(left)), { recursive: true });
+    await fs.mkdir(path.join(range.repo, path.dirname(right)), { recursive: true });
+    await fs.writeFile(path.join(range.repo, left), 'left');
+    await fs.writeFile(path.join(range.repo, right), 'right');
+    await git(range.repo, 'add', left, right);
+    await git(range.repo, 'commit', '-qm', 'sharp-s collision');
+    range.headSha = await git(range.repo, 'rev-parse', 'HEAD');
+    const before = await snapshotPrimary(range.repo);
+    await assert.rejects(() => prepareArcReviewInput(request(range)), /collision|case-fold/i);
+    await assertPrimarySame(before, range.repo);
+    assert.deepEqual(await fs.readdir(range.destinationRoot), []);
+  }
+});
+
 test('rejects traversal and malformed, missing, unreadable, truncated, non-blob, trailing, and early-close batch responses', async () => {
   const fakeDirectory = await makeFakeGit();
   const originalPath = process.env.PATH;
