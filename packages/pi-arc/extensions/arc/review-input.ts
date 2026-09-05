@@ -17,6 +17,7 @@ interface ArcInputManifest {
 
 type ManifestSource = ArcInputManifest["source"][number];
 type ManifestMaterial = ArcInputManifest["materials"][number];
+interface WriteBudget { remainingFiles: number; remainingBytes: number; }
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const GIT_PREFIX = ["-c", "diff.external=", "-c", "diff.trustExitCode=false", "-c", "core.fsmonitor=false"];
 
@@ -177,13 +178,21 @@ async function writeExclusive(file: string, bytes: Uint8Array, mode: number): Pr
   finally { await handle.close(); }
 }
 
-async function exportGitBlobs(input: { repositoryRoot: string; entries: ArcGitTreeEntry[]; destination: string; limits: ArcReviewLimits }): Promise<ManifestSource[]> {
+function consumeWriteBudget(budget: WriteBudget, size: number, category: string): void {
+  if (budget.remainingFiles < 1) throw new Error(`${category} exceeds maxFiles limit`);
+  if (size > budget.remainingBytes) throw new Error(`${category} exceeds maxTotalBytes limit`);
+  budget.remainingFiles -= 1;
+  budget.remainingBytes -= size;
+}
+
+async function exportGitBlobs(input: { repositoryRoot: string; entries: ArcGitTreeEntry[]; destination: string; limits: ArcReviewLimits; budget: WriteBudget }): Promise<ManifestSource[]> {
   const rows: ManifestSource[] = [];
   for (const chunk of chunkEntriesForBatch(input.entries, input.limits.maxGitOutputBytes)) {
     const query = Buffer.from(chunk.map((entry) => `${entry.objectId}\n`).join(""), "ascii");
     const batch = await runGitBytes({ repositoryRoot: input.repositoryRoot, args: ["cat-file", "--batch"], stdin: query, maxOutputBytes: input.limits.maxGitOutputBytes, timeoutMs: 30_000 });
     for (const record of parseCatFileBatch(batch, chunk)) {
       const relative = decodeText(record.pathBytes, "source path");
+      consumeWriteBudget(input.budget, record.bytes.length, `source file ${relative}`);
       await writeExclusive(path.join(input.destination, ...relative.split("/")), record.bytes, record.gitMode === "100755" ? 0o700 : 0o600);
       rows.push({ path: relative, gitMode: record.gitMode, physicalMode: record.gitMode === "100755" ? "0500" : "0400", size: record.size, sha256: sha256(record.bytes) });
     }
@@ -260,9 +269,10 @@ function isWithin(parent: string, child: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
 }
 
-async function addMaterial(root: string, relative: string, bytes: Uint8Array, limits: ArcReviewLimits): Promise<ManifestMaterial> {
+async function addMaterial(root: string, relative: string, bytes: Uint8Array, limits: ArcReviewLimits, budget: WriteBudget): Promise<ManifestMaterial> {
   validateInputPath(relative, "material path");
   if (bytes.length > limits.maxFileBytes) throw new Error(`material exceeds maxFileBytes: ${relative}`);
+  consumeWriteBudget(budget, bytes.length, `material ${relative}`);
   await writeExclusive(path.join(root, ...relative.split("/")), bytes, 0o600);
   return { path: relative, physicalMode: "0400", size: bytes.length, sha256: sha256(bytes) };
 }
@@ -293,6 +303,20 @@ async function finalizeReadOnlyTree(root: string, executableSourcePaths: Set<str
 function modeString(mode: number): "0400" | "0500" { return (mode & 0o777) === 0o500 ? "0500" : "0400"; }
 class InputChangedError extends Error {}
 
+async function readExpectedBytes(handle: Awaited<ReturnType<typeof fs.open>>, expectedSize: number, label: string): Promise<Uint8Array> {
+  const bytes = Buffer.alloc(expectedSize);
+  let offset = 0;
+  while (offset < expectedSize) {
+    const length = Math.min(64 * 1024, expectedSize - offset);
+    const result = await handle.read(bytes, offset, length, offset);
+    if (result.bytesRead !== length) throw new InputChangedError(`${label} changed while reading`);
+    offset += length;
+  }
+  const probe = Buffer.alloc(1);
+  if ((await handle.read(probe, 0, 1, expectedSize)).bytesRead !== 0) throw new InputChangedError(`${label} changed while reading`);
+  return bytes;
+}
+
 async function readFinalFile(root: string, relative: string, expectedMode: "0400" | "0500", expectedSize: number, expectedDigest: string): Promise<Uint8Array> {
   validateInputPath(relative, "manifest path");
   const file = path.join(root, ...relative.split("/"));
@@ -308,7 +332,7 @@ async function readFinalFile(root: string, relative: string, expectedMode: "0400
     if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino || opened.size !== expectedSize || (opened.mode & 0o777) !== Number.parseInt(expectedMode, 8)) {
       throw new InputChangedError(`${relative} changed while opening`);
     }
-    bytes = await handle.readFile();
+    bytes = await readExpectedBytes(handle, expectedSize, relative);
     const after = await handle.stat();
     if (after.size !== opened.size || after.mode !== opened.mode || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) {
       throw new InputChangedError(`${relative} changed while reading`);
@@ -378,7 +402,7 @@ async function digestFinalInputTree(root: string, manifestRelative = "manifest.j
       throw new InputChangedError("manifest changed while opening");
     }
     if (limits && opened.size > limits.maxFileBytes) throw new InputChangedError("manifest exceeds maxFileBytes");
-    manifestBytes = await manifestHandle.readFile();
+    manifestBytes = await readExpectedBytes(manifestHandle, opened.size, "manifest");
     const after = await manifestHandle.stat();
     if (after.size !== opened.size || after.mode !== opened.mode || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs) throw new InputChangedError("manifest changed while reading");
   } finally { await manifestHandle.close(); }
@@ -480,6 +504,48 @@ export async function prepareArcReviewInput(input: {
   const changes = parseRawChanges(await runGitBytes({ repositoryRoot, args: ["diff-tree", "-r", "--raw", "-z", "--no-renames", "--no-abbrev", input.baseSha, input.headSha], maxOutputBytes: input.limits.maxGitOutputBytes, timeoutMs: 30_000 }), input.limits.maxFiles);
   const patch = await runGitBytes({ repositoryRoot, args: ["diff", "--binary", "--no-ext-diff", "--no-textconv", input.baseSha, input.headSha, "--"], maxOutputBytes: input.limits.maxGitOutputBytes, timeoutMs: 30_000 });
 
+  const materialCount = 4 + input.repositoryInstructions.length;
+  if (entries.length + materialCount + 1 > input.limits.maxFiles) throw new Error("input file count exceeds maxFiles limit");
+  const materialSpecs: Array<{ path: string; value: string | Uint8Array; size: number }> = [
+    { path: "materials/diff.patch", value: patch, size: patch.length },
+    { path: "materials/task.md", value: input.taskContext, size: Buffer.byteLength(input.taskContext, "utf8") },
+    { path: "materials/design.md", value: input.designContext, size: Buffer.byteLength(input.designContext, "utf8") },
+    { path: "materials/review.md", value: input.reviewContext, size: Buffer.byteLength(input.reviewContext, "utf8") },
+  ];
+  for (let index = 0; index < input.repositoryInstructions.length; index += 1) {
+    const instruction = input.repositoryInstructions[index];
+    if (typeof instruction.source !== "string" || !instruction.source || instruction.source.includes("\0") || typeof instruction.content !== "string") throw new Error("repository instruction is invalid");
+    materialSpecs.push({
+      path: `materials/instructions/${String(index + 1).padStart(4, "0")}.md`,
+      value: instruction.content,
+      size: Buffer.byteLength(instruction.content, "utf8"),
+    });
+  }
+  materialSpecs.sort((left, right) => rawSort(left.path, right.path));
+  validatePathSet(materialSpecs.map((row) => row.path), "materials");
+  for (const material of materialSpecs) {
+    if (material.size > input.limits.maxFileBytes) throw new Error(`material exceeds maxFileBytes: ${material.path}`);
+  }
+  const placeholderDigest = "0".repeat(64);
+  const plannedSource: ManifestSource[] = entries.map((entry) => ({
+    path: decodeText(entry.pathBytes, "source path"), gitMode: entry.gitMode,
+    physicalMode: entry.gitMode === "100755" ? "0500" : "0400", size: entry.size, sha256: placeholderDigest,
+  }));
+  const plannedMaterials: ManifestMaterial[] = materialSpecs.map((material) => ({
+    path: material.path, physicalMode: "0400", size: material.size, sha256: placeholderDigest,
+  }));
+  const plannedManifest: ArcInputManifest = {
+    version: 1, baseSha: input.baseSha, headSha: input.headSha, range: `${input.baseSha}..${input.headSha}`,
+    ignoredPolicy: "excluded", source: plannedSource, changes, materials: plannedMaterials,
+  };
+  const plannedManifestSize = Buffer.byteLength(canonicalizeArcJson(plannedManifest), "utf8");
+  if (plannedManifestSize > input.limits.maxFileBytes) throw new Error("manifest exceeds maxFileBytes limit");
+  let plannedTotalBytes = plannedManifestSize;
+  for (const size of [...entries.map((entry) => entry.size), ...materialSpecs.map((material) => material.size)]) {
+    if (size > input.limits.maxTotalBytes - plannedTotalBytes) throw new Error("input bytes exceed maxTotalBytes limit");
+    plannedTotalBytes += size;
+  }
+
   const identifier = randomUUID();
   const stagingRoot = path.join(destinationRoot, `.pi-arc-review-stage-${identifier}`);
   const finalRoot = path.join(destinationRoot, `review-input-${identifier}`);
@@ -491,21 +557,17 @@ export async function prepareArcReviewInput(input: {
     stagingIdentity = { dev: created.dev, ino: created.ino };
     const stagingSource = path.join(stagingRoot, "source");
     await fs.mkdir(stagingSource, { mode: 0o700 });
-    const source = await exportGitBlobs({ repositoryRoot, entries, destination: stagingSource, limits: input.limits });
+    const budget: WriteBudget = { remainingFiles: input.limits.maxFiles, remainingBytes: input.limits.maxTotalBytes };
+    consumeWriteBudget(budget, plannedManifestSize, "manifest reservation");
+    const source = await exportGitBlobs({ repositoryRoot, entries, destination: stagingSource, limits: input.limits, budget });
     const materials: ManifestMaterial[] = [];
-    materials.push(await addMaterial(stagingRoot, "materials/diff.patch", patch, input.limits));
-    materials.push(await addMaterial(stagingRoot, "materials/task.md", Buffer.from(input.taskContext, "utf8"), input.limits));
-    materials.push(await addMaterial(stagingRoot, "materials/design.md", Buffer.from(input.designContext, "utf8"), input.limits));
-    materials.push(await addMaterial(stagingRoot, "materials/review.md", Buffer.from(input.reviewContext, "utf8"), input.limits));
-    for (let index = 0; index < input.repositoryInstructions.length; index += 1) {
-      const instruction = input.repositoryInstructions[index];
-      if (typeof instruction.source !== "string" || !instruction.source || instruction.source.includes("\0") || typeof instruction.content !== "string") throw new Error("repository instruction is invalid");
-      materials.push(await addMaterial(stagingRoot, `materials/instructions/${String(index + 1).padStart(4, "0")}.md`, Buffer.from(instruction.content, "utf8"), input.limits));
+    for (const material of materialSpecs) {
+      const bytes = typeof material.value === "string" ? Buffer.from(material.value, "utf8") : material.value;
+      materials.push(await addMaterial(stagingRoot, material.path, bytes, input.limits, budget));
     }
-    materials.sort((left, right) => rawSort(left.path, right.path));
-    validatePathSet(materials.map((row) => row.path), "materials");
     const manifest: ArcInputManifest = { version: 1, baseSha: input.baseSha, headSha: input.headSha, range: `${input.baseSha}..${input.headSha}`, ignoredPolicy: "excluded", source, changes, materials };
     const manifestBytes = Buffer.from(canonicalizeArcJson(manifest), "utf8");
+    if (manifestBytes.length !== plannedManifestSize) throw new Error("manifest size changed from its bounded plan");
     if (manifestBytes.length > input.limits.maxFileBytes) throw new Error("manifest exceeds maxFileBytes limit");
     await writeExclusive(path.join(stagingRoot, "manifest.json"), manifestBytes, 0o600);
     const executable = new Set(source.filter((row) => row.gitMode === "100755").map((row) => `source/${row.path}`));

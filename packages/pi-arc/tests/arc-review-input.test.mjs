@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -293,6 +296,75 @@ test('disables Git replacement objects for immutable committed source export', a
   await assertPrimarySame(before, range.repo);
 });
 
+async function countStagingOperations(destinationRoot, action) {
+  const originalOpen = fsPromises.open;
+  const originalMkdir = fsPromises.mkdir;
+  let operations = 0;
+  fsPromises.open = async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]).startsWith(`${destinationRoot}${path.sep}`) && typeof args[1] === 'number' && (args[1] & fsConstants.O_CREAT)) operations += 1;
+    return handle;
+  };
+  fsPromises.mkdir = async (...args) => {
+    if (String(args[0]).startsWith(`${destinationRoot}${path.sep}`)) operations += 1;
+    return originalMkdir(...args);
+  };
+  syncBuiltinESMExports();
+  try { await action(); return operations; }
+  finally { fsPromises.open = originalOpen; fsPromises.mkdir = originalMkdir; syncBuiltinESMExports(); }
+}
+
+test('rejects material count and byte plans before staging writes or oversized string allocation', async () => {
+  for (const [repositoryInstructions, constrained] of [
+    [Array.from({ length: 10 }, (_, index) => ({ source: `instruction-${index}`, content: 'x' })), { ...limits, maxFiles: 8 }],
+    [Array.from({ length: 2 }, (_, index) => ({ source: `instruction-${index}`, content: 'x'.repeat(1900) })), { ...limits, maxTotalBytes: 2048, maxFileBytes: 4096 }],
+  ]) {
+    const range = await makeRange();
+    await fs.writeFile(path.join(range.repo, 'modified.txt'), 'dirty bytes retained\n');
+    const before = await snapshotPrimary(range.repo);
+    const operations = await countStagingOperations(range.destinationRoot, async () => {
+      await assert.rejects(
+        () => prepareArcReviewInput(request(range, { repositoryInstructions, limits: constrained })),
+        /maxFiles|maxTotalBytes|input bytes|file count/i,
+      );
+    });
+    assert.equal(operations, 0);
+    assert.deepEqual(await fs.readdir(range.destinationRoot), []);
+    await assertPrimarySame(before, range.repo);
+  }
+
+  const range = await makeRange();
+  await fs.writeFile(path.join(range.repo, 'modified.txt'), 'dirty bytes retained\n');
+  const before = await snapshotPrimary(range.repo);
+  const content = 'q'.repeat(3000);
+  const originalFrom = Buffer.from;
+  let oversizedAllocations = 0;
+  Buffer.from = function(value, ...args) {
+    if (value === content) oversizedAllocations += 1;
+    return originalFrom(value, ...args);
+  };
+  try {
+    await assert.rejects(
+      () => prepareArcReviewInput(request(range, {
+        repositoryInstructions: [{ source: 'large', content }], limits: { ...limits, maxFileBytes: 2000 },
+      })),
+      /maxFileBytes/i,
+    );
+  } finally { Buffer.from = originalFrom; }
+  assert.equal(oversizedAllocations, 0);
+  assert.deepEqual(await fs.readdir(range.destinationRoot), []);
+  await assertPrimarySame(before, range.repo);
+});
+
+test('uses the exact manifest size rather than reserving maxFileBytes', async () => {
+  const firstRange = await makeRange();
+  const first = await prepareArcReviewInput(request(firstRange));
+  const secondRange = await makeRange();
+  const prepared = await prepareArcReviewInput(request(secondRange, { limits: { ...limits, maxTotalBytes: first.totalBytes } }));
+  assert.equal(prepared.totalBytes, first.totalBytes);
+  assert.equal((await verifyArcReviewInput(prepared, { ...limits, maxTotalBytes: first.totalBytes })).state, 'unchanged');
+});
+
 test('rejects destination symlinks and all declared size/count bounds', async () => {
   const range = await makeRange();
   const before = await snapshotPrimary(range.repo);
@@ -324,7 +396,7 @@ test('cat-file stdin EPIPE fails preparation and preserves primary state', async
     process.env.PATH = `${fakeDirectory}${path.delimiter}${originalPath}`;
     process.env.ARC_FAKE_GIT_MODE = 'cat-epipe';
     await assert.rejects(
-      () => prepareArcReviewInput(request(range, { limits: { ...limits, maxFiles: 40_000, maxTotalBytes: 8 * 1024 * 1024, maxGitOutputBytes: 4 * 1024 * 1024 } })),
+      () => prepareArcReviewInput(request(range, { limits: { ...limits, maxFiles: 40_000, maxTotalBytes: 8 * 1024 * 1024, maxFileBytes: 8 * 1024 * 1024, maxGitOutputBytes: 4 * 1024 * 1024 } })),
       (error) => { assert.match(error.message, /EPIPE/i); return true; },
     );
   } finally {
@@ -370,4 +442,78 @@ test('partitions a binary export into multiple bounded cat-file batches', async 
   // Tree/diff metadata fit, each response fits, while all blob responses do not.
   const prepared = await prepareArcReviewInput(request(range, { limits: { ...limits, maxGitOutputBytes: 4096 } }));
   assert.equal((await verifyArcReviewInput(prepared, limits)).state, 'unchanged');
+});
+
+async function withControlledFinalRead(target, mutation, action) {
+  const originalOpen = fsPromises.open;
+  let requested = 0;
+  let controlled = false;
+  fsPromises.open = async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === target && !controlled) {
+      controlled = true;
+      const originalStat = handle.stat.bind(handle);
+      const originalRead = handle.read.bind(handle);
+      const originalReadFile = handle.readFile.bind(handle);
+      let statCalls = 0;
+      handle.stat = async (...statArgs) => {
+        const stat = await originalStat(...statArgs);
+        if (statCalls++ === 0) await mutation();
+        return stat;
+      };
+      handle.read = async (buffer, offset, length, position) => {
+        requested += length;
+        return originalRead(buffer, offset, length, position);
+      };
+      handle.readFile = async (...readArgs) => {
+        const bytes = await originalReadFile(...readArgs);
+        requested += bytes.byteLength;
+        return bytes;
+      };
+    }
+    return handle;
+  };
+  syncBuiltinESMExports();
+  try { await action(); return requested; }
+  finally { fsPromises.open = originalOpen; syncBuiltinESMExports(); }
+}
+
+async function appendReadOnlyFile(file, bytes) {
+  await fs.chmod(file, 0o600);
+  await fs.appendFile(file, bytes);
+  await fs.chmod(file, 0o400);
+}
+
+test('bounds verification reads for concurrent listed-file and manifest growth', async () => {
+  for (const kind of ['listed file', 'manifest']) {
+    const range = await makeRange();
+    const prepared = await prepareArcReviewInput(request(range));
+    const target = kind === 'manifest' ? prepared.manifestPath : path.join(prepared.sourceRoot, 'modified.txt');
+    const expectedSize = (await fs.stat(target)).size;
+    const requested = await withControlledFinalRead(target, () => appendReadOnlyFile(target, Buffer.alloc(2048)), async () => {
+      const result = await verifyArcReviewInput(prepared, limits);
+      assert.equal(result.state, 'changed');
+      assert.match(result.differences.join('\n'), /changed/i);
+    });
+    assert.ok(requested > 0);
+    assert.ok(requested <= expectedSize + 1, `${kind} requested ${requested} for ${expectedSize}`);
+  }
+});
+
+test('detects shrink and early EOF with bounded positional verification reads', async () => {
+  for (const kind of ['listed file', 'manifest']) {
+    const range = await makeRange();
+    const prepared = await prepareArcReviewInput(request(range));
+    const target = kind === 'manifest' ? prepared.manifestPath : path.join(prepared.sourceRoot, 'modified.txt');
+    const expectedSize = (await fs.stat(target)).size;
+    const requested = await withControlledFinalRead(target, async () => {
+      await fs.chmod(target, 0o600);
+      await fs.truncate(target, Math.max(0, expectedSize - 1));
+      await fs.chmod(target, 0o400);
+    }, async () => {
+      const result = await verifyArcReviewInput(prepared, limits);
+      assert.equal(result.state, 'changed');
+    });
+    assert.ok(requested <= expectedSize + 1);
+  }
 });

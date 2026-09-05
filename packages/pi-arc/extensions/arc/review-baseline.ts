@@ -115,22 +115,53 @@ async function hasMissingOrRejectSymlinkAncestors(root: string, relativePath: st
   return false;
 }
 
-async function readOrdinaryFile(file: string, before: Awaited<ReturnType<typeof fs.lstat>>, maxFileBytes: number): Promise<Uint8Array> {
-  if (before.size > maxFileBytes) throw new Error(`file size exceeds maxFileBytes: ${path.basename(file)}`);
+async function readDeclaredBytes(handle: Awaited<ReturnType<typeof fs.open>>, size: number, label: string): Promise<Uint8Array> {
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const length = Math.min(64 * 1024, size - offset);
+    const result = await handle.read(bytes, offset, length, offset);
+    if (result.bytesRead !== length) throw new Error(`file changed while reading: ${label}`);
+    offset += length;
+  }
+  const probe = Buffer.alloc(1);
+  if ((await handle.read(probe, 0, 1, size)).bytesRead !== 0) throw new Error(`file changed while reading: ${label}`);
+  return bytes;
+}
+
+async function readOrdinaryFile(
+  file: string,
+  before: Awaited<ReturnType<typeof fs.lstat>>,
+  maxFileBytes: number,
+  remainingTotalBytes: number,
+): Promise<Uint8Array> {
+  const label = path.basename(file);
+  if (before.size > maxFileBytes) throw new Error(`file size exceeds maxFileBytes: ${label}`);
+  if (before.size > remainingTotalBytes) throw new Error(`file size exceeds remaining maxTotalBytes: ${label}`);
   const handle = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw new Error(`file changed while opening: ${path.basename(file)}`);
-    const bytes = await handle.readFile();
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size ||
+        opened.mode !== before.mode || opened.mtimeMs !== before.mtimeMs || opened.ctimeMs !== before.ctimeMs) {
+      throw new Error(`file changed while opening: ${label}`);
+    }
+    if (opened.size > maxFileBytes) throw new Error(`file size exceeds maxFileBytes: ${label}`);
+    if (opened.size > remainingTotalBytes) throw new Error(`file size exceeds remaining maxTotalBytes: ${label}`);
+    const bytes = await readDeclaredBytes(handle, opened.size, label);
     const after = await handle.stat();
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.mode !== opened.mode || bytes.length !== after.size) {
-      throw new Error(`file changed while reading: ${path.basename(file)}`);
+    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs || after.mode !== opened.mode || bytes.length !== after.size) {
+      throw new Error(`file changed while reading: ${label}`);
+    }
+    const finalStat = await fs.lstat(file);
+    if (!finalStat.isFile() || finalStat.isSymbolicLink() || finalStat.dev !== opened.dev || finalStat.ino !== opened.ino ||
+        finalStat.size !== opened.size || finalStat.mode !== opened.mode || finalStat.mtimeMs !== opened.mtimeMs || finalStat.ctimeMs !== opened.ctimeMs) {
+      throw new Error(`file changed after reading: ${label}`);
     }
     return bytes;
   } finally { await handle.close(); }
 }
 
-async function scanPath(root: string, relativePath: string, maxFileBytes: number, missingAllowed: boolean) {
+async function scanPath(root: string, relativePath: string, maxFileBytes: number, remainingTotalBytes: number, missingAllowed: boolean) {
   const missingAncestor = await hasMissingOrRejectSymlinkAncestors(root, relativePath);
   if (missingAncestor) {
     if (missingAllowed) return { path: relativePath, kind: "missing" as const };
@@ -147,13 +178,14 @@ async function scanPath(root: string, relativePath: string, maxFileBytes: number
   if (stat.isSymbolicLink()) {
     const targetBytes = await fs.readlink(file, { encoding: "buffer" });
     if (targetBytes.length > maxFileBytes) throw new Error(`symlink target exceeds maxFileBytes: ${relativePath}`);
+    if (targetBytes.length > remainingTotalBytes) throw new Error(`symlink target exceeds remaining maxTotalBytes: ${relativePath}`);
     const target = decodeText(targetBytes, `symlink target for ${relativePath}`);
     const after = await fs.lstat(file);
     if (!after.isSymbolicLink() || after.dev !== stat.dev || after.ino !== stat.ino || after.mtimeMs !== stat.mtimeMs) throw new Error(`symlink changed while reading: ${relativePath}`);
     return { path: relativePath, mode, kind: "symlink" as const, target };
   }
   if (!stat.isFile()) throw new Error(`unsupported filesystem kind: ${relativePath}`);
-  const bytes = await readOrdinaryFile(file, stat, maxFileBytes);
+  const bytes = await readOrdinaryFile(file, stat, maxFileBytes, remainingTotalBytes);
   return { path: relativePath, mode, kind: "file" as const, sha256: digest(bytes), byteSize: bytes.length };
 }
 
@@ -166,7 +198,7 @@ async function readIndex(repositoryRoot: string, limits: ArcReviewLimits): Promi
   try { stat = await fs.lstat(indexPath); }
   catch (error) { throw new Error(`index is unreadable: ${(error as NodeJS.ErrnoException).code ?? "filesystem error"}`); }
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("index is not an ordinary file");
-  const bytes = await readOrdinaryFile(indexPath, stat, limits.maxTotalBytes);
+  const bytes = await readOrdinaryFile(indexPath, stat, limits.maxFileBytes, limits.maxTotalBytes);
   return { bytes, path: indexPath };
 }
 
@@ -182,8 +214,15 @@ async function scanPrimaryState(repositoryRoot: string, reviewedRefs: string[], 
   if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(headSha)) throw new Error("HEAD did not resolve to a full object ID");
 
   const resolveRef = async (name: string) => {
-    if (!name || name.includes("\0") || name.startsWith("-")) throw new Error("reviewed ref name is invalid");
-    const objectId = oneLine((await runGit(root, ["rev-parse", "--verify", "--end-of-options", name], limits)).stdout, "reviewed ref");
+    if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(name)) {
+      const objectId = oneLine((await runGit(root, ["rev-parse", "--verify", "--end-of-options", `${name}^{object}`], limits)).stdout, "reviewed SHA");
+      if (objectId !== name) throw new Error("reviewed SHA did not resolve exactly");
+      return { name, objectId };
+    }
+    if (!name.startsWith("refs/") || name.includes("\0") || name.startsWith("-")) throw new Error("reviewed ref name is invalid");
+    try { await runGit(root, ["check-ref-format", name], limits); }
+    catch { throw new Error("reviewed ref name is invalid"); }
+    const objectId = oneLine((await runGit(root, ["show-ref", "--verify", "--hash", name], limits)).stdout, "reviewed ref");
     if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(objectId)) throw new Error("reviewed ref did not resolve to a full object ID");
     return { name, objectId };
   };
@@ -207,23 +246,28 @@ async function scanPrimaryState(repositoryRoot: string, reviewedRefs: string[], 
 
   const tracked: ArcPrimaryBaseline["tracked"] = [];
   const untracked: ArcPrimaryBaseline["untracked"] = [];
-  let totalBytes = index.bytes.length + entriesBytes.length;
+  let remainingTotalBytes = limits.maxTotalBytes;
+  const consume = (size: number) => {
+    if (size > remainingTotalBytes) throw new Error("primary byte count exceeds maxTotalBytes limit");
+    remainingTotalBytes -= size;
+  };
+  consume(index.bytes.length);
+  consume(entriesBytes.length);
   for (const name of trackedPaths) {
-    const row = await scanPath(root, name, limits.maxFileBytes, true);
-    if ("byteSize" in row) totalBytes += row.byteSize;
-    else if (row.kind === "symlink") totalBytes += Buffer.byteLength(row.target, "utf8");
+    const row = await scanPath(root, name, limits.maxFileBytes, remainingTotalBytes, true);
+    if ("byteSize" in row) consume(row.byteSize);
+    else if (row.kind === "symlink") consume(Buffer.byteLength(row.target, "utf8"));
     const { byteSize: _byteSize, ...publicRow } = row as typeof row & { byteSize?: number };
     tracked.push(publicRow);
   }
   for (const name of untrackedPaths) {
-    const row = await scanPath(root, name, limits.maxFileBytes, false);
+    const row = await scanPath(root, name, limits.maxFileBytes, remainingTotalBytes, false);
     if (row.kind === "missing") throw new Error(`untracked path disappeared during capture: ${name}`);
-    if ("byteSize" in row) totalBytes += row.byteSize;
-    else totalBytes += Buffer.byteLength(row.target, "utf8");
+    if ("byteSize" in row) consume(row.byteSize);
+    else consume(Buffer.byteLength(row.target, "utf8"));
     const { byteSize: _byteSize, ...publicRow } = row as typeof row & { byteSize?: number };
     untracked.push(publicRow);
   }
-  if (totalBytes > limits.maxTotalBytes) throw new Error("primary byte count exceeds maxTotalBytes limit");
 
   const unsigned = {
     version: 1 as const, repositoryRoot: root, symbolicHead, headSha, activeRef,

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -143,6 +145,24 @@ test('detects movement of a reviewed ref even when HEAD and its active ref do no
   assert.equal((await compareArcPrimaryBaseline(baseline, limits)).state, 'changed');
 });
 
+test('accepts only exact full reviewed refs or immutable full SHAs', async () => {
+  const repo = await makeRepo();
+  await git(repo, 'update-ref', 'refs/review/target', 'HEAD');
+  const head = await git(repo, 'rev-parse', 'HEAD');
+  const before = await snapshotPrimaryBytes(repo);
+  await assert.rejects(
+    () => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: ['refs/review/target^{tree}'], limits }),
+    /reviewed ref name is invalid/i,
+  );
+  await assert.rejects(
+    () => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: ['review/target'], limits }),
+    /reviewed ref name is invalid/i,
+  );
+  const immutable = await captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [head], limits });
+  assert.deepEqual(immutable.reviewedRefs, [{ name: head, objectId: head }]);
+  assert.deepEqual(await snapshotPrimaryBytes(repo), before);
+});
+
 test('records dirty tracked deletion distinctly and detects restoration', async () => {
   const repo = await makeRepo();
   await fs.unlink(path.join(repo, 'deleted-in-worktree.txt'));
@@ -238,4 +258,100 @@ test('a deleted index and limits fail closed without exposing contents', async (
   assert.equal(comparison.state, 'unreadable');
   assert.ok(comparison.differences.length > 0);
   await assert.rejects(() => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits: { ...limits, maxFiles: 1 } }), /limit|index/i);
+});
+
+async function withControlledBaselineRead(target, mutation, action) {
+  const originalOpen = fsPromises.open;
+  let requested = 0;
+  let consumed = 0;
+  let controlled = false;
+  fsPromises.open = async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === target && !controlled) {
+      controlled = true;
+      const originalStat = handle.stat.bind(handle);
+      const originalRead = handle.read.bind(handle);
+      const originalReadFile = handle.readFile.bind(handle);
+      let statCalls = 0;
+      handle.stat = async (...statArgs) => {
+        const stat = await originalStat(...statArgs);
+        if (statCalls++ === 0) await mutation();
+        return stat;
+      };
+      handle.read = async (buffer, offset, length, position) => {
+        requested += length;
+        const result = await originalRead(buffer, offset, length, position);
+        consumed += result.bytesRead;
+        return result;
+      };
+      handle.readFile = async (...readArgs) => {
+        const bytes = await originalReadFile(...readArgs);
+        requested += bytes.byteLength;
+        consumed += bytes.byteLength;
+        return bytes;
+      };
+    }
+    return handle;
+  };
+  syncBuiltinESMExports();
+  try { return { value: await action(), requested, consumed }; }
+  finally { fsPromises.open = originalOpen; syncBuiltinESMExports(); }
+}
+
+test('bounds tracked and untracked reads during growth and rejects shrink/early EOF', async () => {
+  for (const name of ['tracked.txt', 'untracked.bin']) {
+    const repo = await makeRepo();
+    const target = path.join(repo, name);
+    const declared = (await fs.stat(target)).size;
+    const outcome = await withControlledBaselineRead(target, () => fs.appendFile(target, Buffer.alloc(2048)), async () => {
+      await assert.rejects(
+        () => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits: { ...limits, maxFileBytes: 1024 } }),
+        /changed while reading|exceeds maxFileBytes/i,
+      );
+    });
+    assert.ok(outcome.requested <= declared + 1, `${name} requested ${outcome.requested} bytes`);
+  }
+
+  const repo = await makeRepo();
+  const target = path.join(repo, 'tracked.txt');
+  const outcome = await withControlledBaselineRead(target, () => fs.truncate(target, 1), async () => {
+    await assert.rejects(() => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits }), /changed while reading/i);
+  });
+  assert.ok(outcome.consumed <= 3);
+});
+
+test('bounds the raw index read during concurrent growth', async () => {
+  const repo = await makeRepo();
+  const target = path.join(repo, '.git', 'index');
+  const declared = (await fs.stat(target)).size;
+  const outcome = await withControlledBaselineRead(target, () => fs.appendFile(target, Buffer.alloc(2048)), async () => {
+    await assert.rejects(
+      () => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits: { ...limits, maxFileBytes: 1024 } }),
+      /changed while reading|exceeds maxFileBytes/i,
+    );
+  });
+  assert.ok(outcome.requested <= declared + 1, `index requested ${outcome.requested} bytes`);
+});
+
+test('stops before filesystem reads when index metadata exhausts the total budget', async () => {
+  const repo = await makeRepo();
+  const indexSize = (await fs.stat(path.join(repo, '.git', 'index'))).size;
+  const entriesSize = (await exec('git', ['ls-files', '--stage', '-z'], {
+    cwd: repo, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' }, encoding: 'buffer',
+  })).stdout.length;
+  const originalOpen = fsPromises.open;
+  let worktreeOpens = 0;
+  fsPromises.open = async (...args) => {
+    const named = String(args[0]);
+    if (named.startsWith(`${repo}${path.sep}`) && !named.startsWith(`${repo}${path.sep}.git${path.sep}`)) worktreeOpens += 1;
+    return originalOpen(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      () => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits: { ...limits, maxTotalBytes: indexSize + entriesSize } }),
+      /maxTotalBytes/i,
+    );
+  } finally { fsPromises.open = originalOpen; syncBuiltinESMExports(); }
+  assert.equal(worktreeOpens, 0);
 });
