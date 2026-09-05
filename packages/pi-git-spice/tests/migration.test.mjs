@@ -705,6 +705,43 @@ test("review blocker: command after arbitrary shell text is inventoried", () => 
   assertDiscoveryFailureBeforeMutation("true && git-spice future mutate");
 });
 
+const assertGeneratedArgvFailureBeforeMutation = (snippet, diagnostic) => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const sentinels = installedSentinels(packageCopy.root);
+  const python = [
+    "import importlib.util, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "original_build = module.build_generated_tree",
+    "def unsafe_build(source, temporary_root):",
+    "    generated = original_build(source, temporary_root)",
+    "    target = generated / 'prompts/git-spice-stack.md'",
+    `    target.write_text(target.read_text(encoding='utf8') + ${JSON.stringify(`\n${snippet}\n`)}, encoding='utf8')`,
+    "    return generated",
+    "module.build_generated_tree = unsafe_build",
+    "sys.argv = [sys.argv[1], sys.argv[2]]",
+    "module.main()",
+  ].join("\n");
+  const result = runProbe(python, packageCopy, source);
+  assert.notEqual(result.status, 0, `unsafe snippet unexpectedly passed:\n${snippet}`);
+  assert.match(result.stderr, /prompts\/git-spice-stack\.md/);
+  assert.match(result.stderr, /line \d+, column \d+/);
+  assert.match(result.stderr, /excerpt=.*git-spice/);
+  assert.match(result.stderr, diagnostic);
+  assertRollback(packageCopy.root, sentinels);
+};
+
+for (const [name, snippet, diagnostic] of [
+  ["redirection operand cannot provide no-prompt", "git-spice log long > --no-prompt", /explicit --no-prompt/],
+  ["option terminator hides sync restack", "git-spice --no-prompt repo sync -- --restack=upstack", /restack/],
+]) {
+  test(`argv laundering fails before mutation with location diagnostics: ${name}`, () => {
+    assertGeneratedArgvFailureBeforeMutation(snippet, diagnostic);
+  });
+}
+
 test("review blocker: longer closing fence retains unsafe fenced command", () => {
   assertDiscoveryFailureBeforeMutation("```bash\ntrue && git-spice future mutate\n````");
 });
@@ -1179,6 +1216,10 @@ test("malformed occurrence tail quoting fails closed with target diagnostics", (
   assertDiscoveryFailureBeforeMutation('`prefix git-spice "unterminated`', /malformed executable occurrence/);
 });
 
+test("unsupported shell process substitution fails closed with target diagnostics", () => {
+  assertDiscoveryFailureBeforeMutation("`git-spice --no-prompt log long > >(cat output)`", /unsupported shell syntax/);
+});
+
 test("inventory classifies every reference and executable occurrence exactly once with a reason", () => {
   const packageCopy = createTemporaryPackage();
   const text = [
@@ -1206,6 +1247,38 @@ test("inventory classifies every reference and executable occurrence exactly onc
   assert.equal(occurrences.filter(({ classification }) => classification === "executable").length, 1);
   assert.ok(occurrences.every(({ classification, reason }) => ["reference", "executable"].includes(classification) && reason.length > 0));
   assert.ok(occurrences.every(({ reason }) => !/capitalized|tabular|Markdown-formatted|cue word|frontmatter|heading|punctuation/i.test(reason)), "classification reasons are mechanical or manifest-backed");
+});
+
+test("authoritative audit work scales near-linearly across many spans and occurrences", () => {
+  const packageCopy = createTemporaryPackage();
+  const python = [
+    "import importlib.util, json, pathlib, sys",
+    "script = pathlib.Path(sys.argv[1]).resolve()",
+    "spec = importlib.util.spec_from_file_location('migration', script)",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "module.PROSE_REFERENCE_MANIFEST = {target: () for _, target in module.RUNTIME_MANIFEST}",
+    "def measured(size):",
+    "    text = '\\n'.join('`git-spice --no-prompt log long`' for _ in range(size))",
+    "    operations = 0",
+    "    def trace(frame, event, argument):",
+    "        nonlocal operations",
+    "        if event == 'line' and frame.f_code.co_filename == str(script): operations += 1",
+    "        return trace",
+    "    sys.settrace(trace)",
+    "    try: occurrences = module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), text)",
+    "    finally: sys.settrace(None)",
+    "    return {'operations': operations, 'occurrences': len(occurrences)}",
+    "print(json.dumps([measured(100), measured(200)]))",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const [small, large] = JSON.parse(result.stdout);
+  assert.deepEqual([small.occurrences, large.occurrences], [100, 200]);
+  assert.ok(
+    large.operations <= small.operations * 2.35 + 5_000,
+    `doubling input should remain near-linear: ${small.operations} -> ${large.operations}`,
+  );
 });
 
 const proseManifestContextCases = [

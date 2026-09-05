@@ -295,6 +295,29 @@ test("package contract independently locks ordered prompt and restack policy out
   assert.match(results[7].error, /restack/);
 });
 
+test("shell redirections and post-terminator flags cannot launder any safety policy", () => {
+  const policyCases = [
+    ["prompt state", "git-spice log long", "--no-prompt", /explicit --no-prompt/],
+    ["submit draft state", "git-spice --no-prompt stack submit --fill", "--draft", /draft state/],
+    ["rebase no-edit", "git-spice --no-prompt rebase continue", "--no-edit", /--no-edit/],
+    ["init trunk and remote", "git-spice --no-prompt repo init", "--trunk=<name> --remote=<name>", /explicit trunk/],
+    ["branch-create mode", "git-spice --no-prompt branch create <name>", "--no-commit", /populated or clean-tree mode/],
+    ["sync restack", "git-spice --no-prompt repo sync", "--restack=upstack", /restack/],
+  ];
+  const cases = policyCases.flatMap(([policy, command, laundering, diagnostic]) => [
+    { policy, mode: "redirection", diagnostic, text: `\`${command} > ${laundering}\`` },
+    { policy, mode: "option terminator", diagnostic, text: `\`${command} -- ${laundering}\`` },
+  ]);
+  const results = auditSyntheticCases(cases);
+  assert.equal(results.length, 12);
+  for (const [index, result] of results.entries()) {
+    const { policy, mode, diagnostic } = cases[index];
+    assert.equal(result.ok, false, `${policy} accepted ${mode} laundering: ${JSON.stringify(result)}`);
+    assert.match(result.error, diagnostic, `${policy} ${mode}`);
+    assert.match(result.error, /prompts\/git-spice-stack\.md.*line 1, column 2/, `${policy} ${mode}`);
+  }
+});
+
 test("positive occurrence audit rejects an unapproved generic reference reason", () => {
   assert.throws(
     () => assertApprovedReferenceReasons("synthetic.md", ["generic prose heuristic"], "manifest reason"),
@@ -321,6 +344,13 @@ test("committed runtime occurrence inventories reconcile with exact reasons and 
     ]));
     assert.deepEqual(reasonCounts, expectedReasonSnapshots[relative], `${relative} exact occurrence reason snapshot`);
   }
+});
+
+test("committed shell redirection is excluded from authoritative git-spice argv", () => {
+  const occurrence = auditCommittedRuntime()["prompts/git-spice-init.md"].find(
+    ({ line, column }) => line === 9 && column === 53,
+  );
+  assert.deepEqual(occurrence.argv, ["git-spice", "--no-prompt", "log", "long"]);
 });
 
 test("committed sentence-final bare git-spice reference is prose-manifest-backed", () => {

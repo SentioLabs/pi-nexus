@@ -2,12 +2,12 @@
 """Regenerate Pi git-spice resources from the Claude plugin source."""
 
 import argparse
+from bisect import bisect_right
 from dataclasses import dataclass
 from enum import Enum
 import json
 from pathlib import Path
 import re
-import shlex
 import shutil
 import tempfile
 
@@ -758,6 +758,17 @@ class MarkdownRegion:
     opening_fence_length: int | None = None
     info_string: str | None = None
     malformed_reason: str | None = None
+    standalone_git_spice: bool = False
+
+
+@dataclass
+class SourceLine:
+    start: int
+    end: int
+    text: str
+    number: int
+    continued_source_end: int = 0
+    wrapper_content_end: int | None = None
 
 
 @dataclass
@@ -768,6 +779,9 @@ class GitSpiceOccurrence:
     column: int
     region: MarkdownRegion
     physical_line: str
+    segment_start: int = 0
+    segment_end: int = 0
+    source_end: int = 0
     classification: str | None = None
     reason: str | None = None
     argv: list[str] | None = None
@@ -899,13 +913,25 @@ PROSE_REFERENCE_MANIFEST = {
 }
 
 
-def _line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
+_BACKTICK_RUN = re.compile(r"`+")
 
 
-def _append_prose_region(regions: list[MarkdownRegion], text: str, start: int, end: int) -> None:
+def _line_start_offsets(text: str) -> list[int]:
+    return [0, *(match.end() for match in re.finditer("\n", text))]
+
+
+def _line_number_at(line_starts: list[int], offset: int) -> int:
+    return bisect_right(line_starts, offset)
+
+
+def _append_prose_region(
+    regions: list[MarkdownRegion],
+    line_starts: list[int],
+    start: int,
+    end: int,
+) -> None:
     if start < end:
-        regions.append(MarkdownRegion("prose", start, end, _line_number(text, start), start, end))
+        regions.append(MarkdownRegion("prose", start, end, _line_number_at(line_starts, start), start, end))
 
 
 def _escaped_delimiter(text: str, index: int) -> bool:
@@ -917,36 +943,44 @@ def _escaped_delimiter(text: str, index: int) -> bool:
     return backslashes % 2 == 1
 
 
-def _scan_inline_regions(text: str, gap_start: int, gap_end: int, regions: list[MarkdownRegion]) -> None:
+def _scan_inline_regions(
+    text: str,
+    line_starts: list[int],
+    gap_start: int,
+    gap_end: int,
+    regions: list[MarkdownRegion],
+) -> None:
     cursor = gap_start
     search = gap_start
     while search < gap_end:
-        opener = re.search(r"`+", text[search:gap_end])
+        opener = _BACKTICK_RUN.search(text, search, gap_end)
         if not opener:
             break
-        opening_start = search + opener.start()
-        opening_end = search + opener.end()
+        opening_start, opening_end = opener.span()
         if _escaped_delimiter(text, opening_start):
             search = opening_end
             continue
         delimiter_length = opening_end - opening_start
         closing_start = None
         closing_end = None
-        for candidate in re.finditer(r"`+", text[opening_end:gap_end]):
-            candidate_start = opening_end + candidate.start()
-            candidate_end = opening_end + candidate.end()
+        for candidate in _BACKTICK_RUN.finditer(text, opening_end, gap_end):
+            candidate_start, candidate_end = candidate.span()
             if candidate_end - candidate_start == delimiter_length and not _escaped_delimiter(text, candidate_start):
                 closing_start = candidate_start
                 closing_end = candidate_end
                 break
-        _append_prose_region(regions, text, cursor, opening_start)
+        _append_prose_region(regions, line_starts, cursor, opening_start)
         if closing_start is None or closing_end is None:
-            malformed = "unterminated inline code span" if "git-spice" in text[opening_start:gap_end] else None
+            malformed = (
+                "unterminated inline code span"
+                if text.find("git-spice", opening_start, gap_end) != -1
+                else None
+            )
             regions.append(MarkdownRegion(
                 "inline_code",
                 opening_start,
                 gap_end,
-                _line_number(text, opening_start),
+                _line_number_at(line_starts, opening_start),
                 opening_end,
                 gap_end,
                 malformed_reason=malformed,
@@ -956,13 +990,13 @@ def _scan_inline_regions(text: str, gap_start: int, gap_end: int, regions: list[
             "inline_code",
             opening_start,
             closing_end,
-            _line_number(text, opening_start),
+            _line_number_at(line_starts, opening_start),
             opening_end,
             closing_start,
         ))
         cursor = closing_end
         search = closing_end
-    _append_prose_region(regions, text, cursor, gap_end)
+    _append_prose_region(regions, line_starts, cursor, gap_end)
 
 
 def _partition_fenced_regions(text: str) -> list[MarkdownRegion]:
@@ -971,6 +1005,7 @@ def _partition_fenced_regions(text: str) -> list[MarkdownRegion]:
     if not lines and text:
         lines = [text]
     offset = 0
+    line_number = 1
     fence_start = None
     fence_line = None
     fence_character = None
@@ -988,7 +1023,7 @@ def _partition_fenced_regions(text: str) -> list[MarkdownRegion]:
             opener = opener_pattern.fullmatch(physical_line)
             if opener:
                 fence_start = line_start
-                fence_line = _line_number(text, line_start)
+                fence_line = line_number
                 fence_character = opener.group(1)[0]
                 fence_length = len(opener.group(1))
                 fence_info = opener.group(2).strip()
@@ -1022,6 +1057,8 @@ def _partition_fenced_regions(text: str) -> list[MarkdownRegion]:
                     elif len(run) < fence_length:
                         fence_problem = "closing fence is shorter than its opener"
         offset = line_end
+        if raw_line.endswith("\n"):
+            line_number += 1
 
     if fence_start is not None:
         fenced_regions.append(MarkdownRegion(
@@ -1039,61 +1076,125 @@ def _partition_fenced_regions(text: str) -> list[MarkdownRegion]:
     return fenced_regions
 
 
+def _trimmed_content_is_git_spice(text: str, start: int, end: int) -> bool:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return end - start == len("git-spice") and text.startswith("git-spice", start, end)
+
+
 def scan_markdown_regions(text: str) -> list[MarkdownRegion]:
     """Partition fences, then scan each complete non-fenced gap for inline code."""
+    line_starts = _line_start_offsets(text)
     fenced_regions = _partition_fenced_regions(text)
     regions = []
     gap_start = 0
     for fenced_region in fenced_regions:
-        _scan_inline_regions(text, gap_start, fenced_region.start, regions)
+        _scan_inline_regions(text, line_starts, gap_start, fenced_region.start, regions)
         regions.append(fenced_region)
         gap_start = fenced_region.end
-    _scan_inline_regions(text, gap_start, len(text), regions)
+    _scan_inline_regions(text, line_starts, gap_start, len(text), regions)
+    for region in regions:
+        if region.kind in {"inline_code", "fenced_code"}:
+            region.standalone_git_spice = _trimmed_content_is_git_spice(
+                text,
+                region.content_start,
+                region.content_end,
+            )
     return regions
+
+
+def _source_lines(text: str) -> list[SourceLine]:
+    lines = []
+    start = 0
+    number = 1
+    for newline in re.finditer("\n", text):
+        end = newline.start()
+        physical_end = end - 1 if end > start and text[end - 1] == "\r" else end
+        lines.append(SourceLine(start, end, text[start:physical_end], number))
+        start = newline.end()
+        number += 1
+    final_physical_end = len(text) - 1 if text.endswith("\r") else len(text)
+    lines.append(SourceLine(start, len(text), text[start:final_physical_end], number))
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        stripped = line.text.strip()
+        if stripped.startswith("<") and stripped.endswith(">"):
+            line.wrapper_content_end = line.start + len(line.text.rstrip()) - 1
+        if _physical_line_continues(line.text) and index + 1 < len(lines):
+            line.continued_source_end = lines[index + 1].continued_source_end
+        else:
+            line.continued_source_end = line.end
+    return lines
 
 
 def inventory_git_spice_occurrences(text: str, regions: list[MarkdownRegion]) -> list[GitSpiceOccurrence]:
     occurrences = []
+    lines = _source_lines(text)
+    line_index = 0
+    region_index = 0
+    segment_start = 0
+    segment_end = 0
     for match in re.finditer(re.escape("git-spice"), text):
-        containing = [region for region in regions if region.start <= match.start() and match.end() <= region.end]
-        if len(containing) != 1:
+        while region_index < len(regions) and match.end() > regions[region_index].end:
+            region_index += 1
+        if (
+            region_index >= len(regions)
+            or not regions[region_index].start <= match.start()
+            or match.end() > regions[region_index].end
+        ):
             raise RuntimeError("git-spice occurrence inventory did not map to exactly one Markdown region")
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.end())
-        if line_end == -1:
-            line_end = len(text)
-        physical_line = text[line_start:line_end].removesuffix("\r")
+        while line_index + 1 < len(lines) and match.start() >= lines[line_index + 1].start:
+            line_index += 1
+        line = lines[line_index]
+        if not segment_start <= match.start() < segment_end:
+            segment_start = match.start()
+            while segment_start > 0 and not text[segment_start - 1].isspace():
+                segment_start -= 1
+            segment_end = match.end()
+            while segment_end < len(text) and not text[segment_end].isspace():
+                segment_end += 1
+        region = regions[region_index]
         occurrences.append(GitSpiceOccurrence(
             match.start(),
             match.end(),
-            _line_number(text, match.start()),
-            match.start() - line_start + 1,
-            containing[0],
-            physical_line,
+            line.number,
+            match.start() - line.start + 1,
+            region,
+            line.text,
+            segment_start=segment_start,
+            segment_end=segment_end,
+            source_end=(
+                line.wrapper_content_end
+                if line.wrapper_content_end is not None
+                else (
+                    region.content_end
+                    if region.kind in {"inline_code", "fenced_code"}
+                    else line.continued_source_end
+                )
+            ),
         ))
     return occurrences
-
-
-def _unicode_whitespace_segment(text: str, occurrence: GitSpiceOccurrence) -> str:
-    start = occurrence.start
-    while start > 0 and not text[start - 1].isspace():
-        start -= 1
-    end = occurrence.end
-    while end < len(text) and not text[end].isspace():
-        end += 1
-    return text[start:end]
 
 
 def _registered_identifier_reference_reason(
     text: str,
     occurrence: GitSpiceOccurrence,
+    cache: dict[tuple[int, int], str | None] | None = None,
 ) -> str | None:
-    segment = _unicode_whitespace_segment(text, occurrence)
+    key = (occurrence.segment_start, occurrence.segment_end)
+    if cache is not None and key in cache:
+        return cache[key]
+    segment = text[occurrence.segment_start:occurrence.segment_end]
     normalized = segment.lstrip(LEADING_IDENTIFIER_WRAPPERS).rstrip(TRAILING_IDENTIFIER_WRAPPERS)
-    for group in REGISTERED_IDENTIFIER_GROUPS:
-        if normalized in group.identifiers:
-            return group.reason
-    return None
+    reason = next(
+        (group.reason for group in REGISTERED_IDENTIFIER_GROUPS if normalized in group.identifiers),
+        None,
+    )
+    if cache is not None:
+        cache[key] = reason
+    return reason
 
 
 def _exact_metadata_identifier_reference(occurrence: GitSpiceOccurrence) -> bool:
@@ -1182,6 +1283,8 @@ def classify_occurrence(
     text: str,
     occurrence: GitSpiceOccurrence,
     manifest_usage: dict[str, int],
+    manifest_by_line: dict[str, ProseReferenceManifestEntry],
+    registered_reason_cache: dict[tuple[int, int], str | None],
 ) -> GitSpiceOccurrence:
     region = occurrence.region
     if region.malformed_reason:
@@ -1192,13 +1295,16 @@ def classify_occurrence(
     ):
         raise ValueError("git-spice occurrence appears in a Markdown code delimiter or fence info string")
 
-    registered_reason = _registered_identifier_reference_reason(text, occurrence)
+    registered_reason = _registered_identifier_reference_reason(
+        text,
+        occurrence,
+        registered_reason_cache,
+    )
     if registered_reason is not None:
         return _classify(occurrence, "reference", registered_reason)
 
     if region.kind in {"inline_code", "fenced_code"}:
-        region_text = text[region.content_start:region.content_end].strip()
-        if region_text == "git-spice":
+        if region.standalone_git_spice:
             reason = INLINE_CODE_REFERENCE_REASON if region.kind == "inline_code" else FENCED_CODE_REFERENCE_REASON
             return _classify(occurrence, "reference", reason)
         return _classify(occurrence, "executable", EXECUTABLE_OCCURRENCE_REASON)
@@ -1208,8 +1314,7 @@ def classify_occurrence(
     if _exact_markdown_heading_reference(occurrence):
         return _classify(occurrence, "reference", MARKDOWN_HEADING_REFERENCE_REASON)
 
-    entries = {entry.exact_physical_line: entry for entry in _manifest_entries(path)}
-    entry = entries.get(occurrence.physical_line)
+    entry = manifest_by_line.get(occurrence.physical_line)
     if entry is not None:
         observed = manifest_usage.get(entry.exact_physical_line, 0) + 1
         manifest_usage[entry.exact_physical_line] = observed
@@ -1223,63 +1328,8 @@ def classify_occurrence(
     return _classify(occurrence, "executable", EXECUTABLE_OCCURRENCE_REASON)
 
 
-def strip_shell_comments(snippet: str, comment_at_start: bool = True) -> str:
-    result = []
-    quote = None
-    index = 0
-    while index < len(snippet):
-        character = snippet[index]
-        if quote == "'":
-            result.append(character)
-            if character == "'":
-                quote = None
-            index += 1
-            continue
-        if quote == '"':
-            result.append(character)
-            if character == "\\" and index + 1 < len(snippet):
-                result.append(snippet[index + 1])
-                index += 2
-                continue
-            if character == '"':
-                quote = None
-            index += 1
-            continue
-        if character == "\\" and index + 1 < len(snippet):
-            result.extend((character, snippet[index + 1]))
-            index += 2
-            continue
-        if character in {"'", '"'}:
-            quote = character
-            result.append(character)
-            index += 1
-            continue
-        if character == "#" and (
-            (index == 0 and comment_at_start)
-            or (result and (result[-1].isspace() or result[-1] in ";&|()"))
-        ):
-            newline = snippet.find("\n", index)
-            if newline == -1:
-                break
-            result.append("\n")
-            index = newline + 1
-            continue
-        result.append(character)
-        index += 1
-    return "".join(result)
-
-
-def tokenize_executable_snippet(snippet: str, comment_at_start: bool = True) -> list[str]:
-    uncommented = strip_shell_comments(snippet, comment_at_start)
-    normalized = re.sub(r"\\\r?\n", " ", uncommented).replace("\r\n", "\n").replace("\n", " ; ")
-    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    return list(lexer)
-
-
-def is_shell_control_token(token: str) -> bool:
-    return bool(token) and all(character in ";&|()" for character in token)
+_PLACEHOLDER_TOKEN = re.compile(r"<[^<>\s]+>")
+_REDIRECTION_OPERATORS = ("&>>", "&>", ">>", ">|", ">&", "<&", "<>", ">", "<")
 
 
 def _physical_line_continues(line: str) -> bool:
@@ -1290,35 +1340,152 @@ def _physical_line_continues(line: str) -> bool:
     return trailing_backslashes % 2 == 1
 
 
-def _continued_prose_source_end(text: str, occurrence: GitSpiceOccurrence) -> int:
-    line_start = occurrence.start - (occurrence.column - 1)
-    while True:
-        line_end = text.find("\n", line_start)
-        if line_end == -1:
-            return len(text)
-        physical_line = text[line_start:line_end].removesuffix("\r")
-        if not _physical_line_continues(physical_line):
-            return line_end
-        line_start = line_end + 1
+def _redirection_operator(text: str, index: int, end: int) -> str | None:
+    if text.startswith("<<", index, end):
+        raise ValueError("unsupported shell syntax: here-document redirection")
+    if text[index] in "<>" and index + 1 < end and text[index + 1] == "(":
+        raise ValueError("unsupported shell syntax: process substitution")
+    return next(
+        (operator for operator in _REDIRECTION_OPERATORS if text.startswith(operator, index, end)),
+        None,
+    )
 
 
-def _occurrence_source_end(text: str, occurrence: GitSpiceOccurrence) -> int:
-    if occurrence.region.kind in {"inline_code", "fenced_code"}:
-        return occurrence.region.content_end
-    return _continued_prose_source_end(text, occurrence)
+def _shell_argv_tail(text: str, start: int, end: int) -> list[str]:
+    """Lex one occurrence tail, omitting shell controls and redirections from argv."""
+    arguments = []
+    word = []
+    word_started = False
+    word_is_plain = True
+    discard_word = False
+    needs_redirection_operand = False
+    separated = False
+    index = start
+
+    def begin_word() -> None:
+        nonlocal discard_word, needs_redirection_operand, word_started
+        if not word_started:
+            word_started = True
+            discard_word = needs_redirection_operand
+            needs_redirection_operand = False
+
+    def finish_word() -> None:
+        nonlocal discard_word, word, word_is_plain, word_started
+        if word_started and not discard_word:
+            arguments.append("".join(word))
+        word = []
+        word_started = False
+        word_is_plain = True
+        discard_word = False
+
+    while index < end:
+        character = text[index]
+        if character == "\\":
+            if index + 1 < end and text[index + 1] == "\n":
+                index += 2
+                continue
+            if index + 2 < end and text[index + 1:index + 3] == "\r\n":
+                index += 3
+                continue
+            if index + 1 >= end:
+                raise ValueError("malformed shell escape at end of command")
+            begin_word()
+            word.append(text[index + 1])
+            word_is_plain = False
+            index += 2
+            separated = False
+            continue
+        if character.isspace():
+            if character in "\r\n":
+                if needs_redirection_operand:
+                    raise ValueError("shell redirection requires an operand")
+                finish_word()
+                break
+            finish_word()
+            separated = True
+            index += 1
+            continue
+        if character == "#" and not word_started and separated:
+            if needs_redirection_operand:
+                raise ValueError("shell redirection requires an operand")
+            break
+        if character in {"'", '"'}:
+            begin_word()
+            word_is_plain = False
+            quote = character
+            index += 1
+            while index < end and text[index] != quote:
+                if quote == '"' and text[index] in {"$", "`"}:
+                    raise ValueError("unsupported shell syntax: expansion in quoted word")
+                if quote == '"' and text[index] == "\\":
+                    if index + 1 >= end:
+                        raise ValueError("malformed shell escape in quoted word")
+                    if text[index + 1] == "\n":
+                        index += 2
+                        continue
+                    if index + 2 < end and text[index + 1:index + 3] == "\r\n":
+                        index += 3
+                        continue
+                    word.append(text[index + 1])
+                    index += 2
+                    continue
+                word.append(text[index])
+                index += 1
+            if index >= end:
+                raise ValueError("No closing quotation")
+            index += 1
+            separated = False
+            continue
+        if character == "$":
+            raise ValueError("unsupported shell syntax: expansion")
+        if character == "`":
+            finish_word()
+            break
+
+        placeholder = _PLACEHOLDER_TOKEN.match(text, index, end)
+        if placeholder is not None:
+            begin_word()
+            word.append(placeholder.group())
+            index = placeholder.end()
+            separated = False
+            continue
+
+        redirection = _redirection_operator(text, index, end)
+        if redirection is not None:
+            if needs_redirection_operand:
+                raise ValueError("shell redirection requires an operand")
+            if word_started:
+                io_number = word_is_plain and bool(word) and all(part.isdigit() for part in word)
+                if io_number:
+                    word = []
+                    word_started = False
+                    word_is_plain = True
+                    discard_word = False
+                else:
+                    finish_word()
+            needs_redirection_operand = True
+            index += len(redirection)
+            separated = False
+            continue
+        if character in ";&|()":
+            if needs_redirection_operand:
+                raise ValueError("shell redirection requires an operand")
+            finish_word()
+            break
+
+        begin_word()
+        word.append(character)
+        index += 1
+        separated = False
+
+    if needs_redirection_operand:
+        raise ValueError("shell redirection requires an operand")
+    finish_word()
+    return arguments
 
 
 def extract_invocation_from_occurrence(text: str, occurrence: GitSpiceOccurrence) -> list[str]:
-    physical = occurrence.physical_line.strip()
-    if physical.startswith("<") and physical.endswith(">"):
-        tail = occurrence.physical_line[occurrence.column - 1 + len("git-spice"):].rstrip()[:-1]
-    else:
-        tail = text[occurrence.end:_occurrence_source_end(text, occurrence)]
-    tokens = tokenize_executable_snippet(tail, comment_at_start=False)
-    end = 0
-    while end < len(tokens) and not is_shell_control_token(tokens[end]):
-        end += 1
-    return ["git-spice", *tokens[:end]]
+    return ["git-spice", *_shell_argv_tail(text, occurrence.end, occurrence.source_end)]
 
 
 def parse_git_spice_arguments(arguments: list[str]) -> tuple[list[str], bool, bool]:
@@ -1328,6 +1495,9 @@ def parse_git_spice_arguments(arguments: list[str]) -> tuple[list[str], bool, bo
     index = 0
     while index < len(arguments):
         argument = arguments[index]
+        if argument == "--":
+            command_arguments.extend(arguments[index:])
+            break
         if argument == "--no-prompt":
             saw_no_prompt = True
             effective_prompt = False
@@ -1370,6 +1540,13 @@ def classify_git_spice_command(arguments: list[str]) -> tuple[str, tuple[str, ..
     raise ValueError("unclassified git-spice subcommand")
 
 
+def _arguments_before_option_terminator(arguments: list[str]) -> list[str]:
+    try:
+        return arguments[:arguments.index("--")]
+    except ValueError:
+        return arguments
+
+
 def has_message_argument(arguments: list[str]) -> bool:
     for index, argument in enumerate(arguments):
         if argument == "-m" and index + 1 < len(arguments) and arguments[index + 1]:
@@ -1384,18 +1561,19 @@ def has_message_argument(arguments: list[str]) -> bool:
 def validate_git_spice_invocation(raw_arguments: list[str], path: Path) -> None:
     arguments, saw_no_prompt, effective_prompt = parse_git_spice_arguments(raw_arguments)
     _, signature = classify_git_spice_command(arguments)
+    policy_arguments = _arguments_before_option_terminator(arguments)
     if not saw_no_prompt:
         raise ValueError("mutation and read-only guidance requires an explicit --no-prompt")
     if effective_prompt:
         raise ValueError("prompting must be disabled by final effective state")
     if signature in {("repo", "init"), ("r", "i")}:
-        if not any(re.fullmatch(r"--trunk=<[^>]+>", argument) for argument in arguments):
+        if not any(re.fullmatch(r"--trunk=<[^>]+>", argument) for argument in policy_arguments):
             raise ValueError("repo init requires an explicit trunk")
-        if not any(re.fullmatch(r"--remote=<[^>]+>", argument) for argument in arguments):
+        if not any(re.fullmatch(r"--remote=<[^>]+>", argument) for argument in policy_arguments):
             raise ValueError("repo init requires an explicit remote")
-    if signature in {("branch", "create"), ("bc",)} and not has_message_argument(arguments):
+    if signature in {("branch", "create"), ("bc",)} and not has_message_argument(policy_arguments):
         raise ValueError("branch creation requires a populated or clean-tree mode")
-    if signature in {("rebase", "continue"), ("rbc",)} and "--no-edit" not in arguments:
+    if signature in {("rebase", "continue"), ("rbc",)} and "--no-edit" not in policy_arguments:
         raise ValueError("rebase continuation requires --no-edit")
     if signature in {
         ("branch", "submit"),
@@ -1407,8 +1585,8 @@ def validate_git_spice_invocation(raw_arguments: list[str], path: Path) -> None:
         ("dss",),
         ("uss",),
         ("ss",),
-    } and "--update-only" not in arguments:
-        if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in arguments):
+    } and "--update-only" not in policy_arguments:
+        if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in policy_arguments):
             raise ValueError("create-capable submit requires an explicit draft state")
     if path.as_posix() == "agents/stack-doctor.md":
         required_tracking_targets = {
@@ -1419,7 +1597,7 @@ def validate_git_spice_invocation(raw_arguments: list[str], path: Path) -> None:
             raise ValueError("stack-doctor tracking guidance requires an explicit target")
     if signature in {("repo", "sync"), ("rs",)}:
         effective_restack = None
-        for argument in arguments:
+        for argument in policy_arguments:
             if argument == "--restack":
                 effective_restack = "upstack"
             elif argument.startswith("--restack="):
@@ -1472,7 +1650,7 @@ def _inventory_diagnostic(
         if line_end == -1:
             line_end = len(text)
         return (
-            f"{detail} in {path.as_posix()} at line {_line_number(text, offset)}, "
+            f"{detail} in {path.as_posix()} at line {_line_number_at(_line_start_offsets(text), offset)}, "
             f"column {offset - line_start + 1}; excerpt={_trimmed_excerpt(text[line_start:line_end])!r}"
         )
     return f"{detail} in {path.as_posix()}; excerpt={_trimmed_excerpt(text)!r}"
@@ -1499,9 +1677,18 @@ def audit_git_spice_occurrences(path: Path, text: str) -> list[GitSpiceOccurrenc
         )) from error
 
     manifest_usage: dict[str, int] = {}
+    manifest_by_line = {entry.exact_physical_line: entry for entry in manifest_entries}
+    registered_reason_cache: dict[tuple[int, int], str | None] = {}
     for occurrence in occurrences:
         try:
-            classify_occurrence(path, text, occurrence, manifest_usage)
+            classify_occurrence(
+                path,
+                text,
+                occurrence,
+                manifest_usage,
+                manifest_by_line,
+                registered_reason_cache,
+            )
         except (RuntimeError, ValueError) as error:
             raise RuntimeError(_occurrence_diagnostic(path, occurrence, f"invalid occurrence: {error}")) from error
 
