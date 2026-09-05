@@ -215,7 +215,22 @@ test('inconsistent and unreadable scans fail closed without changing primary byt
   assert.deepEqual(await snapshotPrimaryBytes(repo), before);
 });
 
-test('deleted index and limits fail closed without exposing contents', async () => {
+test('an unreadable index fails at the direct index read boundary', async () => {
+  const repo = await makeRepo();
+  const indexPath = path.join(repo, '.git', 'index');
+  const baseline = await captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits });
+  await fs.chmod(indexPath, 0o000);
+  try {
+    const comparison = await compareArcPrimaryBaseline(baseline, limits);
+    assert.equal(comparison.state, 'unreadable');
+    assert.match(comparison.differences.join('\n'), /index.*unreadable|EACCES|EPERM/i);
+    await assert.rejects(() => captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits }), /index|EACCES|EPERM/i);
+  } finally {
+    await fs.chmod(indexPath, 0o600);
+  }
+});
+
+test('a deleted index and limits fail closed without exposing contents', async () => {
   const repo = await makeRepo();
   const baseline = await captureArcPrimaryBaseline({ repositoryRoot: repo, reviewedRefs: [], limits });
   await fs.unlink(path.join(repo, '.git', 'index'));

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -16,7 +16,7 @@ else if (mode === 'binary') process.stdout.write(Buffer.from([0,255,254,65]));
 else if (mode === 'overflow') { process.stdout.write(Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 251))); process.stderr.write(Buffer.alloc(1000, 0x62)); }
 else if (mode === 'nonzero') { process.stderr.write('bad'); process.exitCode=7; }
 else if (mode === 'sleep') setTimeout(() => {}, 10_000);
-else if (mode === 'ignore-term') { process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); }
+else if (mode === 'ignore-term') { process.on('SIGTERM', () => {}); if (process.argv[3]) await import('node:fs/promises').then((fs) => fs.writeFile(process.argv[3], 'ready')); setInterval(() => {}, 1000); }
 else if (mode === 'close-stdin') { process.stdin.destroy(); setTimeout(() => {}, 30); }
 `);
 
@@ -94,16 +94,44 @@ test('observer diagnostics remain within the 4 KiB byte bound', async () => {
 });
 
 test('deadline and abort remain live while observer never settles', async () => {
-  const start = Date.now();
-  const deadline = await runArcBoundedProcess({ ...input, args: [fixture, 'ignore-term'], timeoutMs: 40, onSpawn: () => new Promise(() => {}) });
+  const stopGraceMs = 40;
+  const killGraceMs = 80;
+  const schedulerToleranceMs = 200;
+  const readyForDeadline = path.join(root, `deadline-ready-${Date.now()}`);
+  const timeoutMs = 180;
+  const deadlineStarted = Date.now();
+  const deadline = await runArcBoundedProcess({
+    ...input, args: [fixture, 'ignore-term', readyForDeadline], timeoutMs, stopGraceMs, killGraceMs,
+    onSpawn: async () => {
+      while (await access(readyForDeadline).then(() => false, () => true)) await new Promise((resolve) => setTimeout(resolve, 5));
+      return new Promise(() => {});
+    },
+  });
   assert.equal(deadline.timedOut, true);
+  assert.equal(deadline.termination, 'observed');
+  assert.equal(deadline.signal, 'SIGKILL');
   assert.match(deadline.observationError, /deadline|settle/i);
-  assert.ok(Date.now() - start < 1000);
+  assert.ok(Date.now() - deadlineStarted <= timeoutMs + stopGraceMs + killGraceMs + schedulerToleranceMs);
+
+  const readyForAbort = path.join(root, `abort-ready-${Date.now()}`);
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 20);
-  const aborted = await runArcBoundedProcess({ ...input, args: [fixture, 'ignore-term'], signal: controller.signal, onSpawn: () => new Promise(() => {}) });
+  let abortedAt;
+  const abortWhenReady = (async () => {
+    while (await access(readyForAbort).then(() => false, () => true)) await new Promise((resolve) => setTimeout(resolve, 5));
+    abortedAt = Date.now();
+    controller.abort();
+  })();
+  const aborted = await runArcBoundedProcess({
+    ...input, args: [fixture, 'ignore-term', readyForAbort], timeoutMs: 2_000, stopGraceMs, killGraceMs,
+    signal: controller.signal, onSpawn: () => new Promise(() => {}),
+  });
+  await abortWhenReady;
   assert.equal(aborted.aborted, true);
-  assert.match(aborted.observationError, /deadline|settle/i);
+  assert.equal(aborted.timedOut, false);
+  assert.equal(aborted.termination, 'observed');
+  assert.equal(aborted.signal, 'SIGKILL');
+  assert.match(aborted.observationError, /abort|settle/i);
+  assert.ok(Date.now() - abortedAt <= stopGraceMs + killGraceMs + schedulerToleranceMs);
 });
 
 test('a delayed observer prevents successful settlement until it resolves', async () => {

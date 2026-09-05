@@ -23,7 +23,13 @@ import fs from 'node:fs';
 const args = process.argv.slice(2);
 const mode = process.env.ARC_FAKE_GIT_MODE;
 const command = args.find((value) => ['ls-tree','cat-file'].includes(value));
-if (mode?.startsWith('tree-') && command === 'ls-tree') {
+if (mode === 'cat-epipe' && command === 'ls-tree') {
+  const result = spawnSync(${JSON.stringify(realGit)}, args);
+  if (result.status !== 0) { process.stderr.write(result.stderr); process.exit(result.status ?? 1); }
+  const bytes = Buffer.from(result.stdout); const tab = bytes.indexOf(9);
+  const header = bytes.subarray(0, tab + 1);
+  for (let index = 0; index < 30000; index++) process.stdout.write(Buffer.concat([header, Buffer.from('epipe-' + String(index).padStart(5, '0')), Buffer.from([0])]));
+} else if (mode?.startsWith('tree-') && command === 'ls-tree') {
   const result = spawnSync(${JSON.stringify(realGit)}, args);
   if (result.status !== 0) { process.stderr.write(result.stderr); process.exit(result.status ?? 1); }
   const bytes = Buffer.from(result.stdout); const tab = bytes.indexOf(9); const nul = bytes.indexOf(0, tab);
@@ -31,6 +37,8 @@ if (mode?.startsWith('tree-') && command === 'ls-tree') {
   const changed = Buffer.concat([bytes.subarray(0, tab + 1), replacement, bytes.subarray(nul)]);
   process.stdout.write(mode === 'tree-duplicate' ? Buffer.concat([bytes.subarray(0, nul + 1), bytes]) : changed);
 } else if (command === 'cat-file' && mode?.startsWith('cat-')) {
+  if (mode === 'cat-epipe') process.exit(23);
+  if (mode === 'cat-nonzero') { process.stderr.write('cat-file unreadable fixture'); process.exit(17); }
   const query = fs.readFileSync(0, 'ascii'); const oid = query.split('\\n')[0];
   const real = spawnSync(${JSON.stringify(realGit)}, args, { input: query });
   if (mode === 'cat-missing') process.stdout.write(oid + ' missing\\n');
@@ -48,10 +56,10 @@ if (mode?.startsWith('tree-') && command === 'ls-tree') {
   return directory;
 }
 
-async function makeRange() {
+async function makeRange({ objectFormat } = {}) {
   const repo = await fs.mkdtemp(path.join(tmpdir(), 'pi-arc-input-repo-'));
   const destinationRoot = await fs.mkdtemp(path.join(tmpdir(), 'pi-arc-input-dest-'));
-  await git(repo, 'init', '-q', '-b', 'main');
+  await git(repo, 'init', ...(objectFormat ? [`--object-format=${objectFormat}`] : []), '-q', '-b', 'main');
   await git(repo, 'config', 'user.email', 'test@example.invalid');
   await git(repo, 'config', 'user.name', 'Test');
   await fs.writeFile(path.join(repo, 'gone.txt'), 'gone from head\n');
@@ -97,6 +105,9 @@ test('exports exact committed binary source, deletion, immutable modes, material
   await fs.unlink(path.join(range.repo, 'deleted-in-worktree.txt'));
   const before = await snapshotPrimary(range.repo);
   assert.deepEqual(before.baseline.tracked.find((row) => row.path === 'deleted-in-worktree.txt'), { path: 'deleted-in-worktree.txt', kind: 'missing' });
+  const expectedPatch = (await exec('git', ['diff', '--binary', '--no-ext-diff', '--no-textconv', range.baseSha, range.headSha, '--'], {
+    cwd: range.repo, env: { ...process.env, LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_NO_REPLACE_OBJECTS: '1' }, encoding: 'buffer',
+  })).stdout;
   const prepared = await prepareArcReviewInput(request(range));
   await assertPrimarySame(before, range.repo);
   assert.deepEqual(await fs.readFile(path.join(prepared.sourceRoot, 'binary.dat')), Buffer.from([0, 255, 254, 65]));
@@ -105,11 +116,28 @@ test('exports exact committed binary source, deletion, immutable modes, material
   assert.equal((await fs.stat(path.join(prepared.sourceRoot, 'run.sh'))).mode & 0o777, 0o500);
   const manifest = JSON.parse(await fs.readFile(prepared.manifestPath, 'utf8'));
   assert.equal(manifest.version, 1);
+  assert.equal(manifest.source.find((x) => x.path === 'run.sh').gitMode, '100755');
+  assert.equal(manifest.source.find((x) => x.path === 'binary.dat').gitMode, '100644');
   assert.equal(manifest.changes.find((x) => x.path === 'gone.txt').status, 'deleted');
   assert.equal(manifest.changes.find((x) => x.path === 'gone.txt').headObjectId, undefined);
   assert.equal(manifest.source.some((x) => x.path === 'manifest.json'), false);
   assert.equal(manifest.materials.some((x) => x.path === 'manifest.json'), false);
-  assert.ok(manifest.materials.some((x) => x.path === 'materials/diff.patch'));
+  const expectedMaterials = new Map([
+    ['materials/task.md', Buffer.from('Task context\n')],
+    ['materials/design.md', Buffer.from('Design context\n')],
+    ['materials/review.md', Buffer.from('Review context\n')],
+    ['materials/instructions/0001.md', Buffer.from('Repository instruction\n')],
+    ['materials/diff.patch', expectedPatch],
+  ]);
+  assert.deepEqual(manifest.materials.map((x) => x.path), [
+    'materials/design.md', 'materials/diff.patch', 'materials/instructions/0001.md', 'materials/review.md', 'materials/task.md',
+  ]);
+  for (const row of manifest.materials) {
+    const file = path.join(prepared.inputRoot, ...row.path.split('/'));
+    assert.equal(row.physicalMode, '0400');
+    assert.equal((await fs.stat(file)).mode & 0o777, 0o400);
+    assert.deepEqual(await fs.readFile(file), expectedMaterials.get(row.path));
+  }
   assert.equal((await fs.stat(prepared.inputRoot)).mode & 0o777, 0o500);
   assert.equal((await fs.stat(prepared.manifestPath)).mode & 0o777, 0o400);
   assert.equal((await verifyArcReviewInput(prepared, limits)).state, 'unchanged');
@@ -148,6 +176,21 @@ test('rejects abbreviated, uppercase, nonhex, missing commits and non-ancestor r
   }
 });
 
+test('accepts and exports a full SHA-256 committed range', async () => {
+  const range = await makeRange({ objectFormat: 'sha256' });
+  assert.match(range.baseSha, /^[0-9a-f]{64}$/);
+  assert.match(range.headSha, /^[0-9a-f]{64}$/);
+  const baseline = await captureArcPrimaryBaseline({ repositoryRoot: range.repo, reviewedRefs: ['refs/heads/main'], limits });
+  const prepared = await prepareArcReviewInput(request(range));
+  const manifest = JSON.parse(await fs.readFile(prepared.manifestPath, 'utf8'));
+  assert.equal(manifest.baseSha, range.baseSha);
+  assert.equal(manifest.headSha, range.headSha);
+  assert.equal(manifest.changes.find((row) => row.path === 'gone.txt').status, 'deleted');
+  assert.deepEqual(await fs.readFile(path.join(prepared.sourceRoot, 'binary.dat')), Buffer.from([0, 255, 254, 65]));
+  assert.equal((await verifyArcReviewInput(prepared, limits)).state, 'unchanged');
+  assert.equal((await compareArcPrimaryBaseline(baseline, limits)).state, 'unchanged');
+});
+
 test('fails closed on symlinks, gitlinks, case and Unicode normalization collisions', async () => {
   for (const kind of ['symlink', 'gitlink', 'case', 'unicode']) {
     const range = await makeRange();
@@ -163,11 +206,27 @@ test('fails closed on symlinks, gitlinks, case and Unicode normalization collisi
   }
 });
 
-test('rejects traversal and malformed, missing, truncated, non-blob, trailing, and early-close batch responses', async () => {
+test('rejects collisions in nested directory components using deterministic Unicode caseless keys', async () => {
+  for (const [left, right] of [['Dir/a', 'dir/b'], ['é/a', 'é/b'], ['σ/a', 'ς/b']]) {
+    const range = await makeRange();
+    await fs.mkdir(path.join(range.repo, path.dirname(left)), { recursive: true });
+    await fs.mkdir(path.join(range.repo, path.dirname(right)), { recursive: true });
+    await fs.writeFile(path.join(range.repo, left), 'left');
+    await fs.writeFile(path.join(range.repo, right), 'right');
+    await git(range.repo, 'add', left, right);
+    await git(range.repo, 'commit', '-qm', 'nested collision');
+    range.headSha = await git(range.repo, 'rev-parse', 'HEAD');
+    const before = await snapshotPrimary(range.repo);
+    await assert.rejects(() => prepareArcReviewInput(request(range)), /collision|normalization|case-fold/i);
+    await assertPrimarySame(before, range.repo);
+  }
+});
+
+test('rejects traversal and malformed, missing, unreadable, truncated, non-blob, trailing, and early-close batch responses', async () => {
   const fakeDirectory = await makeFakeGit();
   const originalPath = process.env.PATH;
   try {
-    for (const mode of ['tree-traversal', 'tree-absolute', 'tree-invalid-utf8', 'tree-duplicate', 'cat-missing', 'cat-header', 'cat-payload', 'cat-nonblob', 'cat-trailing', 'cat-early-close']) {
+    for (const mode of ['tree-traversal', 'tree-absolute', 'tree-invalid-utf8', 'tree-duplicate', 'cat-missing', 'cat-nonzero', 'cat-header', 'cat-payload', 'cat-nonblob', 'cat-trailing', 'cat-early-close']) {
       const range = await makeRange();
       const before = await snapshotPrimary(range.repo);
       process.env.PATH = `${fakeDirectory}${path.delimiter}${originalPath}`;
@@ -182,6 +241,39 @@ test('rejects traversal and malformed, missing, truncated, non-blob, trailing, a
     delete process.env.ARC_FAKE_GIT_MODE;
     process.env.PATH = originalPath;
   }
+});
+
+test('rejects a destination inside the canonical checkout when repositoryRoot is nested', async () => {
+  const range = await makeRange();
+  const nestedRoot = path.join(range.repo, 'nested-cwd');
+  const destinationRoot = path.join(range.repo, 'output');
+  await fs.mkdir(nestedRoot);
+  await fs.mkdir(destinationRoot);
+  const before = await snapshotPrimary(range.repo);
+  await assert.rejects(
+    () => prepareArcReviewInput(request(range, { repositoryRoot: nestedRoot, destinationRoot })),
+    /repositoryRoot.*Git worktree root|independent.*checkout/i,
+  );
+  await assertPrimarySame(before, range.repo);
+  assert.deepEqual(await fs.readdir(destinationRoot), []);
+});
+
+test('disables Git replacement objects for immutable committed source export', async () => {
+  const range = await makeRange();
+  const originalObject = await git(range.repo, 'rev-parse', `${range.headSha}:modified.txt`);
+  const evilPath = path.join(range.destinationRoot, 'evil-blob');
+  await fs.writeFile(evilPath, 'evil replacement\n');
+  const replacementObject = await git(range.repo, 'hash-object', '-w', evilPath);
+  await git(range.repo, 'replace', originalObject, replacementObject);
+  assert.equal(await git(range.repo, 'cat-file', 'blob', originalObject), 'evil replacement');
+  const before = await snapshotPrimary(range.repo);
+  const prepared = await prepareArcReviewInput(request(range));
+  assert.equal(await fs.readFile(path.join(prepared.sourceRoot, 'modified.txt'), 'utf8'), 'new\n');
+  const patch = await fs.readFile(prepared.diffPath, 'utf8');
+  assert.match(patch, /\+new/);
+  assert.doesNotMatch(patch, /evil replacement/);
+  assert.equal((await verifyArcReviewInput(prepared, limits)).state, 'unchanged');
+  await assertPrimarySame(before, range.repo);
 });
 
 test('rejects destination symlinks and all declared size/count bounds', async () => {
@@ -204,6 +296,26 @@ test('rejects destination symlinks and all declared size/count bounds', async ()
     assert.deepEqual(await fs.readdir(range.destinationRoot), []);
     await assertPrimarySame(before, range.repo);
   }
+});
+
+test('cat-file stdin EPIPE fails preparation and preserves primary state', async () => {
+  const fakeDirectory = await makeFakeGit();
+  const originalPath = process.env.PATH;
+  const range = await makeRange();
+  const before = await snapshotPrimary(range.repo);
+  try {
+    process.env.PATH = `${fakeDirectory}${path.delimiter}${originalPath}`;
+    process.env.ARC_FAKE_GIT_MODE = 'cat-epipe';
+    await assert.rejects(
+      () => prepareArcReviewInput(request(range, { limits: { ...limits, maxFiles: 40_000, maxTotalBytes: 8 * 1024 * 1024, maxGitOutputBytes: 4 * 1024 * 1024 } })),
+      (error) => { assert.match(error.message, /EPIPE/i); return true; },
+    );
+  } finally {
+    delete process.env.ARC_FAKE_GIT_MODE;
+    process.env.PATH = originalPath;
+  }
+  await assertPrimarySame(before, range.repo);
+  assert.deepEqual(await fs.readdir(range.destinationRoot), []);
 });
 
 test('rejects a single cat-file response that cannot fit its per-batch output bound', async () => {

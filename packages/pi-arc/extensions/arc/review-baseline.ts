@@ -28,7 +28,7 @@ function validateLimits(limits: ArcReviewLimits): void {
 async function runGit(repositoryRoot: string, args: string[], limits: ArcReviewLimits, allowedCodes: number[] = [0]) {
   const result = await runArcBoundedProcess({
     command: "git", args: [...GIT_PREFIX, ...args], cwd: repositoryRoot,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
     timeoutMs: 30_000, stopGraceMs: 250, killGraceMs: 1_000, maxOutputBytes: limits.maxGitOutputBytes,
   });
   if (!result.spawned || result.termination !== "observed" || result.timedOut || result.aborted ||

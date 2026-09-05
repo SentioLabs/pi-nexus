@@ -53,20 +53,32 @@ function validateInputPath(value: string, category = "Git path"): void {
   if (value.split("/").some((part) => part === "" || part === "." || part === "..")) throw new Error(`${category} contains a dot or empty segment`);
 }
 
+function portableCaselessKey(value: string): string {
+  // Unicode upper-then-lower expands multi-character forms and unifies variants
+  // such as final sigma without depending on the host filesystem or locale.
+  return value.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
+}
+
 function validatePathSet(paths: string[], category: string): void {
   const exact = new Set<string>();
-  const normalized = new Map<string, string>();
-  const folded = new Map<string, string>();
+  const normalizedPrefixes = new Map<string, string>();
+  const foldedPrefixes = new Map<string, string>();
   for (const value of paths) {
     validateInputPath(value, category);
     if (exact.has(value)) throw new Error(`${category} contains duplicate path: ${value}`);
     exact.add(value);
-    const normal = value.normalize("NFC");
-    if (normalized.has(normal) && normalized.get(normal) !== value) throw new Error(`${category} has a Unicode-normalization collision`);
-    normalized.set(normal, value);
-    const fold = normal.toLocaleLowerCase("en-US");
-    if (folded.has(fold) && folded.get(fold) !== value) throw new Error(`${category} has a platform case-fold collision`);
-    folded.set(fold, value);
+    const parts = value.split("/");
+    for (let length = 1; length <= parts.length; length += 1) {
+      const prefix = parts.slice(0, length).join("/");
+      const normal = prefix.normalize("NFC");
+      const normalizedExisting = normalizedPrefixes.get(normal);
+      if (normalizedExisting !== undefined && normalizedExisting !== prefix) throw new Error(`${category} has a Unicode-normalization collision`);
+      normalizedPrefixes.set(normal, prefix);
+      const fold = portableCaselessKey(normal);
+      const foldedExisting = foldedPrefixes.get(fold);
+      if (foldedExisting !== undefined && foldedExisting !== prefix) throw new Error(`${category} has a platform case-fold collision`);
+      foldedPrefixes.set(fold, prefix);
+    }
   }
   const ordered = [...paths].sort(rawSort);
   for (let index = 1; index < ordered.length; index += 1) {
@@ -77,7 +89,7 @@ function validatePathSet(paths: string[], category: string): void {
 async function runGitBytes(input: { repositoryRoot: string; args: string[]; stdin?: Uint8Array; maxOutputBytes: number; timeoutMs: number }): Promise<Uint8Array> {
   const result = await runArcBoundedProcess({
     command: "git", args: [...GIT_PREFIX, ...input.args], cwd: input.repositoryRoot,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
     ...(input.stdin ? { stdin: input.stdin } : {}), timeoutMs: input.timeoutMs,
     stopGraceMs: 250, killGraceMs: 1_000, maxOutputBytes: input.maxOutputBytes,
   });
@@ -225,7 +237,7 @@ async function validateCommit(repositoryRoot: string, value: string, label: stri
 async function requireAncestor(repositoryRoot: string, baseSha: string, headSha: string, limits: ArcReviewLimits): Promise<void> {
   const result = await runArcBoundedProcess({
     command: "git", args: [...GIT_PREFIX, "merge-base", "--is-ancestor", baseSha, headSha], cwd: repositoryRoot,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_EXTERNAL_DIFF: "", GIT_CONFIG_NOSYSTEM: "1", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
     timeoutMs: 30_000, stopGraceMs: 250, killGraceMs: 1_000, maxOutputBytes: limits.maxGitOutputBytes,
   });
   if (!result.spawned || result.termination !== "observed" || result.timedOut || result.stdoutTruncated || result.stderrTruncated || result.observationError) throw new Error("Git ancestor check failed");
@@ -442,6 +454,10 @@ export async function prepareArcReviewInput(input: {
 }): Promise<ArcPreparedReviewInput> {
   validateLimits(input.limits);
   const repositoryRoot = await fs.realpath(input.repositoryRoot);
+  const gitTopLevel = decodeText(await runGitBytes({
+    repositoryRoot, args: ["rev-parse", "--show-toplevel"], maxOutputBytes: input.limits.maxGitOutputBytes, timeoutMs: 30_000,
+  }), "repository root").replace(/\n$/, "");
+  if (!gitTopLevel || await fs.realpath(gitTopLevel) !== repositoryRoot) throw new Error("repositoryRoot must be the Git worktree root");
   await rejectSymlinkComponents(input.destinationRoot);
   const destinationRoot = await fs.realpath(input.destinationRoot);
   if (isWithin(repositoryRoot, destinationRoot) || isWithin(destinationRoot, repositoryRoot)) throw new Error("destinationRoot must be independent of the repository checkout");
