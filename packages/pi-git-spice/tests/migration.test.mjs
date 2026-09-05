@@ -1006,6 +1006,14 @@ test("registry segments use complete Unicode-whitespace-delimited tokens", () =>
   }
 });
 
+test("Unicode whitespace is not a standalone executable-code token boundary", () => {
+  for (const text of ["`\u00a0git-spice\u00a0`", "~~~text\n\u2003git-spice\u2003\n~~~"]) {
+    const result = auditSyntheticDetails(text);
+    assert.notEqual(result.status, 0, JSON.stringify(text));
+    assert.match(result.stderr, /unclassified git-spice subcommand|complete shell word/);
+  }
+});
+
 for (const [name, text, expectedLine] of [
   ["one crossed line", "``prefix\n/git-spice-stack\nsuffix``", 2],
   ["several crossed lines", "``prefix\n\n\n/git-spice-stack\n\n\nsuffix``", 4],
@@ -1237,6 +1245,18 @@ for (const [name, command] of [
   ["ordinary double-quote backslash", String.raw`git-spice --no-prompt branch create topic -m "literal\q"`],
   ["special double-quote backslashes", String.raw`git-spice --no-prompt branch create topic -m "cash:\$ tick:\` quote:\" slash:\\ done"`],
   ["line continuation", "git-spice --no-prompt log \\\nlong"],
+  ["ASCII tab separator", "git-spice\t--no-prompt\tlog\tlong"],
+  ["syntactic newline", "git-spice --no-prompt log long\n:"],
+  ["blank-delimited comment", "git-spice --no-prompt log long # ignored"],
+  ["NBSP remains inside an argument", "git-spice --no-prompt log long extra\u00a0tail"],
+  ["em-space remains inside an argument", "git-spice --no-prompt log long extra\u2003tail"],
+  ["vertical tab remains inside an argument", "git-spice --no-prompt log long extra\u000btail"],
+  ["form feed remains inside an argument", "git-spice --no-prompt log long extra\u000ctail"],
+  ["carriage return remains inside an argument", "git-spice --no-prompt log long extra\rtail"],
+  ["NBSP does not introduce a comment", "git-spice --no-prompt log long extra\u00a0#literal"],
+  ["continued line does not introduce a comment within a word", "git-spice --no-prompt log long extra\\\n#literal"],
+  ["ASCII IO number is redirection syntax", "git-spice --no-prompt log long 2</dev/null"],
+  ["Unicode digit is not an IO number", "git-spice --no-prompt log long ٢</dev/null"],
 ]) {
   test(`bounded lexer argv matches /bin/sh for accepted ${name}`, () => {
     const result = auditSyntheticDetails(command);
@@ -1245,6 +1265,14 @@ for (const [name, command] of [
     assert.deepEqual(occurrence.argv, actualPosixShellArgv(command));
   });
 }
+
+test("non-POSIX Unicode whitespace cannot split the git-spice command word", () => {
+  for (const whitespace of ["\u00a0", "\u2003", "\u000b", "\u000c", "\r"]) {
+    const result = auditSyntheticDetails(`prefix${whitespace}git-spice --no-prompt log long`);
+    assert.notEqual(result.status, 0, JSON.stringify(whitespace));
+    assert.match(result.stderr, /complete shell word|shell argv|unclassified git-spice subcommand/);
+  }
+});
 
 test("unsupported prefix expansion reports the affected occurrence location", () => {
   const result = auditSyntheticDetails([
@@ -1256,6 +1284,49 @@ test("unsupported prefix expansion reports the affected occurrence location", ()
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /prompts\/git-spice-stack\.md at line 3, column 9/);
   assert.match(result.stderr, /unsupported shell syntax.*parameter expansion/);
+});
+
+test("logical command indexing preserves lexical state from each Markdown region beginning", () => {
+  const cases = [
+    ["inline continued command word", "``evil\\\ngit-spice --no-prompt log long``", 2, 1, /complete shell word|shell argv/],
+    ["fenced continued command word", "~~~sh\nevil\\\ngit-spice --no-prompt log long\n~~~", 3, 1, /complete shell word|shell argv/],
+    ["inline redirection operand", "``echo > \\\ngit-spice --no-prompt log long``", 2, 1, /shell argv|complete shell word/],
+    ["fenced redirection operand", "```sh\necho > \\\ngit-spice --no-prompt log long\n```", 3, 1, /shell argv|complete shell word/],
+    ["inline unsupported expansion", "``$PREFIX \\\ngit-spice --no-prompt log long``", 2, 1, /unsupported shell syntax.*parameter expansion/],
+    ["fenced unsupported runner expansion", "~~~sh\n$RUNNER \\\n  git-spice --no-prompt log long\n~~~", 3, 3, /unsupported shell syntax.*parameter expansion/],
+    ["inline quote crossing a line", "``\"evil\ngit-spice --no-prompt log long``", 2, 1, /No closing quotation|complete shell word/],
+    ["fenced quote crossing a line", "~~~sh\n'evil\ngit-spice --no-prompt log long\n~~~", 3, 1, /No closing quotation|complete shell word/],
+  ];
+  for (const [name, text, line, column, diagnostic] of cases) {
+    const result = auditSyntheticDetails(text);
+    assert.notEqual(result.status, 0, `${name} unexpectedly passed`);
+    assert.match(result.stderr, new RegExp(`prompts/git-spice-stack\\.md at line ${line}, column ${column}`), name);
+    assert.match(result.stderr, diagnostic, name);
+  }
+});
+
+test("logical command state failures roll back generated installation without debris", () => {
+  for (const snippet of [
+    "``evil\\\ngit-spice --no-prompt log long``",
+    "```sh\necho > \\\ngit-spice --no-prompt log long\n```",
+    "``$PREFIX \\\ngit-spice --no-prompt log long``",
+    "~~~sh\n'evil\ngit-spice --no-prompt log long\n~~~",
+  ]) {
+    assertDiscoveryFailureBeforeMutation(snippet, /malformed executable occurrence/);
+  }
+});
+
+test("physical newline ends a shell comment even when its final character is a backslash", () => {
+  for (const text of [
+    "``# comment \\\ngit-spice --no-prompt log long``",
+    "~~~sh\n# comment \\\ngit-spice --no-prompt log long\n~~~",
+  ]) {
+    const result = auditSyntheticDetails(text);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout).map(({ argv }) => argv), [
+      ["git-spice", "--no-prompt", "log", "long"],
+    ]);
+  }
 });
 
 test("approved placeholder words remain literal authoritative argv", () => {
@@ -1550,6 +1621,10 @@ for (const [name, globalArguments, expectedPass, expectedDiagnostic] of [
   ["no-prompt then prompt=false", "--no-prompt --prompt=false", true, null],
   ["no-prompt then prompt=true", "--no-prompt --prompt=true", false, /prompting must be disabled by final effective state/],
   ["prompt=false without no-prompt", "--prompt=false", false, /explicit --no-prompt/],
+  ["negative assignment disables prompting", "--no-prompt=true", true, null],
+  ["negative assignment enables prompting", "--no-prompt=true --no-prompt=false", false, /prompting must be disabled by final effective state/],
+  ["negative assignments end disabled", "--no-prompt=false --no-prompt=true", true, null],
+  ["false negative assignment does not satisfy explicit no-prompt", "--no-prompt=false --prompt=false", false, /explicit --no-prompt/],
   ["malformed empty prompt value", "--no-prompt --prompt=", false, /malformed prompt value/],
   ["malformed unknown prompt value", "--no-prompt --prompt=future", false, /malformed prompt value/],
   ["malformed repeated assignment", "--no-prompt --prompt=true=false", false, /malformed prompt value/],
@@ -1565,6 +1640,57 @@ for (const [name, globalArguments, expectedPass, expectedDiagnostic] of [
 
 test("ordered prompt state remains removable when interspersed with command arguments", () => {
   assertSourceMigrationPasses("`git-spice --prompt log --no-prompt long`");
+});
+
+const orderedSafetyStateCases = [
+  ["rebase no-edit then edit", "git-spice --no-prompt rebase continue --no-edit --edit", false, /final edit state must disable editing/],
+  ["rebase edit then no-edit", "git-spice --no-prompt rebase continue --edit --no-edit", true, null],
+  ["rebase positive assignment disables edit", "git-spice --no-prompt rebase continue --edit=false", true, null],
+  ["rebase negative assignment enables edit", "git-spice --no-prompt rebase continue --no-edit=false", false, /final edit state must disable editing/],
+  ["rebase negative assignment disables edit", "git-spice --no-prompt rebase continue --no-edit=true", true, null],
+  ["rebase malformed edit assignment", "git-spice --no-prompt rebase continue --edit=future", false, /malformed edit value/],
+  ["rebase option terminator blocks no-edit", "git-spice --no-prompt rebase continue --edit -- --no-edit", false, /final edit state must disable editing/],
+  ["branch no-commit then commit", "git-spice --no-prompt branch create topic --no-commit --commit", false, /commit mode.*editor|final commit mode/],
+  ["branch commit then no-commit", "git-spice --no-prompt branch create topic --commit --no-commit", true, null],
+  ["branch commit assignments end disabled", "git-spice --no-prompt bc topic --commit=true --commit=false", true, null],
+  ["branch negative commit assignment ends enabled", "git-spice --no-prompt bc topic --no-commit=false", false, /commit mode.*editor|final commit mode/],
+  ["branch malformed commit assignment", "git-spice --no-prompt bc topic --commit=future", false, /malformed commit value/],
+  ["branch long message assignment", "git-spice --no-prompt branch create topic --message=message", true, null],
+  ["branch attached short message", "git-spice --no-prompt bc topic -mmessage", true, null],
+  ["branch message file assignment", "git-spice --no-prompt branch create topic --message-file=message.txt", true, null],
+  ["branch attached short message file", "git-spice --no-prompt bc topic -Fmessage.txt", true, null],
+  ["branch message cannot override no-commit intent", "git-spice --no-prompt branch create topic --no-commit -m message", false, /message.*no-commit|unintended commit/],
+  ["branch no-commit cannot override message implication", "git-spice --no-prompt branch create topic -m message --no-commit", false, /message.*no-commit|unintended commit/],
+  ["branch all mode still needs non-editor commit mode", "git-spice --no-prompt branch create topic --all", false, /commit mode.*editor|populated or clean-tree mode/],
+  ["branch redirection cannot provide message", "git-spice --no-prompt branch create topic > --message=message", false, /commit mode.*editor|populated or clean-tree mode/],
+  ["submit update then no-update is create-capable", "git-spice --no-prompt stack submit --update-only --no-update-only", false, /explicit final draft state/],
+  ["submit no-update then update is update-only", "git-spice --no-prompt stack submit --no-update-only --update-only", true, null],
+  ["submit short update then no-update is create-capable", "git-spice --no-prompt ss -u --no-update-only", false, /explicit final draft state/],
+  ["submit disabled update with final draft", "git-spice --no-prompt ss --update-only --no-update-only --draft", true, null],
+  ["submit update assignment ends enabled", "git-spice --no-prompt ss --no-update-only=false", true, null],
+  ["submit update assignment ends disabled", "git-spice --no-prompt ss --update-only=false", false, /explicit final draft state/],
+  ["submit malformed update assignment", "git-spice --no-prompt ss --update-only=future", false, /malformed update-only value/],
+  ["submit positive draft assignment", "git-spice --no-prompt stack submit --draft=false", true, null],
+  ["submit negative draft assignment", "git-spice --no-prompt stack submit --no-draft=false", true, null],
+  ["submit malformed draft assignment", "git-spice --no-prompt stack submit --draft=future", false, /malformed draft value/],
+  ["submit both draft orderings stay explicit", "git-spice --no-prompt stack submit --draft --no-draft", true, null],
+  ["submit reverse draft ordering stays explicit", "git-spice --no-prompt stack submit --no-draft --draft", true, null],
+  ["submit terminator blocks later update-only", "git-spice --no-prompt stack submit -- --update-only", false, /explicit final draft state/],
+  ["submit redirection blocks later draft", "git-spice --no-prompt stack submit > --draft", false, /explicit final draft state/],
+];
+
+test("negatable safety options use their final effective CLI state", () => {
+  for (const [name, command, expectedPass, diagnostic] of orderedSafetyStateCases) {
+    const result = auditSyntheticDetails(`Ordered state fixture: \`${command}\`.`);
+    if (expectedPass) {
+      assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+      continue;
+    }
+    assert.notEqual(result.status, 0, `${name} unexpectedly passed`);
+    assert.match(result.stderr, /prompts\/git-spice-stack\.md at line 1, column \d+/, name);
+    assert.match(result.stderr, diagnostic, name);
+    assertGeneratedArgvFailureBeforeMutation(command, diagnostic);
+  }
 });
 
 for (const signature of ["repo sync", "rs"]) {

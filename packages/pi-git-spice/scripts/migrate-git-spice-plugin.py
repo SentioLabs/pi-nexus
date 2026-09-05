@@ -545,9 +545,9 @@ def make_rebase_continuations_noninteractive(text: str, context: str) -> str:
 
 def split_command_comment(arguments: str) -> tuple[str, str]:
     marker = arguments.find("#")
-    if marker == -1 or (marker > 0 and not arguments[marker - 1].isspace()):
-        return arguments.strip(), ""
-    return arguments[:marker].strip(), " # " + arguments[marker + 1:].strip()
+    if marker == -1 or (marker > 0 and arguments[marker - 1] not in " \t"):
+        return arguments.strip(" \t"), ""
+    return arguments[:marker].strip(" \t"), " # " + arguments[marker + 1:].strip()
 
 
 def make_branch_creations_explicit(text: str, context: str) -> str:
@@ -1075,9 +1075,9 @@ def _partition_fenced_regions(text: str) -> list[MarkdownRegion]:
 
 
 def _trimmed_content_is_git_spice(text: str, start: int, end: int) -> bool:
-    while start < end and text[start].isspace():
+    while start < end and text[start] in " \t\r\n":
         start += 1
-    while end > start and text[end - 1].isspace():
+    while end > start and text[end - 1] in " \t\r\n":
         end -= 1
     return end - start == len("git-spice") and text.startswith("git-spice", start, end)
 
@@ -1329,9 +1329,8 @@ def _redirection_operator(text: str, index: int, end: int) -> str | None:
 def _index_shell_commands(
     text: str,
     region: MarkdownRegion,
-    start: int,
 ) -> tuple[list[ShellCommandSegment], int]:
-    """Tokenize one occurrence-bearing logical line once into shell command segments."""
+    """Tokenize a complete Markdown region into ordered shell command segments."""
     segments = []
     words = []
     word_parts = []
@@ -1339,7 +1338,7 @@ def _index_shell_commands(
     word_is_plain = True
     discard_word = False
     needs_redirection_operand = False
-    index = max(region.content_start, start)
+    index = region.content_start
     end = region.content_end
     segment_start = index
     line_error = None
@@ -1349,6 +1348,19 @@ def _index_shell_commands(
         nonlocal line_error
         if line_error is None:
             line_error = (offset, detail)
+
+    def paste_wrapper_end_at(line_start: int) -> int | None:
+        if not text.startswith("<paste ", line_start, end):
+            return None
+        line_end = text.find("\n", line_start, end)
+        if line_end == -1:
+            line_end = end
+        trimmed_line_end = line_end
+        while trimmed_line_end > line_start and text[trimmed_line_end - 1] in " \t":
+            trimmed_line_end -= 1
+        if trimmed_line_end > line_start and text[trimmed_line_end - 1] == ">":
+            return trimmed_line_end - 1
+        return None
 
     def begin_word(start: int) -> None:
         nonlocal discard_word, needs_redirection_operand, word_start
@@ -1367,7 +1379,7 @@ def _index_shell_commands(
         discard_word = False
 
     def finish_segment(segment_end: int) -> None:
-        nonlocal needs_redirection_operand, segment_start, words
+        nonlocal needs_redirection_operand, words
         finish_word(segment_end)
         if needs_redirection_operand:
             record_error("shell redirection requires an operand", segment_end)
@@ -1401,17 +1413,14 @@ def _index_shell_commands(
             word_is_plain = False
             index += 2
             continue
-        if character in "\r\n":
+        if character == "\n":
             finish_segment(index)
-            if character == "\r" and index + 1 < end and text[index + 1] == "\n":
-                index += 2
-            else:
-                index += 1
+            index += 1
             segment_start = index
             line_error = None
             wrapper_end = None
-            break
-        if character.isspace():
+            continue
+        if character in " \t":
             finish_word(index)
             index += 1
             continue
@@ -1427,13 +1436,24 @@ def _index_shell_commands(
                 segment_start = index
                 line_error = None
                 wrapper_end = None
-            break
+            continue
         if character in {"'", '"'}:
             begin_word(index)
             word_is_plain = False
             quote = character
+            quote_reset_at_wrapper = False
             index += 1
             while index < end and text[index] != quote:
+                if text[index] == "\n" and paste_wrapper_end_at(index + 1) is not None:
+                    # A validated <paste ...> line starts its own executable template region.
+                    record_error("No closing quotation", index)
+                    finish_segment(index)
+                    index += 1
+                    segment_start = index
+                    line_error = None
+                    wrapper_end = None
+                    quote_reset_at_wrapper = True
+                    break
                 if quote == '"' and text[index] == "$":
                     record_error(_shell_expansion_error(text, index, end), index)
                     word_parts.append("$")
@@ -1463,6 +1483,8 @@ def _index_shell_commands(
                     continue
                 word_parts.append(text[index])
                 index += 1
+            if quote_reset_at_wrapper:
+                continue
             if index >= end:
                 record_error("No closing quotation", index)
                 continue
@@ -1489,7 +1511,7 @@ def _index_shell_commands(
                 word_start is None
                 and (
                     placeholder.end() == end
-                    or text[placeholder.end()].isspace()
+                    or text[placeholder.end()] in " \t\n;&|()<>"
                 )
             )
             if not optional_name or optional_name_is_standalone:
@@ -1498,15 +1520,10 @@ def _index_shell_commands(
                 word_is_plain = False
                 index = placeholder.end()
                 continue
-        if character == "<" and word_start is None and not words and text.startswith("<paste ", index, end):
-            line_end = text.find("\n", index, end)
-            if line_end == -1:
-                line_end = end
-            trimmed_line_end = line_end
-            while trimmed_line_end > index and text[trimmed_line_end - 1].isspace():
-                trimmed_line_end -= 1
-            if trimmed_line_end > index and text[trimmed_line_end - 1] == ">":
-                wrapper_end = trimmed_line_end - 1
+        if character == "<" and word_start is None and not words:
+            paste_wrapper_end = paste_wrapper_end_at(index)
+            if paste_wrapper_end is not None:
+                wrapper_end = paste_wrapper_end
                 index += 1
                 segment_start = index
                 continue
@@ -1529,7 +1546,11 @@ def _index_shell_commands(
                 record_error("shell redirection requires an operand", index)
                 needs_redirection_operand = False
             if word_start is not None:
-                io_number = word_is_plain and bool(word_parts) and all(part.isdigit() for part in word_parts)
+                io_number = (
+                    word_is_plain
+                    and bool(word_parts)
+                    and all("0" <= character <= "9" for part in word_parts for character in part)
+                )
                 finish_word(index)
                 if io_number:
                     words.pop()
@@ -1559,6 +1580,8 @@ def _index_shell_commands(
             else:
                 index += 1
             segment_start = index
+            line_error = None
+            wrapper_end = None
             continue
         if character in "{}":
             record_error("unsupported shell syntax: brace expansion", index)
@@ -1581,98 +1604,96 @@ def _indexed_invocations(
     region: MarkdownRegion,
     occurrences: list[GitSpiceOccurrence],
 ) -> dict[int, list[str]]:
-    invocations = {}
     executable_occurrences = [
         occurrence for occurrence in occurrences
         if occurrence.classification == "executable"
     ]
-    executable_index = 0
+    segments, scope_end = _index_shell_commands(text, region)
+    if scope_end <= region.content_start:
+        raise ShellOccurrenceError(
+            "unclassified git-spice subcommand: empty shell command scope",
+            executable_occurrences[0],
+        )
+
+    invocations = {}
     occurrence_index = 0
-    while executable_index < len(executable_occurrences):
-        first_executable = executable_occurrences[executable_index]
-        scope_start = max(region.content_start, first_executable.physical_line_start)
-        segments, scope_end = _index_shell_commands(text, region, scope_start)
-        if scope_end <= scope_start:
-            raise ShellOccurrenceError(
-                "unclassified git-spice subcommand: empty shell command scope",
-                first_executable,
-            )
-
-        while occurrence_index < len(occurrences) and occurrences[occurrence_index].start < scope_start:
+    for segment in segments:
+        while occurrence_index < len(occurrences) and occurrences[occurrence_index].start < segment.start:
             occurrence_index += 1
-        scope_occurrence_end = occurrence_index
-        while scope_occurrence_end < len(occurrences) and occurrences[scope_occurrence_end].start < scope_end:
-            scope_occurrence_end += 1
-        scoped_occurrences = occurrences[occurrence_index:scope_occurrence_end]
-        scoped_index = 0
-
-        for segment in segments:
-            while scoped_index < len(scoped_occurrences) and scoped_occurrences[scoped_index].start < segment.start:
-                scoped_index += 1
-            segment_occurrence_end = scoped_index
-            while (
-                segment_occurrence_end < len(scoped_occurrences)
-                and scoped_occurrences[segment_occurrence_end].start < segment.end
-            ):
-                segment_occurrence_end += 1
-            segment_occurrences = scoped_occurrences[scoped_index:segment_occurrence_end]
-            scoped_index = segment_occurrence_end
-            if not segment_occurrences:
-                continue
-
-            mapped = []
-            word_index = 0
-            for occurrence in segment_occurrences:
-                while word_index < len(segment.words) and segment.words[word_index].end <= occurrence.start:
-                    word_index += 1
-                if (
-                    word_index < len(segment.words)
-                    and segment.words[word_index].start <= occurrence.start
-                    and occurrence.end <= segment.words[word_index].end
-                ):
-                    mapped.append((occurrence, word_index))
-
-            segment_executables = [
-                occurrence for occurrence in segment_occurrences
-                if occurrence.classification == "executable"
-            ]
-            if segment_executables and segment.error is not None:
-                offset, detail = segment.error
-                raise ShellSyntaxError(detail, offset, segment.start)
-            if segment_executables and len(mapped) > 1:
-                raise ShellOccurrenceError(
-                    "multiple git-spice occurrences in one shell command argv",
-                    segment_executables[0],
-                )
-            mapped_by_start = {occurrence.start: index for occurrence, index in mapped}
-            for occurrence in segment_executables:
-                invocation_word_index = mapped_by_start.get(occurrence.start)
-                if invocation_word_index is None:
-                    raise ShellOccurrenceError(
-                        "unclassified git-spice subcommand: occurrence is not shell argv",
-                        occurrence,
-                    )
-                invocation_word = segment.words[invocation_word_index]
-                if not invocation_word.in_argv or invocation_word.value != "git-spice":
-                    raise ShellOccurrenceError(
-                        "unclassified git-spice subcommand: occurrence is not a complete shell word",
-                        occurrence,
-                    )
-                invocations[occurrence.start] = [
-                    "git-spice",
-                    *(
-                        word.value for word in segment.words[invocation_word_index + 1:]
-                        if word.in_argv
-                    ),
-                ]
-
-        occurrence_index = scope_occurrence_end
+        segment_occurrence_end = occurrence_index
         while (
-            executable_index < len(executable_occurrences)
-            and executable_occurrences[executable_index].start < scope_end
+            segment_occurrence_end < len(occurrences)
+            and occurrences[segment_occurrence_end].start < segment.end
         ):
-            executable_index += 1
+            segment_occurrence_end += 1
+        segment_occurrences = occurrences[occurrence_index:segment_occurrence_end]
+        occurrence_index = segment_occurrence_end
+        if not segment_occurrences:
+            continue
+
+        mapped = []
+        word_index = 0
+        for occurrence in segment_occurrences:
+            while word_index < len(segment.words) and segment.words[word_index].end <= occurrence.start:
+                word_index += 1
+            if (
+                word_index < len(segment.words)
+                and segment.words[word_index].start <= occurrence.start
+                and occurrence.end <= segment.words[word_index].end
+            ):
+                mapped.append((occurrence, word_index))
+
+        segment_executables = [
+            occurrence for occurrence in segment_occurrences
+            if occurrence.classification == "executable"
+        ]
+        if segment_executables and segment.error is not None:
+            offset, detail = segment.error
+            raise ShellSyntaxError(detail, offset, segment.start)
+        if segment_executables and len(mapped) > 1:
+            raise ShellOccurrenceError(
+                "multiple git-spice occurrences in one shell command argv",
+                segment_executables[0],
+            )
+        mapped_by_start = {occurrence.start: index for occurrence, index in mapped}
+        for occurrence in segment_executables:
+            invocation_word_index = mapped_by_start.get(occurrence.start)
+            if invocation_word_index is None:
+                raise ShellOccurrenceError(
+                    "unclassified git-spice subcommand: occurrence is not shell argv",
+                    occurrence,
+                )
+            invocation_word = segment.words[invocation_word_index]
+            if not invocation_word.in_argv or invocation_word.value != "git-spice":
+                raise ShellOccurrenceError(
+                    "unclassified git-spice subcommand: occurrence is not a complete shell word",
+                    occurrence,
+                )
+            invocations[occurrence.start] = [
+                "git-spice",
+                *(
+                    word.value for word in segment.words[invocation_word_index + 1:]
+                    if word.in_argv
+                ),
+            ]
     return invocations
+
+
+def _boolean_option_state(argument: str, name: str) -> bool | None:
+    positive = f"--{name}"
+    negative = f"--no-{name}"
+    if argument == positive:
+        return True
+    if argument == negative:
+        return False
+    for prefix, negated in ((positive + "=", False), (negative + "=", True)):
+        if argument.startswith(prefix):
+            value = argument.removeprefix(prefix)
+            if value not in {"true", "false"}:
+                raise ValueError(f"malformed {name} value: {value!r}")
+            enabled = value == "true"
+            return not enabled if negated else enabled
+    return None
 
 
 def parse_git_spice_arguments(arguments: list[str]) -> tuple[list[str], bool, bool]:
@@ -1685,24 +1706,13 @@ def parse_git_spice_arguments(arguments: list[str]) -> tuple[list[str], bool, bo
         if argument == "--":
             command_arguments.extend(arguments[index:])
             break
-        if argument == "--no-prompt":
-            saw_no_prompt = True
-            effective_prompt = False
+        prompt_state = _boolean_option_state(argument, "prompt")
+        if prompt_state is not None:
+            if argument == "--no-prompt" or argument == "--no-prompt=true":
+                saw_no_prompt = True
+            effective_prompt = prompt_state
             index += 1
             continue
-        if argument == "--prompt":
-            effective_prompt = True
-            index += 1
-            continue
-        if argument.startswith("--prompt="):
-            value = argument.removeprefix("--prompt=")
-            if value not in {"true", "false"}:
-                raise ValueError(f"malformed prompt value: {value!r}")
-            effective_prompt = value == "true"
-            index += 1
-            continue
-        if argument.startswith("--no-prompt="):
-            raise ValueError(f"malformed prompt value: {argument!r}")
         if argument in GLOBAL_FLAG_OPTIONS or re.fullmatch(r"--verbose=\S+", argument):
             index += 1
             continue
@@ -1734,15 +1744,44 @@ def _arguments_before_option_terminator(arguments: list[str]) -> list[str]:
         return arguments
 
 
-def has_message_argument(arguments: list[str]) -> bool:
-    for index, argument in enumerate(arguments):
-        if argument == "-m" and index + 1 < len(arguments) and arguments[index + 1]:
-            return True
-        if argument == "--message" and index + 1 < len(arguments) and arguments[index + 1]:
-            return True
-        if argument.startswith("--message=") and argument != "--message=":
-            return True
-    return "--no-commit" in arguments
+def _branch_creation_has_message(arguments: list[str]) -> bool:
+    has_message = False
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument in {"-m", "--message", "-F", "--message-file"}:
+            if index + 1 >= len(arguments) or not arguments[index + 1] or arguments[index + 1].startswith("-"):
+                raise ValueError(f"branch creation option {argument!r} requires a non-empty value")
+            has_message = True
+            index += 2
+            continue
+        if argument.startswith("--message=") or argument.startswith("--message-file="):
+            if not argument.partition("=")[2]:
+                raise ValueError(f"branch creation option {argument.partition('=')[0]!r} requires a non-empty value")
+            has_message = True
+        elif (argument.startswith("-m") or argument.startswith("-F")) and len(argument) > 2:
+            value = argument[2:].removeprefix("=")
+            if not value:
+                raise ValueError(f"branch creation option {argument[:2]!r} requires a non-empty value")
+            has_message = True
+        index += 1
+    return has_message
+
+
+def _final_boolean_option_state(
+    arguments: list[str],
+    name: str,
+    positive_aliases: tuple[str, ...] = (),
+) -> bool | None:
+    state = None
+    for argument in arguments:
+        if argument in positive_aliases:
+            state = True
+            continue
+        option_state = _boolean_option_state(argument, name)
+        if option_state is not None:
+            state = option_state
+    return state
 
 
 def validate_git_spice_invocation(raw_arguments: list[str], path: Path) -> None:
@@ -1758,10 +1797,23 @@ def validate_git_spice_invocation(raw_arguments: list[str], path: Path) -> None:
             raise ValueError("repo init requires an explicit trunk")
         if not any(re.fullmatch(r"--remote=<[^>]+>", argument) for argument in policy_arguments):
             raise ValueError("repo init requires an explicit remote")
-    if signature in {("branch", "create"), ("bc",)} and not has_message_argument(policy_arguments):
-        raise ValueError("branch creation requires a populated or clean-tree mode")
-    if signature in {("rebase", "continue"), ("rbc",)} and "--no-edit" not in policy_arguments:
-        raise ValueError("rebase continuation requires --no-edit")
+    if signature in {("branch", "create"), ("bc",)}:
+        commit_state = _final_boolean_option_state(policy_arguments, "commit")
+        has_message = _branch_creation_has_message(policy_arguments)
+        if commit_state is False and has_message:
+            raise ValueError("branch creation message mode conflicts with --no-commit and could create an unintended commit")
+        if commit_state is not False and not has_message:
+            raise ValueError(
+                "branch creation requires a populated or clean-tree mode; "
+                "final commit mode could open an editor without a message or final --no-commit"
+            )
+    if signature in {("rebase", "continue"), ("rbc",)}:
+        edit_state = _final_boolean_option_state(policy_arguments, "edit")
+        if edit_state is not False:
+            raise ValueError(
+                "rebase continuation final edit state must disable editing with --no-edit; "
+                f"observed={edit_state!r}"
+            )
     if signature in {
         ("branch", "submit"),
         ("upstack", "submit"),
@@ -1772,9 +1824,16 @@ def validate_git_spice_invocation(raw_arguments: list[str], path: Path) -> None:
         ("dss",),
         ("uss",),
         ("ss",),
-    } and "--update-only" not in policy_arguments:
-        if not any(argument in {"--draft", "--no-draft", "<draft-flag>"} for argument in policy_arguments):
-            raise ValueError("create-capable submit requires an explicit draft state")
+    }:
+        update_only_state = _final_boolean_option_state(
+            policy_arguments,
+            "update-only",
+            positive_aliases=("-u",),
+        )
+        draft_state = _final_boolean_option_state(policy_arguments, "draft")
+        has_draft_placeholder = "<draft-flag>" in policy_arguments
+        if update_only_state is not True and draft_state is None and not has_draft_placeholder:
+            raise ValueError("create-capable submit requires an explicit final draft state")
     if path.as_posix() == "agents/stack-doctor.md":
         required_tracking_targets = {
             ("branch", "track"): "<branch>",

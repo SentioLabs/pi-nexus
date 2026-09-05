@@ -86,6 +86,18 @@ const auditSyntheticCases = (cases) => {
   return JSON.parse(result.stdout);
 };
 
+const actualPosixShellArgv = (command) => {
+  const capture = [
+    "git-spice() {",
+    "  python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' \"$@\"",
+    "}",
+    command,
+  ].join("\n");
+  const result = spawnSync("/bin/sh", ["-c", capture], { encoding: "utf8" });
+  assert.equal(result.status, 0, `${JSON.stringify(command)}\n${result.stderr}`);
+  return ["git-spice", ...JSON.parse(result.stdout)];
+};
+
 const expectedStructuralReasons = new Set([
   "exact registered git-spice prompt identifier",
   "exact registered git-spice agent identifier",
@@ -295,6 +307,85 @@ test("package contract independently locks ordered prompt and restack policy out
   assert.match(results[3].error, /explicit --no-prompt/);
   assert.match(results[5].error, /restack/);
   assert.match(results[7].error, /restack/);
+});
+
+test("package contract independently locks every ordered negatable safety state", () => {
+  const cases = [
+    { text: "`git-spice --no-prompt rebase continue --no-edit --edit`", ok: false },
+    { text: "`git-spice --no-prompt rbc --edit --no-edit`", ok: true },
+    { text: "`git-spice --no-prompt rbc --edit=false`", ok: true },
+    { text: "`git-spice --no-prompt rbc --no-edit=false`", ok: false },
+    { text: "`git-spice --no-prompt branch create topic --no-commit --commit`", ok: false },
+    { text: "`git-spice --no-prompt bc topic --commit --no-commit`", ok: true },
+    { text: "`git-spice --no-prompt bc topic --no-commit=false`", ok: false },
+    { text: "`git-spice --no-prompt bc topic --message=message`", ok: true },
+    { text: "`git-spice --no-prompt bc topic -Fmessage.txt`", ok: true },
+    { text: "`git-spice --no-prompt bc topic --no-commit -m message`", ok: false },
+    { text: "`git-spice --no-prompt stack submit --update-only --no-update-only`", ok: false },
+    { text: "`git-spice --no-prompt ss --no-update-only --update-only`", ok: true },
+    { text: "`git-spice --no-prompt ss -u --no-update-only --draft=false`", ok: true },
+    { text: "`git-spice --no-prompt ss --update-only=false`", ok: false },
+    { text: "`git-spice --no-prompt ss --no-update-only=false`", ok: true },
+    { text: "`git-spice --no-prompt ss --no-draft=false`", ok: true },
+    { text: "`git-spice --no-prompt ss --draft --no-draft`", ok: true },
+    { text: "`git-spice --no-prompt ss --no-draft --draft`", ok: true },
+  ];
+  const results = auditSyntheticCases(cases);
+  assert.deepEqual(results.map(({ ok }) => ok), cases.map(({ ok }) => ok));
+  assert.match(results[0].error, /final edit state must disable editing/);
+  assert.match(results[4].error, /commit mode.*editor|final commit mode/);
+  assert.match(results[9].error, /message.*no-commit|unintended commit/);
+  assert.match(results[10].error, /explicit final draft state/);
+  assert.match(results[13].error, /explicit final draft state/);
+});
+
+test("package contract indexes each logical command from the Markdown region beginning", () => {
+  const cases = [
+    { text: "``evil\\\ngit-spice --no-prompt log long``" },
+    { text: "~~~sh\necho > \\\ngit-spice --no-prompt log long\n~~~" },
+    { text: "``$PREFIX \\\ngit-spice --no-prompt log long``" },
+    { text: "~~~sh\n'evil\ngit-spice --no-prompt log long\n~~~" },
+  ];
+  const results = auditSyntheticCases(cases);
+  assert.ok(results.every(({ ok }) => !ok), JSON.stringify(results));
+  for (const result of results) {
+    assert.match(result.error, /prompts\/git-spice-stack\.md.*line \d+, column \d+/);
+    assert.match(result.error, /malformed executable occurrence/);
+  }
+});
+
+test("package shell lexer uses POSIX blanks and ASCII IO-number digits", () => {
+  const commands = [
+    "git-spice\t--no-prompt\tlog\tlong",
+    "git-spice --no-prompt log long\n:",
+    "git-spice --no-prompt log long # ignored",
+    "git-spice --no-prompt log long extra\u00a0tail",
+    "git-spice --no-prompt log long extra\u2003tail",
+    "git-spice --no-prompt log long extra\u000btail",
+    "git-spice --no-prompt log long extra\u000ctail",
+    "git-spice --no-prompt log long extra\rtail",
+    "git-spice --no-prompt log long extra\u00a0#literal",
+    "git-spice --no-prompt log long 2</dev/null",
+    "git-spice --no-prompt log long ٢</dev/null",
+  ];
+  const results = auditSyntheticCases(commands.map((text) => ({ text })));
+  for (const [index, result] of results.entries()) {
+    assert.equal(result.ok, true, `${JSON.stringify(commands[index])}: ${result.error}`);
+    assert.deepEqual(result.argv, [actualPosixShellArgv(commands[index])], commands[index]);
+  }
+});
+
+test("only registry segmentation treats Unicode whitespace as a token boundary", () => {
+  const results = auditSyntheticCases([
+    { text: "prefix\u00a0(/git-spice-init)\u2003suffix" },
+    { text: "`\u00a0git-spice\u00a0`" },
+    { text: "~~~text\n\u2003git-spice\u2003\n~~~" },
+  ]);
+  assert.deepEqual(results[0], { ok: true, argv: [] });
+  for (const result of results.slice(1)) {
+    assert.equal(result.ok, false);
+    assert.match(result.error, /unclassified git-spice subcommand|complete shell word/);
+  }
 });
 
 test("shell redirections and post-terminator flags cannot launder any safety policy", () => {
