@@ -681,6 +681,20 @@ const assertDiscoveryFailureBeforeMutation = (snippet, diagnostic = null) => {
   assertRollback(packageCopy.root, sentinels);
 };
 
+test("unmanifested plain safe command is executable without shell-position inference", () => {
+  const { result } = runUnsafeSourceMigration("Run git-spice --no-prompt log long");
+  assert.equal(result.status, 0, result.stderr);
+});
+
+for (const snippet of [
+  "arbitrary words git-spice future mutate",
+  "git-spice tracks branches",
+]) {
+  test(`unmanifested plain occurrence reaches command validation: ${JSON.stringify(snippet)}`, () => {
+    assertDiscoveryFailureBeforeMutation(snippet, /unclassified git-spice subcommand/);
+  });
+}
+
 for (const [name, snippet] of unsafeContextCases) {
   test(`whole-document inventory rejects unsafe ${name} context before mutation`, () => {
     assertDiscoveryFailureBeforeMutation(snippet);
@@ -828,6 +842,70 @@ const auditSyntheticText = (text) => {
   return spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
 };
 
+const auditSyntheticDetails = (text) => {
+  const packageCopy = createTemporaryPackage();
+  const python = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    `text = ${JSON.stringify(text)}`,
+    "module.PROSE_REFERENCE_MANIFEST = {target: () for _, target in module.RUNTIME_MANIFEST}",
+    "occurrences = module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), text)",
+    "print(json.dumps([{'classification': item.classification, 'reason': item.reason, 'argv': item.argv, 'line': item.line, 'column': item.column, 'region': item.region.kind, 'regionStart': item.region.start, 'regionEnd': item.region.end} for item in occurrences]))",
+  ].join("\n");
+  return spawnSync("python3", ["-B", "-c", python, packageCopy.script], { cwd: packageCopy.root, encoding: "utf8" });
+};
+
+const identifierKinds = [
+  ["prompt", "/git-spice-init", "exact registered git-spice prompt identifier"],
+  ["agent", "git-spice.stacker", "exact registered git-spice agent identifier"],
+  ["upstream", "abhinav/git-spice#1050", "exact registered git-spice upstream identifier"],
+];
+const directionalWrapperPairs = [
+  ['"', '"'], ["'", "'"], ["`", "`"], ["*", "*"], ["_", "_"],
+  ["~", "~"], ["(", ")"], ["[", "]"], ["{", "}"], ["<", ">"],
+];
+
+for (const [kind, identifier, expectedReason] of identifierKinds) {
+  for (const wrapperLength of [1, 7, 1024]) {
+    test(`whole-token normalization accepts ${kind} identifiers with ${wrapperLength} directional edge wrappers`, () => {
+      for (const [leading, trailing] of directionalWrapperPairs) {
+        const text = `See ${leading.repeat(wrapperLength)}${identifier}${trailing.repeat(wrapperLength)}`;
+        const result = auditSyntheticText(text);
+        assert.equal(result.status, 0, `${JSON.stringify(text)}\n${result.stderr}`);
+        assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);
+      }
+      for (const trailing of [".", ",", ";", ":", "!", "?"]) {
+        const text = `${identifier}${trailing.repeat(wrapperLength)}`;
+        const result = auditSyntheticText(text);
+        assert.equal(result.status, 0, `${JSON.stringify(text)}\n${result.stderr}`);
+        assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);
+      }
+    });
+  }
+}
+
+for (const [kind, identifier] of identifierKinds) {
+  test(`whole-token normalization rejects laundering around ${kind} identifiers`, () => {
+    for (const leading of ["!", ";", ":", "?", "&&", "||", "λ"]) {
+      assertDiscoveryFailureBeforeMutation(`See ${leading}${identifier}`, /unclassified git-spice subcommand/);
+    }
+    for (const nearMiss of [
+      `${identifier}attached`,
+      `${identifier}/attached`,
+      `${identifier}.tail`,
+      `${identifier}#tail`,
+      `evil${identifier}`,
+      `)${identifier}(`,
+      `)))))))${identifier}(((((((`,
+      `${")".repeat(1024)}${identifier}${"(".repeat(1024)}`,
+    ]) {
+      assertDiscoveryFailureBeforeMutation(`See ${nearMiss}`, /unclassified git-spice subcommand/);
+    }
+  });
+}
+
 for (const [name, text, expectedReason] of [
   ["prompt continue", "Use /git-spice-continue.", "exact registered git-spice prompt identifier"],
   ["prompt init", "Use /git-spice-init.", "exact registered git-spice prompt identifier"],
@@ -846,6 +924,126 @@ for (const [name, text, expectedReason] of [
     assert.deepEqual(JSON.parse(result.stdout), [{ classification: "reference", reason: expectedReason }]);
   });
 }
+
+for (const delimiterLength of [1, 2, 4]) {
+  test(`multiline inline code preserves an exact standalone git-spice token with delimiter length ${delimiterLength}`, () => {
+    const delimiter = "`".repeat(delimiterLength);
+    const prefix = "Text ";
+    const suffix = " end";
+    const text = `${prefix}${delimiter}\ngit-spice${delimiter}${suffix}`;
+    const result = auditSyntheticDetails(text);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [{
+      classification: "reference",
+      reason: "exact standalone inline code token",
+      argv: null,
+      line: 2,
+      column: 1,
+      region: "inline_code",
+      regionStart: prefix.length,
+      regionEnd: text.length - suffix.length,
+    }]);
+  });
+}
+
+test("registry segments use complete Unicode-whitespace-delimited tokens", () => {
+  for (const whitespace of ["\u00a0", "\u2003", "\u2028"]) {
+    const result = auditSyntheticText(`prefix${whitespace}(/git-spice-init)${whitespace}suffix`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), [{
+      classification: "reference",
+      reason: "exact registered git-spice prompt identifier",
+    }]);
+  }
+});
+
+for (const [name, text, expectedLine] of [
+  ["one crossed line", "``prefix\n/git-spice-stack\nsuffix``", 2],
+  ["several crossed lines", "``prefix\n\n\n/git-spice-stack\n\n\nsuffix``", 4],
+  ["escaped equal run", "``prefix\n/git-spice-stack\n\\``\nstill code\nend``", 2],
+  ["CRLF source", "``\r\n/git-spice-stack\r\n``", 2],
+]) {
+  test(`whole-gap scanner preserves ${name}`, () => {
+    const result = auditSyntheticDetails(text);
+    assert.equal(result.status, 0, result.stderr);
+    const [occurrence] = JSON.parse(result.stdout);
+    assert.equal(occurrence.classification, "reference");
+    assert.equal(occurrence.reason, "exact registered git-spice prompt identifier");
+    assert.equal(occurrence.argv, null);
+    assert.equal(occurrence.line, expectedLine);
+    assert.equal(occurrence.column, 2);
+    assert.equal(occurrence.region, "inline_code");
+    assert.equal(text.slice(occurrence.regionStart, occurrence.regionEnd), text);
+  });
+}
+
+test("whole-gap scanner finds multiple multiline inline spans", () => {
+  const text = "`\ngit-spice\n` prose ``\n/git-spice-init\n``";
+  const result = auditSyntheticDetails(text);
+  assert.equal(result.status, 0, result.stderr);
+  const occurrences = JSON.parse(result.stdout);
+  assert.deepEqual(occurrences.map(({ classification, region, line }) => ({ classification, region, line })), [
+    { classification: "reference", region: "inline_code", line: 2 },
+    { classification: "reference", region: "inline_code", line: 4 },
+  ]);
+});
+
+test("inline scanning requires an equal-length unescaped closer", () => {
+  const text = "``prefix\n/git-spice-init\nx`y\nx```y\nsuffix``";
+  const result = auditSyntheticDetails(text);
+  assert.equal(result.status, 0, result.stderr);
+  const [occurrence] = JSON.parse(result.stdout);
+  assert.equal(occurrence.region, "inline_code");
+  assert.equal(occurrence.regionStart, 0);
+  assert.equal(occurrence.regionEnd, text.length);
+});
+
+test("fenced contents are never rescanned as inline code", () => {
+  const text = "```text\n`/git-spice-init`\n````";
+  const result = auditSyntheticDetails(text);
+  assert.equal(result.status, 0, result.stderr);
+  const [occurrence] = JSON.parse(result.stdout);
+  assert.equal(occurrence.classification, "reference");
+  assert.equal(occurrence.region, "fenced_code");
+  assert.equal(occurrence.line, 2);
+});
+
+test("a complete trimmed fenced region containing only git-spice is a reference", () => {
+  const text = "```text\n\ngit-spice\n\n````";
+  const result = auditSyntheticDetails(text);
+  assert.equal(result.status, 0, result.stderr);
+  const [occurrence] = JSON.parse(result.stdout);
+  assert.equal(occurrence.classification, "reference");
+  assert.equal(occurrence.reason, "exact standalone fenced code token");
+  assert.equal(occurrence.argv, null);
+});
+
+test("a standalone physical git-spice line in a larger fence is executable", () => {
+  assertDiscoveryFailureBeforeMutation("```text\nprefix\ngit-spice\nsuffix\n````", /unclassified git-spice subcommand/);
+});
+
+test("a prose-manifest line wrapped by multiline backticks becomes executable code", () => {
+  const relative = "commands/stack.md";
+  const manifestLine = "- If a restack appears pending (git-spice may flag this): note that and suggest `/git-spice-restack`.";
+  const content = sourceFiles()[relative].replace(manifestLine, `\`\`\n${manifestLine}\n\`\``);
+  const source = createSourceFixture({ [relative]: content });
+  const packageCopy = createTemporaryPackage();
+  const sentinels = installedSentinels(packageCopy.root);
+  const result = runMigration(packageCopy.script, source, packageCopy.root);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /prompts\/git-spice-stack\.md/);
+  assert.match(result.stderr, /line \d+, column \d+/);
+  assert.match(result.stderr, /unclassified git-spice subcommand/);
+  assertRollback(packageCopy.root, sentinels);
+});
+
+test("an unmatched multiline inline span containing git-spice fails closed", () => {
+  assertDiscoveryFailureBeforeMutation("``\nRun git-spice --no-prompt log long", /unterminated inline code span/);
+});
+
+test("unsafe fenced backticks retain fenced classification and roll back", () => {
+  assertDiscoveryFailureBeforeMutation("```text\n`git-spice future mutate`\n````", /unclassified git-spice subcommand/);
+});
 
 for (const [identifier, snippet] of [
   ["x/git-spice-continue", "Use x/git-spice-continue."],
@@ -1011,13 +1209,13 @@ test("inventory classifies every reference and executable occurrence exactly onc
 });
 
 const proseManifestContextCases = [
-  ["delete", "text = text.replace(entry.exact_physical_line + '\\n', '', 1)"],
-  ["duplicate", "text = text.replace(entry.exact_physical_line, entry.exact_physical_line + '\\n' + entry.exact_physical_line, 1)"],
-  ["add", "text += '\\nUnlisted git-spice prose reference.\\n'"],
-  ["drift", "text = text.replace(entry.exact_physical_line, entry.exact_physical_line.replace('git-spice', 'git-spice drifted'), 1)"],
+  ["delete", "text = text.replace(entry.exact_physical_line + '\\n', '', 1)", /prose reference manifest|prose manifest/i],
+  ["duplicate", "text = text.replace(entry.exact_physical_line, entry.exact_physical_line + '\\n' + entry.exact_physical_line, 1)", /prose reference manifest|prose manifest/i],
+  ["add", "text += '\\nUnlisted git-spice prose reference.\\n'", /unclassified git-spice subcommand/],
+  ["drift", "text = text.replace(entry.exact_physical_line, entry.exact_physical_line.replace('git-spice', 'git-spice drifted'), 1)", /unclassified git-spice subcommand/],
 ];
 
-for (const [name, mutation] of proseManifestContextCases) {
+for (const [name, mutation, diagnostic] of proseManifestContextCases) {
   test(`static prose manifest rejects ${name} context changes with target diagnostics`, () => {
     const packageCopy = createTemporaryPackage();
     const relative = "agents/stacker.md";
@@ -1035,16 +1233,16 @@ for (const [name, mutation] of proseManifestContextCases) {
     const result = spawnSync("python3", ["-B", "-c", python, packageCopy.script, packageRoot], { cwd: packageCopy.root, encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /agents\/stacker\.md/);
-    assert.match(result.stderr, /prose reference manifest|prose manifest/i);
+    assert.match(result.stderr, diagnostic);
     assert.match(result.stderr, /line \d+, column \d+|excerpt=/);
   });
 }
 
 for (const [name, manifestMutation, diagnostic] of [
-  ["deleted entry", "entries.pop(0)", /unlisted prose reference/],
+  ["deleted entry", "entries.pop(0)", /unclassified git-spice subcommand/],
   ["duplicated entry", "entries.append(entries[0])", /duplicate prose reference manifest entry/],
   ["stale added entry", "entries.append(module.ProseReferenceManifestEntry('Stale git-spice manifest line.', 1))", /unused or stale prose reference manifest entry/],
-  ["textually drifted entry", "entries[0] = module.ProseReferenceManifestEntry(entries[0].exact_physical_line + ' drift', entries[0].expected_count)", /unlisted prose reference/],
+  ["textually drifted entry", "entries[0] = module.ProseReferenceManifestEntry(entries[0].exact_physical_line + ' drift', entries[0].expected_count)", /unclassified git-spice subcommand/],
 ]) {
   test(`static prose manifest rejects ${name}`, () => {
     const packageCopy = createTemporaryPackage();
@@ -1162,6 +1360,61 @@ test("generated runtime validation classifies commands with interspersed global 
   const result = runProbe(generatedTreeProbe(`target = generated / 'prompts/git-spice-stack.md'\ntarget.write_text(target.read_text() + ${fragment})`), packageCopy, source);
   assert.equal(result.status, 0, result.stderr);
 });
+
+const assertSourceMigrationPasses = (snippet) => {
+  const { packageCopy, result } = runUnsafeSourceMigration(snippet);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    readdirSync(packageCopy.root).filter((name) => name.startsWith(".pi-git-spice-install-")),
+    [],
+  );
+};
+
+for (const [name, globalArguments, expectedPass, expectedDiagnostic] of [
+  ["explicit no-prompt", "--no-prompt", true, null],
+  ["prompt then no-prompt", "--prompt --no-prompt", true, null],
+  ["no-prompt then prompt", "--no-prompt --prompt", false, /prompting must be disabled by final effective state/],
+  ["no-prompt then prompt=false", "--no-prompt --prompt=false", true, null],
+  ["no-prompt then prompt=true", "--no-prompt --prompt=true", false, /prompting must be disabled by final effective state/],
+  ["prompt=false without no-prompt", "--prompt=false", false, /explicit --no-prompt/],
+  ["malformed empty prompt value", "--no-prompt --prompt=", false, /malformed prompt value/],
+  ["malformed unknown prompt value", "--no-prompt --prompt=future", false, /malformed prompt value/],
+  ["malformed repeated assignment", "--no-prompt --prompt=true=false", false, /malformed prompt value/],
+  ["mixed values ending false", "--no-prompt --prompt --prompt=true --prompt=false", true, null],
+  ["mixed values ending true", "--no-prompt --prompt=false --prompt --prompt=true", false, /prompting must be disabled by final effective state/],
+]) {
+  test(`global prompt state evaluates in argv order: ${name}`, () => {
+    const snippet = `Prompt state fixture: \`git-spice ${globalArguments} log long\`.`;
+    if (expectedPass) assertSourceMigrationPasses(snippet);
+    else assertDiscoveryFailureBeforeMutation(snippet, expectedDiagnostic);
+  });
+}
+
+test("ordered prompt state remains removable when interspersed with command arguments", () => {
+  assertSourceMigrationPasses("`git-spice --prompt log --no-prompt long`");
+});
+
+for (const signature of ["repo sync", "rs"]) {
+  for (const [name, restackArguments, expectedPass] of [
+    ["bare upstack", "--restack", true],
+    ["explicit upstack", "--restack=upstack", true],
+    ["none", "--restack=none", false],
+    ["aboves", "--restack=aboves", false],
+    ["unknown", "--restack=future", false],
+    ["empty", "--restack=", false],
+    ["later upstack wins", "--restack=none --restack=upstack", true],
+    ["later upstack replaces unknown", "--restack=future --restack=upstack", true],
+    ["later bare upstack replaces empty", "--restack= --restack", true],
+    ["later none wins", "--restack=upstack --restack=none", false],
+  ]) {
+    test(`${signature} uses its final effective restack mode: ${name}`, () => {
+      const globalArguments = signature === "repo sync" ? "--verbose --no-prompt" : "--no-prompt";
+      const snippet = `Restack state fixture: \`git-spice ${globalArguments} ${signature} ${restackArguments}\`.`;
+      if (expectedPass) assertSourceMigrationPasses(snippet);
+      else assertDiscoveryFailureBeforeMutation(snippet, /restack/);
+    });
+  }
+}
 
 for (const [name, snippet] of [
   ["own arguments continuation", "git-spice --no-prompt branch \\\n  restack"],

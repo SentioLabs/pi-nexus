@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -28,24 +28,6 @@ const expectedPrompts = [
 ];
 const expectedSkills = ["git-spice", "stacking-workflow"];
 const expectedAgents = ["stack-doctor.md", "stacker.md"];
-const readOnlyCommandSignatures = [
-  ["auth", "status"], ["log", "short"], ["log", "long"], ["branch", "diff"], ["ls"], ["ll"], ["bdi"],
-];
-const mutatingCommandSignatures = [
-  ["repo", "init"], ["repo", "restack"], ["repo", "sync"], ["auth", "login"], ["auth", "logout"],
-  ["branch", "create"], ["branch", "track"], ["branch", "checkout"], ["branch", "restack"],
-  ["branch", "squash"], ["branch", "split"], ["branch", "edit"], ["branch", "fold"], ["branch", "onto"],
-  ["branch", "rename"], ["branch", "delete"], ["branch", "untrack"], ["branch", "submit"],
-  ["commit", "create"], ["commit", "amend"], ["commit", "split"], ["commit", "fixup"], ["commit", "pick"],
-  ["commit", "..."], ["upstack", "restack"], ["upstack", "onto"], ["upstack", "delete"],
-  ["upstack", "submit"], ["downstack", "track"], ["downstack", "restack"], ["downstack", "edit"],
-  ["downstack", "submit"], ["stack", "restack"], ["stack", "edit"], ["stack", "delete"],
-  ["stack", "submit"], ["rebase", "continue"], ["rebase", "abort"], ["<scope>", "submit"],
-  ["trunk"], ["top"], ["bottom"], ["up"], ["down"], ["r", "i"], ["bc"], ["btr"], ["dstr"],
-  ["cc"], ["ca"], ["csp"], ["cf"], ["cp"], ["bco"], ["br"], ["usr"], ["dsr"], ["sr"], ["rr"],
-  ["bsq"], ["bsp"], ["be"], ["bfo"], ["bon"], ["uso"], ["se"], ["dse"], ["brn"], ["bd"],
-  ["sd"], ["usd"], ["buntr"], ["bs"], ["dss"], ["uss"], ["ss"], ["rs"], ["rbc"], ["rba"],
-];
 const runtimePaths = [
   ...expectedPrompts.map((name) => `prompts/${name}`),
   ...expectedSkills.map((name) => `skills/${name}/SKILL.md`),
@@ -64,51 +46,44 @@ const expectedPackedPaths = [
   "src/core/ports.ts",
 ].sort();
 
-const executableSnippets = (text) => {
-  const bareCommands = text.split("\n").map((line) => line.trim()).filter((line) => /^\(?\s*git-spice(?:\s|$)/.test(line));
-  return [
-    ...Array.from(text.matchAll(/(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)/g), ([, , snippet]) => snippet.trim()),
-    ...Array.from(text.matchAll(/^```(?:bash|sh|shell|zsh)\s*\n([\s\S]*?)^```[ \t]*$/gm), ([, block]) => block),
-    ...bareCommands,
-  ].filter((snippet) => snippet.includes("git-spice"));
+const auditCommittedRuntime = () => {
+  const probe = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "root = pathlib.Path(sys.argv[2])",
+    "result = {}",
+    "for relative in sys.argv[3:]:",
+    "    occurrences = module.audit_git_spice_occurrences(pathlib.Path(relative), (root / relative).read_text(encoding='utf8'))",
+    "    result[relative] = [{'classification': item.classification, 'reason': item.reason, 'argv': item.argv, 'line': item.line, 'column': item.column, 'region': item.region.kind} for item in occurrences]",
+    "print(json.dumps(result))",
+  ].join("\n");
+  return JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, packageRoot, ...runtimePaths], { encoding: "utf8" }));
 };
 
-const invocationsInSnippet = (snippet) => {
-  const invocations = [];
-  for (const match of snippet.matchAll(/(?<![\w-])git-spice(?=\s)/g)) {
-    let quote = null;
-    let end = match.index + match[0].length;
-    for (; end < snippet.length; end += 1) {
-      const character = snippet[end];
-      if (character === "\\" && snippet[end + 1] === "\n") {
-        end += 1;
-        continue;
-      }
-      if (quote) {
-        if (character === quote && snippet[end - 1] !== "\\") quote = null;
-        continue;
-      }
-      if (character === '"' || character === "'") {
-        quote = character;
-        continue;
-      }
-      if (character === "#" && /\s/.test(snippet[end - 1] ?? "")) break;
-      if (character === "\n" || ";&|()".includes(character)) break;
-    }
-    invocations.push(snippet.slice(match.index, end).replace(/\\\r?\n/g, " ").trim());
-  }
-  return invocations;
-};
-
-const executableGitSpiceCommands = (text) => executableSnippets(text).flatMap(invocationsInSnippet);
-
-const classifyGitSpiceCommand = (command) => {
-  const tokens = command.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-  const argumentsAfterGlobalFlag = tokens.slice(2);
-  for (const [classification, signatures] of [["read-only", readOnlyCommandSignatures], ["mutation", mutatingCommandSignatures]]) {
-    if (signatures.some((signature) => signature.every((part, index) => argumentsAfterGlobalFlag[index] === part))) return classification;
-  }
-  return null;
+const auditSyntheticCases = (cases) => {
+  const probe = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "module.PROSE_REFERENCE_MANIFEST = {target: () for _, target in module.RUNTIME_MANIFEST}",
+    "result = []",
+    "for case in json.load(sys.stdin):",
+    "    try:",
+    "        occurrences = module.audit_git_spice_occurrences(pathlib.Path('prompts/git-spice-stack.md'), case['text'])",
+    "        result.append({'ok': True, 'argv': [item.argv for item in occurrences if item.classification == 'executable']})",
+    "    except RuntimeError as error:",
+    "        result.append({'ok': False, 'error': str(error)})",
+    "print(json.dumps(result))",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", probe, migrationScript], {
+    encoding: "utf8",
+    input: JSON.stringify(cases),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
 };
 
 const expectedStructuralReasons = new Set([
@@ -121,6 +96,42 @@ const expectedStructuralReasons = new Set([
   "exact standalone fenced code token",
 ]);
 const exportedApprovedStructuralReasons = new Set(productionReferenceContract.approvedStructuralReasons);
+const proseReferenceReason = "exact physical-line prose reference manifest match";
+const executableOccurrenceReason = "occurrence is not an explicit reference";
+const expectedReasonSnapshots = {
+  "prompts/git-spice-continue.md": { [proseReferenceReason]: 4, [executableOccurrenceReason]: 5 },
+  "prompts/git-spice-init.md": { [proseReferenceReason]: 4, [executableOccurrenceReason]: 8 },
+  "prompts/git-spice-new.md": { [executableOccurrenceReason]: 7 },
+  "prompts/git-spice-restack.md": { "exact registered git-spice prompt identifier": 1, [executableOccurrenceReason]: 5 },
+  "prompts/git-spice-stack.md": { [proseReferenceReason]: 1, "exact registered git-spice prompt identifier": 3, [executableOccurrenceReason]: 3 },
+  "prompts/git-spice-submit.md": { [proseReferenceReason]: 1, "exact registered git-spice prompt identifier": 1, [executableOccurrenceReason]: 6 },
+  "prompts/git-spice-sync.md": { "exact registered git-spice prompt identifier": 1, [executableOccurrenceReason]: 4 },
+  "skills/git-spice/SKILL.md": {
+    "exact package or skill identifier": 1,
+    [proseReferenceReason]: 16,
+    "exact registered git-spice agent identifier": 2,
+    "exact registered git-spice upstream identifier": 1,
+    "exact standalone git-spice Markdown heading": 1,
+    "exact standalone inline code token": 5,
+    [executableOccurrenceReason]: 138,
+  },
+  "skills/stacking-workflow/SKILL.md": {
+    "exact registered git-spice agent identifier": 2,
+    "exact standalone inline code token": 6,
+    [executableOccurrenceReason]: 12,
+  },
+  "agents/stack-doctor.md": {
+    "exact package or skill identifier": 1,
+    [proseReferenceReason]: 5,
+    [executableOccurrenceReason]: 26,
+  },
+  "agents/stacker.md": {
+    "exact package or skill identifier": 1,
+    [proseReferenceReason]: 3,
+    "exact standalone inline code token": 1,
+    [executableOccurrenceReason]: 10,
+  },
+};
 
 const assertApprovedReferenceReasons = (relative, reasons, proseReferenceReason) => {
   for (const reason of reasons) {
@@ -136,17 +147,18 @@ test("production and independent snapshots dual-lock exact structural reference 
     Array.from(exportedApprovedStructuralReasons).sort(),
     Array.from(expectedStructuralReasons).sort(),
   );
+  assert.equal(productionReferenceContract.proseReferenceReason, proseReferenceReason);
   assert.equal(exportedApprovedStructuralReasons.has("identifier-adjacent git-spice reference"), false);
   assert.equal(exportedApprovedStructuralReasons.has("shell comment reference"), false);
 });
 
-test("registered identifier groups bind each kind to its explicit boundary policy and reason", () => {
+test("registered identifier groups retain only exact members and typed reasons", () => {
   const probe = [
     "import importlib.util, json, sys",
     "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
     "module = importlib.util.module_from_spec(spec)",
     "spec.loader.exec_module(module)",
-    "print(json.dumps([{'kind': group.kind.value, 'identifiers': sorted(group.identifiers), 'occurrenceOffset': group.occurrence_offset, 'boundaryPolicy': group.boundary_policy.kind.value, 'reason': group.reason} for group in module.REGISTERED_IDENTIFIER_GROUPS]))",
+    "print(json.dumps([{'kind': group.kind.value, 'identifiers': sorted(group.identifiers), 'fields': sorted(group.__dataclass_fields__), 'reason': group.reason} for group in module.REGISTERED_IDENTIFIER_GROUPS]))",
   ].join("; ");
   const contract = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript], { encoding: "utf8" }));
   assert.deepEqual(contract, [
@@ -161,25 +173,48 @@ test("registered identifier groups bind each kind to its explicit boundary polic
         "/git-spice-submit",
         "/git-spice-sync",
       ],
-      occurrenceOffset: 1,
-      boundaryPolicy: "prompt",
+      fields: ["identifiers", "kind", "reason"],
       reason: "exact registered git-spice prompt identifier",
     },
     {
       kind: "agent",
       identifiers: ["git-spice.stack-doctor", "git-spice.stacker"],
-      occurrenceOffset: 0,
-      boundaryPolicy: "agent",
+      fields: ["identifiers", "kind", "reason"],
       reason: "exact registered git-spice agent identifier",
     },
     {
       kind: "upstream",
       identifiers: ["abhinav/git-spice#1050"],
-      occurrenceOffset: 8,
-      boundaryPolicy: "upstream",
+      fields: ["identifiers", "kind", "reason"],
       reason: "exact registered git-spice upstream identifier",
     },
   ]);
+});
+
+test("legacy pathless audits, boundary inference, and package Markdown parsers are absent", () => {
+  const pythonNames = [
+    "classify_git_spice_" + "occurrences",
+    "executable_git_spice_" + "invocations",
+    "executable_git_spice_" + "commands",
+    "IdentifierBoundary" + "Policy",
+    "_shell_position_" + "reason",
+    "_terminal_dot_" + "boundary",
+    "validate_generated_" + "commands",
+  ];
+  const probe = [
+    "import importlib.util, json, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "print(json.dumps({name: hasattr(module, name) for name in sys.argv[2:]}))",
+  ].join("; ");
+  const attributes = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, ...pythonNames], { encoding: "utf8" }));
+  assert.deepEqual(attributes, Object.fromEntries(pythonNames.map((name) => [name, false])));
+
+  const packageTestSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  for (const parserName of ["executable" + "Snippets", "invocationsIn" + "Snippet"]) {
+    assert.equal(packageTestSource.includes(`const ${parserName} =`), false, parserName);
+  }
 });
 
 test("registered identifier boundaries reject terminal punctuation followed by attached text after bounded and long closing runs", () => {
@@ -228,9 +263,36 @@ test("registered identifier boundaries reject terminal punctuation followed by a
   assert.deepEqual(structuralMatches, []);
 });
 
-test("package command audit extracts bare unknown commands without known-prefix filtering", () => {
-  assert.deepEqual(executableGitSpiceCommands("git-spice future mutate"), ["git-spice future mutate"]);
-  assert.deepEqual(executableGitSpiceCommands("git-spice --verbose future mutate"), ["git-spice --verbose future mutate"]);
+test("target-aware audit extracts unmanifested plain commands without shell-position filtering", () => {
+  const results = auditSyntheticCases([
+    { text: "Run git-spice --no-prompt log long" },
+    { text: "arbitrary words git-spice future mutate" },
+  ]);
+  assert.deepEqual(results[0], { ok: true, argv: [["git-spice", "--no-prompt", "log", "long"]] });
+  assert.equal(results[1].ok, false);
+  assert.match(results[1].error, /unclassified git-spice subcommand/);
+});
+
+test("package contract independently locks ordered prompt and restack policy outcomes", () => {
+  const cases = [
+    { text: "`git-spice --prompt --no-prompt log long`", ok: true },
+    { text: "`git-spice --no-prompt --prompt log long`", ok: false },
+    { text: "`git-spice --no-prompt --prompt=false log long`", ok: true },
+    { text: "`git-spice --prompt=false log long`", ok: false },
+    { text: "`git-spice --no-prompt repo sync --restack=none --restack=upstack`", ok: true },
+    { text: "`git-spice --no-prompt repo sync --restack=upstack --restack=none`", ok: false },
+    { text: "`git-spice --no-prompt rs --restack=upstack`", ok: true },
+    { text: "`git-spice --no-prompt rs --restack=future`", ok: false },
+    { text: "`git-spice --no-prompt rs --restack=future --restack`", ok: true },
+  ];
+  const results = auditSyntheticCases(cases);
+  assert.deepEqual(results.map(({ ok }) => ok), cases.map(({ ok }) => ok));
+  assert.deepEqual(results[0].argv, [["git-spice", "--prompt", "--no-prompt", "log", "long"]]);
+  assert.deepEqual(results[4].argv, [["git-spice", "--no-prompt", "repo", "sync", "--restack=none", "--restack=upstack"]]);
+  assert.match(results[1].error, /prompting must be disabled by final effective state/);
+  assert.match(results[3].error, /explicit --no-prompt/);
+  assert.match(results[5].error, /restack/);
+  assert.match(results[7].error, /restack/);
 });
 
 test("positive occurrence audit rejects an unapproved generic reference reason", () => {
@@ -240,27 +302,24 @@ test("positive occurrence audit rejects an unapproved generic reference reason",
   );
 });
 
-test("committed runtime occurrence inventories reconcile and validate independently", () => {
-  const probe = [
-    "import importlib.util, json, pathlib, sys",
-    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
-    "module = importlib.util.module_from_spec(spec)",
-    "spec.loader.exec_module(module)",
-    "root = pathlib.Path(sys.argv[2])",
-    "result = {}",
-    "for relative in sys.argv[3:]:",
-    "    occurrences = module.audit_git_spice_occurrences(pathlib.Path(relative), (root / relative).read_text(encoding='utf8'))",
-    "    result[relative] = {'inventory': len(occurrences), 'references': sum(item.classification == 'reference' for item in occurrences), 'executables': sum(item.classification == 'executable' for item in occurrences), 'reasons': [item.reason for item in occurrences], 'referenceReasons': [item.reason for item in occurrences if item.classification == 'reference'], 'proseReferenceReason': module.PROSE_REFERENCE_REASON}",
-    "print(json.dumps(result))",
-  ].join("\n");
-  const audit = JSON.parse(execFileSync("python3", ["-B", "-c", probe, migrationScript, packageRoot, ...runtimePaths], { encoding: "utf8" }));
+test("committed runtime occurrence inventories reconcile with exact reasons and executable argv", () => {
+  const audit = auditCommittedRuntime();
   for (const relative of runtimePaths) {
-    const result = audit[relative];
-    assert.ok(result.inventory > 0, `${relative} inventories git-spice occurrences`);
-    assert.equal(result.inventory, result.references + result.executables, `${relative} reconciles every occurrence`);
-    assert.ok(result.executables > 0, `${relative} validates executable guidance`);
-    assert.ok(result.reasons.every((reason) => reason.length > 0), `${relative} records every classification reason`);
-    assertApprovedReferenceReasons(relative, result.referenceReasons, result.proseReferenceReason);
+    const occurrences = audit[relative];
+    const references = occurrences.filter(({ classification }) => classification === "reference");
+    const executables = occurrences.filter(({ classification }) => classification === "executable");
+    assert.ok(occurrences.length > 0, `${relative} inventories git-spice occurrences`);
+    assert.equal(occurrences.length, references.length + executables.length, `${relative} reconciles every occurrence`);
+    assert.ok(executables.length > 0, `${relative} validates executable guidance`);
+    assert.ok(occurrences.every(({ reason }) => reason.length > 0), `${relative} records every classification reason`);
+    assert.ok(references.every(({ argv }) => argv === null), `${relative} gives references no executable argv`);
+    assert.ok(executables.every(({ argv }) => Array.isArray(argv) && argv[0] === "git-spice"), `${relative} exposes argv for every executable`);
+    assertApprovedReferenceReasons(relative, references.map(({ reason }) => reason), proseReferenceReason);
+    const reasonCounts = Object.fromEntries(Array.from(new Set(occurrences.map(({ reason }) => reason))).map((reason) => [
+      reason,
+      occurrences.filter((occurrence) => occurrence.reason === reason).length,
+    ]));
+    assert.deepEqual(reasonCounts, expectedReasonSnapshots[relative], `${relative} exact occurrence reason snapshot`);
   }
 });
 
@@ -408,19 +467,21 @@ test("agents expose dotted Pi identities and safe tool contracts", () => {
   assert.doesNotMatch(`${stacker}\n${doctor}`, /model: sonnet|subagent_type|  - (?:Bash|Read|Write|Edit|Glob|Grep)\n/);
 });
 
-test("every executable command in every generated resource has command-specific safety", () => {
+test("authoritative audit exposes command-specific safe argv for every generated executable", () => {
+  const audit = auditCommittedRuntime();
   for (const relative of runtimePaths) {
-    const commands = executableGitSpiceCommands(readText(relative));
+    const commands = audit[relative]
+      .filter(({ classification }) => classification === "executable")
+      .map(({ argv }) => argv.join(" "));
     assert.ok(commands.length > 0, `${relative} exposes executable git-spice guidance`);
     for (const command of commands) {
       assert.match(command, /^git-spice --no-prompt /, `${relative}: ${command}`);
-      assert.notEqual(classifyGitSpiceCommand(command), null, `${relative}: unclassified command: ${command}`);
       if (/^git-spice --no-prompt (?:repo init|r i)\b/.test(command)) {
         assert.match(command, /(?:^| )--trunk=<[^>]+>/, `${relative}: ${command}`);
         assert.match(command, /(?:^| )--remote=<[^>]+>/, `${relative}: ${command}`);
       }
       if (/^git-spice --no-prompt (?:branch create|bc)\b/.test(command)) {
-        assert.match(command, /(?:^| )-m (?:"[^"]+"|<[^>]+>)|(?:^| )--message(?:=| )|(?:^| )--no-commit(?: |$)/, `${relative}: ${command}`);
+        assert.match(command, /(?:^| )-m (?:[^ ]+|<[^>]+>)|(?:^| )--message(?:=| )|(?:^| )--no-commit(?: |$)/, `${relative}: ${command}`);
       }
       if (/^git-spice --no-prompt (?:rebase continue|rbc)\b/.test(command)) {
         assert.match(command, /(?:^| )--no-edit(?: |$)/, `${relative}: ${command}`);
@@ -429,7 +490,7 @@ test("every executable command in every generated resource has command-specific 
         assert.match(command, /(?:^| )(?:--draft|--no-draft|<draft-flag>)(?: |$)/, `${relative}: ${command}`);
       }
       if (/^git-spice --no-prompt (?:repo sync|rs)\b/.test(command)) {
-        assert.match(command, /(?:^| )--restack(?:=\S+)?(?: |$)/, `${relative}: ${command}`);
+        assert.match(command, /(?:^| )--restack(?:=upstack)?(?: |$)/, `${relative}: ${command}`);
       }
     }
   }
@@ -450,9 +511,12 @@ test("direct submit workflows explicitly resolve draft state with the update-onl
 });
 
 test("every direct init and reset path gathers explicit trunk and remote safely", () => {
+  const audit = auditCommittedRuntime();
   for (const relative of ["prompts/git-spice-init.md", "skills/git-spice/SKILL.md", "agents/stack-doctor.md"]) {
     const text = readText(relative);
-    const initCommands = executableGitSpiceCommands(text).filter((command) => /^git-spice --no-prompt repo init\b/.test(command));
+    const initCommands = audit[relative]
+      .filter(({ classification, argv }) => classification === "executable" && argv.slice(0, 4).join(" ") === "git-spice --no-prompt repo init")
+      .map(({ argv }) => argv.join(" "));
     assert.ok(initCommands.length > 0, relative);
     for (const command of initCommands) {
       assert.match(command, /--trunk=<[^>]+>/, `${relative}: ${command}`);
