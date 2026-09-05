@@ -11,6 +11,7 @@ This repo uses npm workspaces with one package per directory under `packages/*`.
 | [`@sentiolabs/pi-arc`](packages/pi-arc) | `packages/pi-arc` | Arc issue tracker integration for Pi: skills, prompts, extension commands, session context, bundled checklist/question support, and optional Arc specialist integration through external `pi-subagents`. |
 | [`@sentiolabs/pi-code-quality`](packages/pi-code-quality) | `packages/pi-code-quality` | Pi skills and prompts for five-lens deep code review, advisory AI-slop/driver-curation assessment, and strict PR/branch size analysis. |
 | [`@sentiolabs/pi-frontend-design`](packages/pi-frontend-design) | `packages/pi-frontend-design` | Frontend design skill for distinctive, production-grade Pi UI work. |
+| [`@sentiolabs/pi-git-spice`](packages/pi-git-spice) | `packages/pi-git-spice` | Pi prompts, skills, and optional package-scoped subagents for safe git-spice stacked-branch workflows. |
 | [`@sentiolabs/pi-scriptable-statusline`](packages/pi-scriptable-statusline) | `packages/pi-scriptable-statusline` | Scriptable footer and statusline UI package for Pi: owns the footer, supports scriptable above/below-editor widgets, and includes a natural-language setup skill. |
 
 Future packages should be added under `packages/*` when their sources are ready.
@@ -30,6 +31,7 @@ Test the package locally with Pi from the monorepo root:
 pi -e ./packages/pi-arc
 pi -e ./packages/pi-code-quality
 pi -e ./packages/pi-frontend-design
+pi -e ./packages/pi-git-spice
 pi -e ./packages/pi-scriptable-statusline
 ```
 
@@ -44,8 +46,10 @@ Releases are independent per package through Release Please. See [`docs/releasin
 - [`docs/packages/pi-arc.md`](docs/packages/pi-arc.md)
 - [`docs/packages/pi-code-quality.md`](docs/packages/pi-code-quality.md)
 - [`docs/packages/pi-frontend-design.md`](docs/packages/pi-frontend-design.md)
+- [`docs/packages/pi-git-spice.md`](docs/packages/pi-git-spice.md)
 - [`docs/packages/pi-scriptable-statusline.md`](docs/packages/pi-scriptable-statusline.md)
 - [`packages/pi-arc/README.md`](packages/pi-arc/README.md)
+- [`packages/pi-git-spice/README.md`](packages/pi-git-spice/README.md)
 - [`packages/pi-scriptable-statusline/README.md`](packages/pi-scriptable-statusline/README.md)
 
 ## License

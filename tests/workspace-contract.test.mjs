@@ -108,7 +108,69 @@ test("pi-git-spice package metadata points at the workspace package", () => {
   assert.equal(pkg.homepage, "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-git-spice#readme");
   assert.equal(pkg.bugs.url, "https://github.com/SentioLabs/pi-nexus/issues");
   assert.equal(pkg.engines.node, ">=24.0.0");
+  assert.equal(pkg.publishConfig.access, "public");
   assert.deepEqual(pkg.pi.extensions, ["./extensions/git-spice-workflow.ts"]);
+  assert.deepEqual(pkg.pi.skills, ["./skills"]);
+  assert.deepEqual(pkg.pi.prompts, ["./prompts/*.md"]);
+  assert.deepEqual(pkg.pi.subagents.agents, ["./agents"]);
+});
+
+test("root documentation integrates pi-git-spice", () => {
+  const readme = readText("README.md");
+  const development = readText("docs/development.md");
+  const releasing = readText("docs/releasing.md");
+  const packageDocs = readText("docs/packages/pi-git-spice.md");
+
+  assert.ok(
+    readme.includes(
+      "| [`@sentiolabs/pi-git-spice`](packages/pi-git-spice) | `packages/pi-git-spice` | Pi prompts, skills, and optional package-scoped subagents for safe git-spice stacked-branch workflows. |",
+    ),
+  );
+  assert.match(readme, /pi -e \.\/packages\/pi-git-spice/);
+  assert.match(readme, /docs\/packages\/pi-git-spice\.md/);
+  assert.match(readme, /packages\/pi-git-spice\/README\.md/);
+
+  assert.match(development, /`git-spice` CLI/);
+  assert.match(development, /npm test --workspace @sentiolabs\/pi-git-spice/);
+  assert.match(development, /npm run pack:dry-run --workspace @sentiolabs\/pi-git-spice/);
+  assert.match(development, /pi -e \.\/packages\/pi-git-spice/);
+  assert.match(development, /pi install -l \.\/packages\/pi-git-spice/);
+
+  assert.ok(
+    releasing.includes(`  "packages/pi-git-spice": {
+    "component": "pi-git-spice",
+    "package-name": "@sentiolabs/pi-git-spice",
+    "release-type": "node",
+    "initial-version": "0.1.0",
+    "changelog-path": "CHANGELOG.md",
+    "extra-files": [
+      {
+        "type": "json",
+        "path": "/package-lock.json",
+        "jsonpath": "$.packages['packages/pi-git-spice'].version"
+      }
+    ]
+  }`),
+  );
+  assert.match(releasing, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-git-spice/);
+
+  assert.match(packageDocs, /^# `@sentiolabs\/pi-git-spice`$/m);
+  for (const heading of ["Included resources", "Prerequisites", "Non-interactive safety", "Local development"]) {
+    assert.match(packageDocs, new RegExp(`^## ${heading}$`, "m"));
+  }
+  for (const prompt of ["continue", "init", "new", "restack", "stack", "submit", "sync"]) {
+    assert.match(packageDocs, new RegExp(`/git-spice-${prompt}`));
+  }
+  assert.match(packageDocs, /\/skill:git-spice/);
+  assert.match(packageDocs, /\/skill:stacking-workflow/);
+  assert.match(packageDocs, /git-spice\.stacker/);
+  assert.match(packageDocs, /git-spice\.stack-doctor/);
+  assert.match(packageDocs, /The external `git-spice` CLI must be installed\. `pi-subagents` is optional and is not bundled\./);
+  assert.match(packageDocs, /Tool-driven mutations use explicit arguments and `--no-prompt`; rebase continuation also uses `--no-edit`\./);
+  assert.match(packageDocs, /Init, branch creation, submit draft state, and destructive reset gather or confirm missing intent through Pi before executing\./);
+  assert.match(packageDocs, /npm test --workspace @sentiolabs\/pi-git-spice/);
+  assert.match(packageDocs, /npm run pack:dry-run --workspace @sentiolabs\/pi-git-spice/);
+  assert.match(packageDocs, /pi -e \.\/packages\/pi-git-spice/);
 });
 
 test("pi-code-quality package metadata points at the workspace package", () => {
@@ -172,6 +234,13 @@ test("release workflow uses idempotent npm publishing helper", () => {
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-git-spice/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-code-quality/);
+
+  const codeQualityPublish = workflow.indexOf("@sentiolabs/pi-code-quality");
+  const gitSpicePublish = workflow.indexOf("@sentiolabs/pi-git-spice");
+  const frontendDesignPublish = workflow.indexOf("@sentiolabs/pi-frontend-design");
+  assert.ok(codeQualityPublish < gitSpicePublish);
+  assert.ok(gitSpicePublish < frontendDesignPublish);
+
   assert.doesNotMatch(workflow, /npm publish --workspace/);
   assert.doesNotMatch(workflow, /release_created/);
 });

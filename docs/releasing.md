@@ -54,6 +54,20 @@ Current package entries include:
       }
     ]
   },
+  "packages/pi-git-spice": {
+    "component": "pi-git-spice",
+    "package-name": "@sentiolabs/pi-git-spice",
+    "release-type": "node",
+    "initial-version": "0.1.0",
+    "changelog-path": "CHANGELOG.md",
+    "extra-files": [
+      {
+        "type": "json",
+        "path": "/package-lock.json",
+        "jsonpath": "$.packages['packages/pi-git-spice'].version"
+      }
+    ]
+  },
   "packages/pi-scriptable-statusline": {
     "component": "pi-scriptable-statusline",
     "package-name": "@sentiolabs/pi-scriptable-statusline",
@@ -79,6 +93,7 @@ Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-w
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-code-quality
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
+node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-git-spice
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-scriptable-statusline
 ```
 
