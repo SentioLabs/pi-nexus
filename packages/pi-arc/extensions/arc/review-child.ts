@@ -37,6 +37,19 @@ interface GuardConfig {
   allowedTools: ["read", "grep", "find", "ls", "structured_output", "arc_review_report"];
 }
 
+interface FileIdentity {
+  dev: bigint;
+  ino: bigint;
+  uid: bigint;
+  mode: bigint;
+}
+
+interface LoadedGuardConfig {
+  config: GuardConfig;
+  digest: string;
+  identity: FileIdentity;
+}
+
 interface GuardRuntimeConfig extends GuardConfig {
   canonicalInputRoots: string[];
   canonicalReportRoot: string;
@@ -44,6 +57,7 @@ interface GuardRuntimeConfig extends GuardConfig {
   canonicalSchemaPath: string;
   canonicalAcknowledgementPath: string;
   evidencePath: string;
+  attestedDirectories: Array<{ path: string; identity: FileIdentity }>;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -101,26 +115,43 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+type BigIntFileMetadata = { dev: bigint; ino: bigint; size: bigint; mode: bigint; uid: bigint; gid: bigint; mtimeNs: bigint; ctimeNs: bigint };
+
+function sameFileMetadata(left: BigIntFileMetadata, right: BigIntFileMetadata): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mode === right.mode &&
+    left.uid === right.uid && left.gid === right.gid && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
+function fileIdentity(info: BigIntFileMetadata): FileIdentity {
+  return { dev: info.dev, ino: info.ino, uid: info.uid, mode: info.mode };
+}
+
+function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.uid === right.uid && left.mode === right.mode;
+}
+
 async function boundedRegularFile(file: string, maxBytes: number, expectedMode?: number): Promise<Uint8Array> {
-  const before = await lstat(file);
+  const before = await lstat(file, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink()) throw new Error(`${file} must be a regular file`);
-  if (before.size > maxBytes) throw new Error(`${file} exceeds its byte limit`);
-  if (typeof process.getuid === "function" && before.uid !== process.getuid()) throw new Error(`${file} has the wrong owner`);
-  if (expectedMode !== undefined && (before.mode & 0o777) !== expectedMode) throw new Error(`${file} must have mode ${expectedMode.toString(8)}`);
+  if (before.size > BigInt(maxBytes)) throw new Error(`${file} exceeds its byte limit`);
+  if (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid())) throw new Error(`${file} has the wrong owner`);
+  if (expectedMode !== undefined && (before.mode & 0o777n) !== BigInt(expectedMode)) throw new Error(`${file} must have mode ${expectedMode.toString(8)}`);
   const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
   const handle = await open(file, flags);
   try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.size !== before.size || opened.dev !== before.dev || opened.ino !== before.ino) throw new Error(`${file} changed while opening`);
-    const bytes = Buffer.alloc(opened.size);
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameFileMetadata(opened, before)) throw new Error(`${file} changed while opening`);
+    const bytes = Buffer.alloc(Number(opened.size));
     let offset = 0;
     while (offset < bytes.length) {
       const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
       if (bytesRead === 0) throw new Error(`${file} changed while reading`);
       offset += bytesRead;
     }
-    const after = await handle.stat();
-    if (after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) throw new Error(`${file} changed while reading`);
+    const after = await handle.stat({ bigint: true });
+    if (!sameFileMetadata(after, opened)) throw new Error(`${file} changed while reading`);
+    const final = await lstat(file, { bigint: true });
+    if (!final.isFile() || !sameFileMetadata(final, before)) throw new Error(`${file} changed after reading`);
     return bytes;
   } finally {
     await handle.close();
@@ -149,11 +180,12 @@ async function requireCanonicalFileDestination(value: string, root: string, at: 
   return result;
 }
 
-async function readAndValidateConfig(configUrl: URL): Promise<GuardConfig> {
+async function readAndValidateConfig(configUrl: URL): Promise<LoadedGuardConfig> {
   const configPath = fileURLToPath(configUrl);
   const bytes = await boundedRegularFile(configPath, MAX_CONFIG_BYTES, 0o400);
+  const metadata = await lstat(configPath, { bigint: true });
   let value: unknown;
-  try { value = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { throw new Error("guard config must be valid UTF-8 JSON"); }
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw new Error("guard config must be valid UTF-8 JSON"); }
   if (!isRecord(value)) throw new Error("guard config must be an object");
   exactKeys(value, CONFIG_KEYS, "guard config");
   if (value.version !== 1) throw new Error("guard config version must be 1");
@@ -164,17 +196,21 @@ async function readAndValidateConfig(configUrl: URL): Promise<GuardConfig> {
     throw new Error("allowedTools must equal the fixed review allowlist");
   }
   return {
-    version: 1,
-    attemptId,
-    inputRoots,
-    reportRoot: requireSafeString(value.reportRoot, "reportRoot"),
-    reportPath: requireSafeString(value.reportPath, "reportPath"),
-    reportSchemaPath: requireSafeString(value.reportSchemaPath, "reportSchemaPath"),
-    acknowledgementPath: requireSafeString(value.acknowledgementPath, "acknowledgementPath"),
-    expectedGuardSourceDigest: requireDigest(value.expectedGuardSourceDigest, "expectedGuardSourceDigest"),
-    expectedReportSchemaDigest: requireDigest(value.expectedReportSchemaDigest, "expectedReportSchemaDigest"),
-    expectedReviewInputDigest: requireDigest(value.expectedReviewInputDigest, "expectedReviewInputDigest"),
-    allowedTools: [...FIXED_TOOLS],
+    config: {
+      version: 1,
+      attemptId,
+      inputRoots,
+      reportRoot: requireSafeString(value.reportRoot, "reportRoot"),
+      reportPath: requireSafeString(value.reportPath, "reportPath"),
+      reportSchemaPath: requireSafeString(value.reportSchemaPath, "reportSchemaPath"),
+      acknowledgementPath: requireSafeString(value.acknowledgementPath, "acknowledgementPath"),
+      expectedGuardSourceDigest: requireDigest(value.expectedGuardSourceDigest, "expectedGuardSourceDigest"),
+      expectedReportSchemaDigest: requireDigest(value.expectedReportSchemaDigest, "expectedReportSchemaDigest"),
+      expectedReviewInputDigest: requireDigest(value.expectedReviewInputDigest, "expectedReviewInputDigest"),
+      allowedTools: [...FIXED_TOOLS],
+    },
+    digest: sha256(bytes),
+    identity: fileIdentity(metadata),
   };
 }
 
@@ -194,7 +230,12 @@ async function canonicalRuntimeConfig(config: GuardConfig): Promise<GuardRuntime
   const canonicalAcknowledgementPath = await requireCanonicalFileDestination(config.acknowledgementPath, canonicalReportRoot, "acknowledgementPath");
   const evidencePath = await requireCanonicalFileDestination(path.join(canonicalReportRoot, EVIDENCE_NAME), canonicalReportRoot, "evidencePath");
   if (new Set([canonicalReportPath, canonicalSchemaPath, canonicalAcknowledgementPath, evidencePath]).size !== 4) throw new Error("guard artifact paths must be distinct");
-  return { ...config, canonicalInputRoots, canonicalReportRoot, canonicalReportPath, canonicalSchemaPath, canonicalAcknowledgementPath, evidencePath };
+  const attestedPaths = [...canonicalInputRoots, canonicalReportRoot, moduleRoot];
+  const attestedDirectories = await Promise.all(attestedPaths.map(async (directory) => ({
+    path: directory,
+    identity: fileIdentity(await lstat(directory, { bigint: true })),
+  })));
+  return { ...config, canonicalInputRoots, canonicalReportRoot, canonicalReportPath, canonicalSchemaPath, canonicalAcknowledgementPath, evidencePath, attestedDirectories };
 }
 
 async function verifyOwnModuleAndSchema(config: GuardRuntimeConfig): Promise<Readonly<JsonRecord>> {
@@ -431,8 +472,19 @@ async function enforceToolCall(event: unknown, config: GuardRuntimeConfig, ready
 }
 
 const configUrl = new URL("./arc-review-guard.json", import.meta.url);
-const rawConfig = await readAndValidateConfig(configUrl);
-const config = await canonicalRuntimeConfig(rawConfig);
+const loadedConfig = await readAndValidateConfig(configUrl);
+const config = await canonicalRuntimeConfig(loadedConfig.config);
+
+async function reattestStartup(): Promise<void> {
+  const current = await readAndValidateConfig(configUrl);
+  if (current.digest !== loadedConfig.digest || !sameIdentity(current.identity, loadedConfig.identity)) throw new Error("guard config changed after extension load");
+  const runtime = await canonicalRuntimeConfig(current.config);
+  if (canonicalize(current.config) !== canonicalize(loadedConfig.config)) throw new Error("guard config authority changed after extension load");
+  if (runtime.attestedDirectories.length !== config.attestedDirectories.length || runtime.attestedDirectories.some((entry, index) =>
+    entry.path !== config.attestedDirectories[index].path || !sameIdentity(entry.identity, config.attestedDirectories[index].identity))) {
+    throw new Error("guard canonical root identity changed after extension load");
+  }
+}
 
 export default async function reviewChild(pi: ExtensionAPI): Promise<void> {
   let initialized = false;
@@ -441,6 +493,7 @@ export default async function reviewChild(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async () => {
     initialized = false;
+    await reattestStartup();
     schema = await verifyOwnModuleAndSchema(config);
     await Promise.all([
       requireAbsent(config.canonicalAcknowledgementPath, "guard acknowledgement"),

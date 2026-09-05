@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import fsPromises, { access, chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -81,13 +82,13 @@ async function preparedGuard(t, overrides = {}) {
   const sourceCheckoutRoot = path.join(root, 'disposable-source');
   const inputRoot = path.join(root, 'input');
   const runtimeRoot = path.join(root, 'runtime');
-  const reportRoot = path.join(runtimeRoot, 'reports');
+  const reportRoot = path.join(root, 'reports');
   await Promise.all([
     mkdir(sourceCheckoutRoot, { recursive: true }),
     mkdir(path.join(inputRoot, 'source'), { recursive: true }),
     mkdir(runtimeRoot, { mode: 0o700 }),
+    mkdir(reportRoot, { mode: 0o700 }),
   ]);
-  await mkdir(reportRoot, { mode: 0o700 });
   const disposableSource = path.join(sourceCheckoutRoot, 'review-child.ts');
   await copyFile(guardSource, disposableSource);
   await writeFile(path.join(inputRoot, 'source/a.ts'), 'const secretSourceContents = 42;\n');
@@ -114,6 +115,46 @@ async function loadGuard(prepared) {
   const module = await import(`${pathToFileURL(prepared.materialized.extensionPath).href}?case=${++serial}`);
   await module.default(harness.pi);
   return { harness, module };
+}
+
+function interceptSameSizeChange(target, changeBytes) {
+  const realOpen = fsPromises.open;
+  let injected = false;
+  fsPromises.open = async function(file, ...args) {
+    const handle = await realOpen(file, ...args);
+    if (file !== target) return handle;
+    const originalRead = handle.read.bind(handle);
+    handle.read = async (...readArgs) => {
+      const result = await originalRead(...readArgs);
+      if (!injected && result.bytesRead > 0) {
+        injected = true;
+        const before = await lstat(target, { bigint: true });
+        const current = await readFile(target);
+        const changed = changeBytes(current);
+        assert.equal(changed.length, current.length);
+        await chmod(target, 0o600);
+        await writeFile(target, changed, { flag: 'r+' });
+        await chmod(target, Number(before.mode & 0o777n));
+        await fsPromises.utimes(target, new Date(Number(before.atimeMs)), new Date(Number(before.mtimeMs) + 1000));
+      }
+      return result;
+    };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  return { get injected() { return injected; }, restore() { fsPromises.open = realOpen; syncBuiltinESMExports(); } };
+}
+
+async function withWrongOwner(target, action) {
+  if (typeof process.getuid !== 'function') return;
+  const realLstat = fsPromises.lstat;
+  fsPromises.lstat = async function(file, options) {
+    const result = await realLstat(file, options);
+    if (file !== target) return result;
+    return new Proxy(result, { get(object, property) { return property === 'uid' ? object.uid + (typeof object.uid === 'bigint' ? 1n : 1) : Reflect.get(object, property); } });
+  };
+  syncBuiltinESMExports();
+  try { await action(); } finally { fsPromises.lstat = realLstat; syncBuiltinESMExports(); }
 }
 
 test('materialization is closed over five Node runtime imports and survives source checkout removal', async (t) => {
@@ -235,6 +276,50 @@ test('preexisting acknowledgement/report and tampered source, schema, config, mo
   }
 });
 
+test('session startup re-attests config bytes, mode, and canonical root identity before acknowledgement', async (t) => {
+  for (const kind of ['config-mode', 'config-bytes', 'input-root-replacement']) {
+    await t.test(kind, async (t) => {
+      const prepared = await preparedGuard(t);
+      const { harness } = await loadGuard(prepared);
+      if (kind === 'config-mode') await chmod(prepared.materialized.configPath, 0o600);
+      if (kind === 'config-bytes') {
+        const bytes = await readFile(prepared.materialized.configPath, 'utf8');
+        await chmod(prepared.materialized.configPath, 0o600);
+        await writeFile(prepared.materialized.configPath, bytes.replace(prepared.attemptId, `${prepared.attemptId.slice(0, -1)}x`));
+        await chmod(prepared.materialized.configPath, 0o400);
+      }
+      if (kind === 'input-root-replacement') {
+        const displaced = `${prepared.inputRoot}-original`;
+        await rename(prepared.inputRoot, displaced);
+        await mkdir(prepared.inputRoot);
+      }
+      await assert.rejects(() => harness.emit('session_start'), /changed|mode|identity|config|root/i);
+      assert.equal(await exists(prepared.materialized.acknowledgementPath), false);
+      assert.equal(harness.emitted.length, 0);
+    });
+  }
+});
+
+test('wrong-owner config metadata is rejected without privileged filesystem changes', async (t) => {
+  if (typeof process.getuid !== 'function') return t.skip('ownership is not available on this platform');
+  const prepared = await preparedGuard(t);
+  await withWrongOwner(prepared.materialized.configPath, async () => {
+    await assert.rejects(() => loadGuard(prepared), /wrong owner/i);
+  });
+});
+
+test('same-size config changes across open/read boundaries fail closed', async (t) => {
+  const prepared = await preparedGuard(t);
+  const hook = interceptSameSizeChange(prepared.materialized.configPath, (bytes) => Buffer.from(bytes.toString('utf8').replace(prepared.attemptId, `${prepared.attemptId.slice(0, -1)}x`)));
+  try {
+    await assert.rejects(() => loadGuard(prepared), /changed while reading/i);
+    assert.equal(hook.injected, true);
+    assert.equal(await exists(prepared.materialized.acknowledgementPath), false);
+  } finally {
+    hook.restore();
+  }
+});
+
 test('a blocked call before initialization is recorded and prevents later acknowledgement', async (t) => {
   const prepared = await preparedGuard(t);
   const { harness } = await loadGuard(prepared);
@@ -245,7 +330,7 @@ test('a blocked call before initialization is recorded and prevents later acknow
   await assert.rejects(() => harness.toolRegistry.get('arc_review_report').execute('after-failure', validReport(prepared.digest)), /not satisfied/i);
 });
 
-test('evidence overflow emits at most one marker and permanently prevents guard satisfaction', async (t) => {
+test('evidence record overflow emits at most one marker and permanently prevents guard satisfaction', async (t) => {
   const prepared = await preparedGuard(t);
   const { harness } = await loadGuard(prepared);
   await harness.emit('session_start');
@@ -254,6 +339,21 @@ test('evidence overflow emits at most one marker and permanently prevents guard 
   assert.ok(lines.length <= 256);
   assert.equal(lines.filter((line) => JSON.parse(line).overflow === true).length, 1);
   await assert.rejects(() => harness.toolRegistry.get('arc_review_report').execute('after-overflow', validReport(prepared.digest)), /not satisfied/i);
+});
+
+test('evidence byte overflow is enforced independently before the record cap', async (t) => {
+  const prepared = await preparedGuard(t);
+  const { harness } = await loadGuard(prepared);
+  await harness.emit('session_start');
+  const large = '界'.repeat(256);
+  for (let index = 0; index < 180; index += 1) await harness.invoke(large, {}, `${large}-${index}`);
+  const evidencePath = path.join(prepared.reportRoot, 'guard-evidence.jsonl');
+  const bytes = await readFile(evidencePath);
+  const lines = bytes.toString('utf8').trim().split('\n');
+  assert.ok(bytes.length <= 256 * 1024);
+  assert.ok(lines.length < 180, 'byte limit must apply before the 256-record cap');
+  assert.equal(lines.filter((line) => JSON.parse(line).overflow === true).length, 1);
+  await assert.rejects(() => harness.toolRegistry.get('arc_review_report').execute('after-byte-overflow', validReport(prepared.digest)), /not satisfied/i);
 });
 
 test('actual registered mutation canary is blocked before its callback executes', async (t) => {

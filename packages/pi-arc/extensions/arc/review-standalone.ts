@@ -7,6 +7,8 @@ import { runArcBoundedProcess } from "./process.ts";
 import {
   ARC_REVIEW_GUARD_ACK_PREFIX,
   ARC_REVIEW_KILL_GRACE_MS,
+  ARC_REVIEW_MAX_FILES,
+  ARC_REVIEW_MAX_FILE_BYTES,
   ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES,
   ARC_REVIEW_STOP_GRACE_MS,
   canonicalizeArcJson,
@@ -139,24 +141,33 @@ async function writeExclusive(destination: string, bytes: Uint8Array, mode: numb
   }
 }
 
+type BigIntFileMetadata = { dev: bigint; ino: bigint; size: bigint; mode: bigint; uid: bigint; gid: bigint; mtimeNs: bigint; ctimeNs: bigint };
+
+function sameFileMetadata(left: BigIntFileMetadata, right: BigIntFileMetadata): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mode === right.mode &&
+    left.uid === right.uid && left.gid === right.gid && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
 async function boundedRead(file: string, maxBytes: number, expectedMode?: number): Promise<Uint8Array> {
-  const before = await lstat(file);
-  if (!before.isFile() || before.isSymbolicLink() || before.size > maxBytes) throw new Error(`${file} is not a bounded regular file`);
-  if (typeof process.getuid === "function" && before.uid !== process.getuid()) throw new Error(`${file} has the wrong owner`);
-  if (expectedMode !== undefined && (before.mode & 0o777) !== expectedMode) throw new Error(`${file} has the wrong mode`);
+  const before = await lstat(file, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(maxBytes)) throw new Error(`${file} is not a bounded regular file`);
+  if (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid())) throw new Error(`${file} has the wrong owner`);
+  if (expectedMode !== undefined && (before.mode & 0o777n) !== BigInt(expectedMode)) throw new Error(`${file} has the wrong mode`);
   const handle = await open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try {
-    const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) throw new Error(`${file} changed while opening`);
-    const bytes = Buffer.alloc(opened.size);
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameFileMetadata(opened, before)) throw new Error(`${file} changed while opening`);
+    const bytes = Buffer.alloc(Number(opened.size));
     let offset = 0;
     while (offset < bytes.length) {
       const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
       if (bytesRead === 0) throw new Error(`${file} changed while reading`);
       offset += bytesRead;
     }
-    const after = await handle.stat();
-    if (after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) throw new Error(`${file} changed while reading`);
+    const after = await handle.stat({ bigint: true });
+    if (!sameFileMetadata(after, opened)) throw new Error(`${file} changed while reading`);
+    const final = await lstat(file, { bigint: true });
+    if (!final.isFile() || !sameFileMetadata(final, before)) throw new Error(`${file} changed after reading`);
     return bytes;
   } finally { await handle.close(); }
 }
@@ -198,7 +209,9 @@ export async function materializeArcReviewGuard(input: {
   const reportRoot = await canonicalDirectory(input.config.reportRoot, "reportRoot", true);
   const acknowledgementPath = await canonicalDestination(input.config.acknowledgementPath, reportRoot, "acknowledgementPath");
   await canonicalDestination(input.config.reportPath, reportRoot, "reportPath");
-  if (below(runtimeRoot, reportRoot) === false || reportRoot === runtimeRoot) throw new Error("reportRoot must be a private child of runtimeRoot");
+  if (below(runtimeRoot, reportRoot) || below(reportRoot, runtimeRoot) || inputRoots.some((root) => below(root, reportRoot) || below(reportRoot, root))) {
+    throw new Error("reportRoot must be disjoint from runtimeRoot and inputRoots");
+  }
   const created: string[] = [];
   try {
     await copyFile(sourceModulePath, extensionPath, fsConstants.COPYFILE_EXCL);
@@ -223,22 +236,64 @@ export async function materializeArcReviewGuard(input: {
   }
 }
 
-async function validateAttemptPaths(attempt: ArcPreparedReviewAttempt, trustedExtensions: string[]): Promise<void> {
+async function canonicalPrivateFile(value: string, name: string): Promise<string> {
+  const file = await canonicalRegularFile(value, name);
+  const info = await lstat(file);
+  if ((info.mode & 0o777) !== 0o400 || (typeof process.getuid === "function" && info.uid !== process.getuid())) throw new Error(`${name} must be immutable and owner-only`);
+  return file;
+}
+
+async function manifestReviewerPaths(inputRoot: string, manifestPath: string): Promise<string[]> {
+  const bytes = await boundedRead(manifestPath, ARC_REVIEW_MAX_FILE_BYTES);
+  let manifest: unknown;
+  try { manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { throw new Error("review input manifest must be strict UTF-8 JSON"); }
+  if (!isRecord(manifest) || manifest.version !== 1 || !Array.isArray(manifest.materials) || manifest.materials.length > ARC_REVIEW_MAX_FILES) throw new Error("review input manifest materials are invalid");
+  const materialPaths: string[] = [];
+  const seen = new Set<string>();
+  for (const [index, row] of manifest.materials.entries()) {
+    if (!isRecord(row) || typeof row.path !== "string" || !row.path || row.path.includes("\0") || path.posix.isAbsolute(row.path) || row.path.includes("\\") ||
+        row.path.split("/").some((part) => !part || part === "." || part === "..")) throw new Error(`review input manifest material ${index} has an invalid path`);
+    if (seen.has(row.path)) throw new Error("review input manifest has duplicate materials");
+    seen.add(row.path);
+    if (!["materials/diff.patch", "materials/task.md", "materials/design.md", "materials/review.md"].includes(row.path) && !/^materials\/instructions\/\d{4}\.md$/.test(row.path)) {
+      throw new Error(`review input manifest has unsupported reviewer material ${row.path}`);
+    }
+    const candidate = path.join(inputRoot, ...row.path.split("/"));
+    const file = await canonicalRegularFile(candidate, `manifest material ${row.path}`);
+    if (!below(inputRoot, file)) throw new Error(`manifest material ${row.path} escapes inputRoot`);
+    materialPaths.push(file);
+  }
+  for (const required of ["materials/diff.patch", "materials/task.md", "materials/design.md", "materials/review.md"]) {
+    if (!seen.has(required)) throw new Error(`review input manifest omitted ${required}`);
+  }
+  return materialPaths;
+}
+
+async function validateAttemptPaths(attempt: ArcPreparedReviewAttempt, trustedExtensions: string[]): Promise<string[]> {
   const repositoryRoot = await canonicalDirectory(attempt.request.repositoryRoot, "repositoryRoot");
+  const stateDir = await canonicalDirectory(attempt.stateDir, "stateDir", true);
+  const inputParent = await canonicalDirectory(path.join(stateDir, "input"), "stateDir/input", true);
   const inputRoot = await canonicalDirectory(attempt.inputRoot, "inputRoot");
+  const sourceRoot = await canonicalDirectory(path.join(inputRoot, "source"), "sourceRoot");
   const runtimeRoot = await canonicalDirectory(attempt.runtimeRoot, "runtimeRoot", true);
   const reportRoot = await canonicalDirectory(attempt.reportRoot, "reportRoot", true);
-  if (below(repositoryRoot, runtimeRoot) || below(runtimeRoot, repositoryRoot)) throw new Error("runtimeRoot must be disjoint from the checkout");
-  if (below(inputRoot, runtimeRoot) || below(runtimeRoot, inputRoot)) throw new Error("runtimeRoot must be disjoint from inputRoot");
-  if (!below(runtimeRoot, reportRoot) || reportRoot === runtimeRoot) throw new Error("reportRoot must be below runtimeRoot");
-  for (const [name, value] of Object.entries({
-    manifestPath: attempt.manifestPath,
-    diffPath: attempt.diffPath,
-    baselinePath: attempt.baselinePath,
-    inputDescriptorPath: attempt.inputDescriptorPath,
-  })) {
-    const file = await canonicalRegularFile(value, name);
-    if (!below(inputRoot, file)) throw new Error(`${name} must be below inputRoot`);
+  const evidenceRoot = await canonicalDirectory(path.join(stateDir, "evidence"), "stateDir/evidence", true);
+  if (runtimeRoot !== path.join(stateDir, "runtime") || reportRoot !== path.join(stateDir, "reports") || !below(inputParent, inputRoot) || inputRoot === inputParent) {
+    throw new Error("attempt paths must use the approved stateDir input/runtime/reports sibling layout");
+  }
+  if (below(repositoryRoot, stateDir) || below(stateDir, repositoryRoot)) throw new Error("stateDir must be disjoint from the checkout");
+  for (const [left, right, label] of [[inputRoot, runtimeRoot, "runtimeRoot"], [inputRoot, reportRoot, "reportRoot"], [runtimeRoot, reportRoot, "reportRoot"]] as const) {
+    if (below(left, right) || below(right, left)) throw new Error(`${label} must be disjoint from other attempt roots`);
+  }
+  const manifestPath = await canonicalRegularFile(attempt.manifestPath, "manifestPath");
+  if (manifestPath !== path.join(inputRoot, "manifest.json")) throw new Error("manifestPath must name the canonical input manifest");
+  const materialPaths = await manifestReviewerPaths(inputRoot, manifestPath);
+  const expectedDiff = path.join(inputRoot, "materials", "diff.patch");
+  if (attempt.diffPath !== expectedDiff || !materialPaths.includes(expectedDiff)) throw new Error("diffPath must name the canonical public diff material");
+  for (const [name, value] of Object.entries({ baselinePath: attempt.baselinePath, inputDescriptorPath: attempt.inputDescriptorPath })) {
+    const file = await canonicalPrivateFile(value, name);
+    if (path.dirname(file) !== evidenceRoot || below(inputRoot, file) || below(repositoryRoot, file)) throw new Error(`${name} must be private evidence below stateDir/evidence`);
   }
   for (const [name, value] of Object.entries({
     guardExtensionPath: attempt.guardExtensionPath,
@@ -253,6 +308,7 @@ async function validateAttemptPaths(attempt: ArcPreparedReviewAttempt, trustedEx
     const extension = await canonicalRegularFile(trustedExtensions[index], `trustedProviderExtensions[${index}]`);
     if (below(inputRoot, extension) || below(repositoryRoot, extension)) throw new Error("trusted provider extensions cannot come from review input or checkout");
   }
+  return [sourceRoot, manifestPath, ...materialPaths];
 }
 
 async function privateEnvironment(attempt: ArcPreparedReviewAttempt, source: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
@@ -272,14 +328,29 @@ async function privateEnvironment(attempt: ArcPreparedReviewAttempt, source: Nod
   return result;
 }
 
-function buildArguments(options: ArcStandaloneReviewOptions, attempt: ArcPreparedReviewAttempt): string[] {
+function promptContainsCanonicalPath(prompt: string, requiredPath: string): boolean {
+  let offset = 0;
+  while (offset <= prompt.length - requiredPath.length) {
+    const index = prompt.indexOf(requiredPath, offset);
+    if (index < 0) return false;
+    const before = index === 0 ? "" : prompt[index - 1];
+    const afterIndex = index + requiredPath.length;
+    const after = afterIndex === prompt.length ? "" : prompt[afterIndex];
+    const componentCharacter = (value: string) => value !== "" && /[A-Za-z0-9_~\/-]/.test(value);
+    if (!componentCharacter(before) && !componentCharacter(after)) return true;
+    offset = index + 1;
+  }
+  return false;
+}
+
+function buildArguments(options: ArcStandaloneReviewOptions, attempt: ArcPreparedReviewAttempt, reviewerPaths: string[]): string[] {
   const prompt = options.buildPrompt(attempt);
   if (!prompt || typeof prompt.systemPrompt !== "string" || typeof prompt.task !== "string" || !prompt.systemPrompt.trim() || !prompt.task.trim() || prompt.systemPrompt.includes("\0") || prompt.task.includes("\0")) {
     throw new Error("buildPrompt must return nonempty string systemPrompt and task without NUL");
   }
   const promptText = `${prompt.systemPrompt}\n${prompt.task}`;
-  for (const requiredPath of [attempt.inputRoot, attempt.manifestPath, attempt.diffPath, attempt.baselinePath, attempt.inputDescriptorPath]) {
-    if (!path.isAbsolute(requiredPath) || !promptText.includes(requiredPath)) throw new Error(`prompt omitted canonical review path ${requiredPath}`);
+  for (const requiredPath of reviewerPaths) {
+    if (!path.isAbsolute(requiredPath) || !promptContainsCanonicalPath(promptText, requiredPath)) throw new Error(`prompt omitted canonical review path ${requiredPath}`);
   }
   return [
     "-p", "--no-session", "--mode", "json",
@@ -294,11 +365,11 @@ function buildArguments(options: ArcStandaloneReviewOptions, attempt: ArcPrepare
 }
 
 function terminationFromExactProcessResult(identity: ArcReviewLaunchIdentity, result: ArcProcessResult): ArcTerminationEvidence {
-  if (!result.spawned) return { status: "not_applicable", source: "not_started", detail: result.observationError ? "process creation failed" : "process was not created" };
-  if (result.termination === "observed") {
+  if (!result.spawned && result.termination === "observed") return { status: "not_applicable", source: "not_started", detail: "process non-creation was confirmed by observed close" };
+  if (result.spawned && result.termination === "observed") {
     return { status: "observed", source: "standalone_child_close", runnerProcessInstanceId: identity.runnerProcessInstanceId, observedAt: result.endedAt, detail: `exact child close observed (exit=${String(result.exitCode)}, signal=${String(result.signal)})` };
   }
-  return { status: "unknown", source: "standalone_child_close", runnerProcessInstanceId: identity.runnerProcessInstanceId, detail: "exact child close was not observed" };
+  return { status: "unknown", source: "standalone_child_close", runnerProcessInstanceId: identity.runnerProcessInstanceId, detail: result.spawned ? "exact child close was not observed" : "process creation and close were not observed" };
 }
 
 function baseExecution(identity: ArcReviewLaunchIdentity, receipt: ArcReviewDispatchReceipt | undefined, result: ArcProcessResult, termination: ArcTerminationEvidence) {
@@ -332,9 +403,10 @@ function decodeJsonLines(bytes: Uint8Array): { diagnostics: string[]; error?: st
     let rendered: string;
     try { rendered = canonicalizeArcJson(value); } catch { return { diagnostics, error: `stdout line ${index + 1} is not canonicalizable JSON` }; }
     const bytesInLine = Buffer.byteLength(rendered, "utf8");
-    if (diagnostics.length >= MAX_DIAGNOSTIC_LINES || total + bytesInLine > MAX_DIAGNOSTIC_BYTES) break;
-    diagnostics.push(rendered);
-    total += bytesInLine;
+    if (diagnostics.length < MAX_DIAGNOSTIC_LINES && total + bytesInLine <= MAX_DIAGNOSTIC_BYTES) {
+      diagnostics.push(rendered);
+      total += bytesInLine;
+    }
   }
   return { diagnostics };
 }
@@ -360,12 +432,28 @@ async function readAcknowledgement(attempt: ArcPreparedReviewAttempt): Promise<A
   return value as unknown as ArcReviewGuardAcknowledgement;
 }
 
-async function readReport(attempt: ArcPreparedReviewAttempt): Promise<unknown> {
+async function fixedReportPath(attempt: ArcPreparedReviewAttempt): Promise<string> {
   const guardConfigBytes = await boundedRead(attempt.guardConfigPath, 256 * 1024, 0o400);
   let guardConfig: unknown;
   try { guardConfig = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(guardConfigBytes)); } catch { throw new Error("guard config is not strict UTF-8 JSON"); }
   if (!isRecord(guardConfig) || typeof guardConfig.reportPath !== "string") throw new Error("guard config does not name a fixed report path");
-  const reportPath = await canonicalDestination(guardConfig.reportPath, attempt.reportRoot, "fixed reportPath");
+  return canonicalDestination(guardConfig.reportPath, attempt.reportRoot, "fixed reportPath");
+}
+
+async function requireFreshArtifacts(attempt: ArcPreparedReviewAttempt): Promise<void> {
+  const candidates = [attempt.guardAcknowledgementPath, await fixedReportPath(attempt), path.join(attempt.reportRoot, EVIDENCE_NAME)];
+  for (const candidate of candidates) {
+    try {
+      await lstat(candidate);
+      throw new Error(`fixed review artifact is preexisting and cannot prove freshness: ${candidate}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+async function readReport(attempt: ArcPreparedReviewAttempt): Promise<unknown> {
+  const reportPath = await fixedReportPath(attempt);
   const reportBytes = await boundedRead(reportPath, MAX_ARTIFACT_BYTES, 0o600);
   let report: unknown;
   try { report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(reportBytes)); } catch { throw new Error("fixed review report is not strict UTF-8 JSON"); }
@@ -417,8 +505,9 @@ export function createArcStandaloneReviewAdapter(options: ArcStandaloneReviewOpt
     async execute(attempt: ArcPreparedReviewAttempt, signal: AbortSignal, observer: ArcAdapterObserver): Promise<ArcAdapterExecution> {
       if (process.platform === "win32") throw new Error("standalone review is unsupported on win32");
       if (ownedProcesses.has(attempt.attemptId)) throw new Error(`attempt ${attempt.attemptId} already owns an active process`);
-      await validateAttemptPaths(attempt, options.trustedProviderExtensions);
-      const args = buildArguments(options, attempt);
+      const reviewerPaths = await validateAttemptPaths(attempt, options.trustedProviderExtensions);
+      const args = buildArguments(options, attempt, reviewerPaths);
+      await requireFreshArtifacts(attempt);
       const env = await privateEnvironment(attempt, options.processEnv);
       const identity: ArcReviewLaunchIdentity = { adapter: "standalone", attemptId: attempt.attemptId, requestId: randomUUID(), runnerProcessInstanceId: randomUUID() };
       await observer.persistBeforeDispatch(identity);
@@ -475,7 +564,7 @@ export function createArcStandaloneReviewAdapter(options: ArcStandaloneReviewOpt
         };
       } finally {
         signal.removeEventListener("abort", relayAbort);
-        if (processResult && (!processResult.spawned || processResult.termination === "observed")) {
+        if (processResult?.termination === "observed") {
           const owned = ownedProcesses.get(attempt.attemptId);
           if (owned?.identity.runnerProcessInstanceId === identity.runnerProcessInstanceId) ownedProcesses.delete(attempt.attemptId);
         }

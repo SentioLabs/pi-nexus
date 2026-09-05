@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { access, chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import fsPromises, { access, chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { ARC_REVIEWER_REPORT_JSON_SCHEMA } from '../extensions/arc/reports.ts';
@@ -31,25 +35,91 @@ function createObserver(overrides = {}) {
   };
 }
 
+function interceptSameSizeChange(target, changeBytes) {
+  const realOpen = fsPromises.open;
+  let injected = false;
+  fsPromises.open = async function(file, ...args) {
+    const handle = await realOpen(file, ...args);
+    if (file !== target) return handle;
+    const originalRead = handle.read.bind(handle);
+    handle.read = async (...readArgs) => {
+      const result = await originalRead(...readArgs);
+      if (!injected && result.bytesRead > 0) {
+        injected = true;
+        const before = await lstat(target, { bigint: true });
+        const oldBytes = await readFile(target);
+        const newBytes = changeBytes(oldBytes);
+        assert.equal(newBytes.length, oldBytes.length);
+        await chmod(target, 0o600);
+        await writeFile(target, newBytes, { flag: 'r+' });
+        await chmod(target, Number(before.mode & 0o777n));
+        await fsPromises.utimes(target, new Date(Number(before.atimeMs)), new Date(Number(before.mtimeMs) + 1000));
+      }
+      return result;
+    };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  return { get injected() { return injected; }, restore() { fsPromises.open = realOpen; syncBuiltinESMExports(); } };
+}
+
 async function scenario(t, mode = 'success', additions = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'pi-arc-review-standalone-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repositoryRoot = path.join(root, 'checkout');
-  const inputRoot = path.join(root, 'input');
+  const stateDir = path.join(root, 'state');
+  const inputParent = path.join(stateDir, 'input');
+  const inputRoot = path.join(inputParent, 'review-input-fixture');
   const sourceRoot = path.join(inputRoot, 'source');
-  const runtimeRoot = path.join(root, 'runtime');
-  const reportRoot = path.join(runtimeRoot, 'reports');
-  await Promise.all([mkdir(repositoryRoot), mkdir(sourceRoot, { recursive: true }), mkdir(runtimeRoot, { mode: 0o700 })]);
-  await mkdir(reportRoot, { mode: 0o700 });
+  const materialsRoot = path.join(inputRoot, 'materials');
+  const instructionsRoot = path.join(materialsRoot, 'instructions');
+  const runtimeRoot = path.join(stateDir, 'runtime');
+  const reportRoot = path.join(stateDir, 'reports');
+  const evidenceRoot = path.join(stateDir, 'evidence');
+  await Promise.all([
+    mkdir(repositoryRoot),
+    mkdir(sourceRoot, { recursive: true }),
+    mkdir(instructionsRoot, { recursive: true }),
+    mkdir(runtimeRoot, { recursive: true, mode: 0o700 }),
+    mkdir(reportRoot, { recursive: true, mode: 0o700 }),
+    mkdir(evidenceRoot, { recursive: true, mode: 0o700 }),
+  ]);
+  await Promise.all([chmod(stateDir, 0o700), chmod(inputParent, 0o700)]);
   const materialFiles = {
     manifestPath: path.join(inputRoot, 'manifest.json'),
-    diffPath: path.join(inputRoot, 'review.diff'),
-    baselinePath: path.join(inputRoot, 'baseline.json'),
-    inputDescriptorPath: path.join(inputRoot, 'descriptor.json'),
+    diffPath: path.join(materialsRoot, 'diff.patch'),
+    baselinePath: path.join(evidenceRoot, 'baseline.json'),
+    inputDescriptorPath: path.join(evidenceRoot, 'prepared-input.json'),
+  };
+  const reviewerMaterials = [
+    materialFiles.diffPath,
+    path.join(materialsRoot, 'task.md'),
+    path.join(materialsRoot, 'design.md'),
+    path.join(materialsRoot, 'review.md'),
+    path.join(instructionsRoot, '0001.md'),
+  ];
+  const manifest = {
+    version: 1,
+    baseSha: '1'.repeat(40),
+    headSha: '2'.repeat(40),
+    range: `${'1'.repeat(40)}..${'2'.repeat(40)}`,
+    ignoredPolicy: 'excluded',
+    source: [{ path: 'a.ts', gitMode: '100644', physicalMode: '0400', size: 20, sha256: '0'.repeat(64) }],
+    changes: [],
+    materials: [
+      'materials/design.md',
+      'materials/diff.patch',
+      'materials/instructions/0001.md',
+      'materials/review.md',
+      'materials/task.md',
+    ].map((entry) => ({ path: entry, physicalMode: '0400', size: 2, sha256: '0'.repeat(64) })),
   };
   await Promise.all([
     writeFile(path.join(sourceRoot, 'a.ts'), 'export const a = 1;\n'),
-    ...Object.values(materialFiles).map((file) => writeFile(file, '{}')),
+    writeFile(materialFiles.manifestPath, JSON.stringify(manifest)),
+    ...reviewerMaterials.map((file) => writeFile(file, '{}')),
+    writeFile(materialFiles.baselinePath, '{}', { mode: 0o400 }),
+    writeFile(materialFiles.inputDescriptorPath, '{}', { mode: 0o400 }),
   ]);
   const attemptId = `attempt-${++serial}`;
   const reviewInputDigest = 'a'.repeat(64);
@@ -86,7 +156,7 @@ async function scenario(t, mode = 'success', additions = {}) {
   };
   const attempt = {
     ...materialFiles,
-    stateDir: runtimeRoot,
+    stateDir,
     inputRoot,
     runtimeRoot,
     reportRoot,
@@ -107,7 +177,7 @@ async function scenario(t, mode = 'success', additions = {}) {
     executionTimeoutMs: additions.executionTimeoutMs ?? 1000,
     dispatchDeadlineAt: new Date(Date.now() + 10_000).toISOString(),
   };
-  const absoluteReadPaths = [sourceRoot, materialFiles.manifestPath, materialFiles.diffPath];
+  const absoluteReadPaths = [sourceRoot, materialFiles.manifestPath, ...reviewerMaterials];
   const processEnv = {
     ...process.env,
     FAKE_PI_MODE: mode,
@@ -127,14 +197,14 @@ async function scenario(t, mode = 'success', additions = {}) {
     piCommand: additions.piCommand ?? fakePi,
     selectedModel: 'fixture/model',
     buildPrompt: (value) => ({
-      systemPrompt: `Review source at ${sourceRoot}; materials at ${value.manifestPath}, ${value.diffPath}, ${value.baselinePath}, and ${value.inputDescriptorPath}.`,
-      task: `Review ${sourceRoot} using ${value.manifestPath}.`,
+      systemPrompt: `Review source at ${sourceRoot}; public materials at ${value.manifestPath} and ${reviewerMaterials.join(', ')}.`,
+      task: `Review ${sourceRoot} using ${value.manifestPath} and all listed public materials.`,
     }),
     trustedProviderExtensions: [],
     processEnv,
     randomUUID: () => `${attemptId}-uuid-${++uuid}`,
   };
-  return { root, repositoryRoot, inputRoot, sourceRoot, runtimeRoot, reportRoot, reportPath, acknowledgementPath, recordPath, request, attempt, options, materialized, absoluteReadPaths };
+  return { root, repositoryRoot, stateDir, inputRoot, sourceRoot, runtimeRoot, reportRoot, evidenceRoot, reportPath, acknowledgementPath, recordPath, request, attempt, options, materialized, reviewerMaterials, absoluteReadPaths };
 }
 
 test('success uses exact isolated argv/cwd/env, receipt ordering, fixed acknowledgement, and validated report', async (t) => {
@@ -172,6 +242,53 @@ test('success uses exact isolated argv/cwd/env, receipt ordering, fixed acknowle
     assert.equal(destination.startsWith(`${value.inputRoot}${path.sep}`), false);
     assert.equal(destination.startsWith(`${value.repositoryRoot}${path.sep}`), false);
     assert.equal((await lstat(destination)).mode & 0o777, 0o700);
+  }
+});
+
+test('preexisting fixed acknowledgement or report fails before dispatch and preserves bytes', async (t) => {
+  await t.test('matching stale pair', async (t) => {
+    const value = await scenario(t, 'no-artifacts');
+    const acknowledgement = Buffer.from(JSON.stringify({
+      version: 1,
+      attemptId: value.attempt.attemptId,
+      id: `pi-arc.review-child:v1:${value.attempt.attemptId}`,
+      guardSourceDigest: value.materialized.sourceDigest,
+      reportSchemaDigest: value.materialized.reportSchemaDigest,
+      loadedAt: '2000-01-01T00:00:00.000Z',
+    }));
+    const report = Buffer.from(JSON.stringify({
+      schemaVersion: 1,
+      reviewInputDigest: value.attempt.reviewInputDigest,
+      verdict: 'PASS',
+      summary: 'Stale but otherwise matching fixture report.',
+      findings: [],
+      coverage: { reviewedPaths: [], reviewedRequirements: [] },
+      limitations: [],
+    }));
+    await writeFile(value.acknowledgementPath, acknowledgement, { mode: 0o600, flag: 'wx' });
+    await writeFile(value.reportPath, report, { mode: 0o600, flag: 'wx' });
+    const observer = createObserver();
+    await assert.rejects(() => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer), /preexisting|fresh|absent/i);
+    assert.deepEqual(await readFile(value.acknowledgementPath), acknowledgement);
+    assert.deepEqual(await readFile(value.reportPath), report);
+    assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  });
+  for (const artifact of ['acknowledgement', 'report']) {
+    await t.test(artifact, async (t) => {
+      const value = await scenario(t, 'no-artifacts');
+      const target = artifact === 'acknowledgement' ? value.acknowledgementPath : value.reportPath;
+      const bytes = Buffer.from(`preexisting-${artifact}`);
+      await writeFile(target, bytes, { mode: 0o600, flag: 'wx' });
+      const observer = createObserver();
+      await assert.rejects(
+        () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+        /preexisting|fresh|absent/i,
+      );
+      assert.deepEqual(await readFile(target), bytes);
+      assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
+      assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+    });
   }
 });
 
@@ -213,6 +330,19 @@ test('nonzero, signal, timeout, malformed/oversize protocol, bad reports, ack lo
       assert.notEqual(execution.lifecycle, 'succeeded');
       assert.equal(execution.structuredReport, undefined);
       assert.ok(observer.calls.some((entry) => entry.kind === 'termination'), `${mode} must run observed-close persistence`);
+    });
+  }
+});
+
+test('all bounded stdout remains strict JSON lines after diagnostic retention fills', async (t) => {
+  for (const mode of ['malformed-tail-lines', 'malformed-tail-bytes']) {
+    await t.test(mode, async (t) => {
+      const value = await scenario(t, mode);
+      const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+      assert.equal(execution.lifecycle, 'malformed_report');
+      assert.equal(execution.termination.status, 'observed');
+      assert.ok(execution.boundedDiagnostics.length <= 128);
+      assert.match(execution.boundedDiagnostics[0], /stdout line/i);
     });
   }
 });
@@ -318,6 +448,89 @@ test('stop is identity-bound, idempotent, and does not act on a mismatched proce
   assert.equal(execution.termination.status, 'observed');
 });
 
+test('ambiguous pre-spawn termination remains unknown and retains identity ownership', { timeout: 15_000 }, async (t) => {
+  const value = await scenario(t, 'success', { executionTimeoutMs: 5 });
+  const realSpawn = childProcess.spawn;
+  childProcess.spawn = () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => child.emit('error', new Error('creation observation lost')));
+    return child;
+  };
+  syncBuiltinESMExports();
+  const adapter = createArcStandaloneReviewAdapter(value.options);
+  let identity;
+  try {
+    const observer = createObserver({ before: (next) => { identity = next; } });
+    const execution = await adapter.execute(value.attempt, new AbortController().signal, observer);
+    assert.equal(execution.termination.status, 'unknown');
+    assert.equal(execution.termination.source, 'standalone_child_close');
+    await assert.rejects(() => adapter.execute(value.attempt, new AbortController().signal, createObserver()), /already owns/i);
+    await adapter.stop(value.attempt, { ...identity, runnerProcessInstanceId: 'wrong' });
+    await adapter.stop(value.attempt, identity);
+    await assert.rejects(() => adapter.execute(value.attempt, new AbortController().signal, createObserver()), /already owns/i);
+  } finally {
+    childProcess.spawn = realSpawn;
+    syncBuiltinESMExports();
+  }
+});
+
+test('prompt requires canonical source and every public material but excludes private evidence metadata', async (t) => {
+  const omissions = ['source', 'task', 'design', 'review', 'instruction'];
+  for (const omitted of omissions) {
+    await t.test(omitted, async (t) => {
+      const value = await scenario(t);
+      const paths = {
+        source: value.sourceRoot,
+        task: path.join(value.inputRoot, 'materials/task.md'),
+        design: path.join(value.inputRoot, 'materials/design.md'),
+        review: path.join(value.inputRoot, 'materials/review.md'),
+        instruction: path.join(value.inputRoot, 'materials/instructions/0001.md'),
+      };
+      value.options.buildPrompt = () => ({
+        systemPrompt: [value.attempt.manifestPath, ...value.reviewerMaterials, value.sourceRoot].filter((entry) => entry !== paths[omitted]).join('\n'),
+        task: 'Review only the canonical listed inputs.',
+      });
+      const observer = createObserver();
+      await assert.rejects(() => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer), /prompt omitted canonical review path/i);
+      assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
+    });
+  }
+  await t.test('source-root substring', async (t) => {
+    const value = await scenario(t);
+    value.options.buildPrompt = () => ({
+      systemPrompt: [value.attempt.manifestPath, ...value.reviewerMaterials, path.join(value.sourceRoot, 'a.ts')].join('\n'),
+      task: 'Review the listed files.',
+    });
+    await assert.rejects(
+      () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver()),
+      /prompt omitted canonical review path/i,
+    );
+  });
+  const value = await scenario(t);
+  const prompt = value.options.buildPrompt(value.attempt);
+  assert.equal(`${prompt.systemPrompt}\n${prompt.task}`.includes(value.attempt.baselinePath), false);
+  assert.equal(`${prompt.systemPrompt}\n${prompt.task}`.includes(value.attempt.inputDescriptorPath), false);
+  const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+  assert.equal(execution.lifecycle, 'succeeded');
+});
+
+test('same-size report changes across open/read boundaries fail closed', async (t) => {
+  const value = await scenario(t);
+  const hook = interceptSameSizeChange(value.reportPath, (bytes) => Buffer.from(bytes.toString('utf8').replace('"verdict":"PASS"', '"verdict":"FAIL"')));
+  try {
+    const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+    assert.equal(hook.injected, true);
+    assert.notEqual(execution.lifecycle, 'succeeded');
+    assert.match(execution.boundedDiagnostics.join('\n'), /changed while reading/i);
+  } finally {
+    hook.restore();
+  }
+});
+
 test('ambient private directories and prompts omitting canonical review paths fail before dispatch', async (t) => {
   await t.test('ambient directory', async (t) => {
     const value = await scenario(t);
@@ -343,6 +556,8 @@ test('preflight rejects relative, checkout/input-overlapping, symlink, and non-p
     { ...value.attempt, runtimeRoot: 'relative' },
     { ...value.attempt, runtimeRoot: value.inputRoot },
     { ...value.attempt, reportRoot: value.inputRoot },
+    { ...value.attempt, baselinePath: value.attempt.manifestPath },
+    { ...value.attempt, inputDescriptorPath: path.join(value.sourceRoot, 'a.ts') },
     { ...value.attempt, guardAcknowledgementPath: path.join(value.inputRoot, 'ack.json') },
     { ...value.attempt, guardExtensionPath: `${value.runtimeRoot}${path.sep}reports${path.sep}..${path.sep}review-child.ts` },
   ];

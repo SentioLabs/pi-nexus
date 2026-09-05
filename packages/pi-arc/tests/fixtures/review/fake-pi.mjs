@@ -35,8 +35,11 @@ if (mode === 'nonzero') {
 }
 if (mode === 'malformed') process.stdout.write('{not-json}\n');
 else if (mode === 'oversize') process.stdout.write(`${JSON.stringify({ type: 'diagnostic', text: 'x'.repeat(2 * 1024 * 1024) })}\n`);
+else if (mode === 'malformed-tail-lines') process.stdout.write(`${'{}\n'.repeat(129)}{not-json}\n`);
+else if (mode === 'malformed-tail-bytes') process.stdout.write(`${JSON.stringify({ text: 'x'.repeat(40 * 1024) })}\n${JSON.stringify({ text: 'y'.repeat(40 * 1024) })}\n{not-json}\n`);
 else process.stdout.write(`${JSON.stringify({ type: 'fixture-complete' })}\n`);
 
+if (mode === 'no-artifacts') process.exit(0);
 if (!acknowledgementPath || !reportPath || !guardPath || !schemaPath || !attemptId || !digest || !guardDigest || !schemaDigest) throw new Error('fake artifact environment is incomplete');
 await mkdir(path.dirname(acknowledgementPath), { recursive: true });
 const ack = {
