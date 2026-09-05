@@ -522,6 +522,39 @@ test('prompt requires canonical source and every public material but excludes pr
       );
     });
   }
+  for (const [label, quote] of [['double-quoted', '"'], ['single-quoted', "'"], ['backticked', '`'], ['unquoted', '']]) {
+    await t.test(`accepts ${label} complete canonical paths`, async (t) => {
+      const value = await scenario(t);
+      value.options.buildPrompt = () => ({
+        systemPrompt: value.absoluteReadPaths.map((entry) => `${quote}${entry}${quote}`).join('\n'),
+        task: 'Review the listed canonical paths.',
+      });
+      const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+      assert.equal(execution.lifecycle, 'succeeded');
+    });
+  }
+  for (const [label, quote, suffix] of [
+    ['double-quoted comma suffix', '"', ',copy'],
+    ['double-quoted semicolon suffix', '"', ';copy'],
+    ['single-quoted punctuation suffix', "'", ',copy'],
+    ['backticked punctuation suffix', '`', ';copy'],
+    ['double-quoted Unicode suffix', '"', '，副本'],
+    ['backticked Unicode suffix', '`', '—複製'],
+  ]) {
+    await t.test(`rejects ${label}`, async (t) => {
+      const value = await scenario(t);
+      value.options.buildPrompt = () => ({
+        systemPrompt: value.absoluteReadPaths.map((entry) => `${quote}${entry === value.sourceRoot ? entry + suffix : entry}${quote}`).join('\n'),
+        task: 'Review the listed canonical paths.',
+      });
+      const observer = createObserver();
+      await assert.rejects(
+        () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+        /prompt omitted canonical review path/i,
+      );
+      assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
+    });
+  }
   const value = await scenario(t);
   const prompt = value.options.buildPrompt(value.attempt);
   assert.equal(`${prompt.systemPrompt}\n${prompt.task}`.includes(value.attempt.baselinePath), false);
@@ -559,6 +592,66 @@ test('ambient private directories and prompts omitting canonical review paths fa
     await assert.rejects(() => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer), /canonical review path/i);
     assert.equal(observer.calls.some((entry) => entry.kind === 'before-dispatch'), false);
   });
+});
+
+test('the copied guard rejects transient authority replacement before module load', async (t) => {
+  const value = await scenario(t, 'no-artifacts');
+  const originalConfig = await readFile(value.materialized.configPath);
+  const changedConfig = JSON.parse(originalConfig);
+  changedConfig.inputRoots = [value.repositoryRoot];
+  const outsideFile = path.join(value.repositoryRoot, 'outside-original-input.txt');
+  const observations = path.join(value.root, 'startup-binding-observations.json');
+  await writeFile(outsideFile, 'fixture-only');
+  Object.assign(value.options.processEnv, {
+    STARTUP_BINDING_CONFIG: value.materialized.configPath,
+    STARTUP_BINDING_ORIGINAL_CONFIG: originalConfig.toString('base64'),
+    STARTUP_BINDING_OUTSIDE_FILE: outsideFile,
+    STARTUP_BINDING_OBSERVATIONS: observations,
+  });
+  await writeFile(value.options.piCommand, `#!/usr/bin/env node
+import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+const handlers = new Map();
+let acknowledged = false;
+let readAllowed = false;
+let loadRejected = false;
+try {
+  const module = await import(pathToFileURL(process.env.FAKE_PI_GUARD).href);
+  await module.default({
+    on(name, handler) { handlers.set(name, handler); },
+    registerTool() {},
+    events: { emit() { acknowledged = true; } },
+  });
+  await handlers.get('session_start')();
+  const decision = await handlers.get('tool_call')({
+    toolName: 'read',
+    toolCallId: 'outside-original-input',
+    input: { path: process.env.STARTUP_BINDING_OUTSIDE_FILE },
+  });
+  readAllowed = decision?.block !== true;
+} catch {
+  loadRejected = true;
+} finally {
+  await chmod(process.env.STARTUP_BINDING_CONFIG, 0o600);
+  await writeFile(process.env.STARTUP_BINDING_CONFIG, Buffer.from(process.env.STARTUP_BINDING_ORIGINAL_CONFIG, 'base64'));
+  await chmod(process.env.STARTUP_BINDING_CONFIG, 0o400);
+}
+await writeFile(process.env.STARTUP_BINDING_OBSERVATIONS, JSON.stringify({ acknowledged, readAllowed, loadRejected }));
+console.log('{}');
+`);
+  const observer = createObserver({
+    before: async () => {
+      await chmod(value.materialized.configPath, 0o600);
+      await writeFile(value.materialized.configPath, JSON.stringify(changedConfig));
+      await chmod(value.materialized.configPath, 0o400);
+    },
+  });
+  const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer);
+  assert.deepEqual(JSON.parse(await readFile(observations, 'utf8')), { acknowledged: false, readAllowed: false, loadRejected: true });
+  assert.deepEqual(await readFile(value.materialized.configPath), originalConfig);
+  assert.equal(execution.lifecycle, 'guard_failed');
+  assert.equal(execution.termination.status, 'observed');
+  assert.equal(execution.structuredReport, undefined);
 });
 
 test('preflight and execute bind guard authority to preparation references and the complete attempt', async (t) => {
@@ -671,6 +764,7 @@ test('materialization rejects malformed guard config before writing artifacts', 
 
 test('materialization rejects preexisting destinations and preserves unrelated bytes', async (t) => {
   const value = await scenario(t);
+  const originalExtension = await readFile(value.materialized.extensionPath);
   const unrelated = path.join(value.runtimeRoot, 'unrelated.txt');
   await writeFile(unrelated, 'preserve');
   await assert.rejects(() => materializeArcReviewGuard({
@@ -690,5 +784,5 @@ test('materialization rejects preexisting destinations and preserves unrelated b
     reviewerSchema: ARC_REVIEWER_REPORT_JSON_SCHEMA,
   }), /EEXIST|exist/i);
   assert.equal(await readFile(unrelated, 'utf8'), 'preserve');
-  assert.equal(await readFile(value.materialized.extensionPath, 'utf8'), await readFile(guardSource, 'utf8'));
+  assert.deepEqual(await readFile(value.materialized.extensionPath), originalExtension);
 });

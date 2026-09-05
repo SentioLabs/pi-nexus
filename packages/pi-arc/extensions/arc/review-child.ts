@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const ARC_REVIEW_GUARD_ACK_PREFIX = "pi-arc.review-child:v1:";
+const MATERIALIZED_AUTHORITY_DIGEST = "__ARC_REVIEW_AUTHORITY_DIGEST_PLACEHOLDER__";
 const CONFIG_KEYS = ["acknowledgementPath", "allowedTools", "attemptId", "expectedGuardSourceDigest", "expectedReportSchemaDigest", "expectedReviewInputDigest", "inputRoots", "reportPath", "reportRoot", "reportSchemaPath", "version"] as const;
 const FIXED_TOOLS = ["read", "grep", "find", "ls", "structured_output", "arc_review_report"] as const;
 const PATH_TOOLS = new Set(["read", "grep", "find", "ls"]);
@@ -180,6 +181,17 @@ async function requireCanonicalFileDestination(value: string, root: string, at: 
   return result;
 }
 
+function guardAuthority(config: GuardConfig): JsonRecord {
+  const { expectedGuardSourceDigest: _sourceDigest, ...authority } = config;
+  return authority;
+}
+
+function verifyMaterializedAuthority(config: GuardConfig): void {
+  if (!/^[a-f0-9]{64}$/.test(MATERIALIZED_AUTHORITY_DIGEST)) throw new Error("guard authority binding was not materialized");
+  const actual = sha256(Buffer.from(canonicalize(guardAuthority(config)), "utf8"));
+  if (actual !== MATERIALIZED_AUTHORITY_DIGEST) throw new Error("guard config authority does not match the materialized guard");
+}
+
 async function readAndValidateConfig(configUrl: URL): Promise<LoadedGuardConfig> {
   const configPath = fileURLToPath(configUrl);
   const bytes = await boundedRegularFile(configPath, MAX_CONFIG_BYTES, 0o400);
@@ -195,20 +207,22 @@ async function readAndValidateConfig(configUrl: URL): Promise<LoadedGuardConfig>
   if (!Array.isArray(value.allowedTools) || value.allowedTools.length !== FIXED_TOOLS.length || value.allowedTools.some((entry, index) => entry !== FIXED_TOOLS[index])) {
     throw new Error("allowedTools must equal the fixed review allowlist");
   }
+  const config: GuardConfig = {
+    version: 1,
+    attemptId,
+    inputRoots,
+    reportRoot: requireSafeString(value.reportRoot, "reportRoot"),
+    reportPath: requireSafeString(value.reportPath, "reportPath"),
+    reportSchemaPath: requireSafeString(value.reportSchemaPath, "reportSchemaPath"),
+    acknowledgementPath: requireSafeString(value.acknowledgementPath, "acknowledgementPath"),
+    expectedGuardSourceDigest: requireDigest(value.expectedGuardSourceDigest, "expectedGuardSourceDigest"),
+    expectedReportSchemaDigest: requireDigest(value.expectedReportSchemaDigest, "expectedReportSchemaDigest"),
+    expectedReviewInputDigest: requireDigest(value.expectedReviewInputDigest, "expectedReviewInputDigest"),
+    allowedTools: [...FIXED_TOOLS],
+  };
+  verifyMaterializedAuthority(config);
   return {
-    config: {
-      version: 1,
-      attemptId,
-      inputRoots,
-      reportRoot: requireSafeString(value.reportRoot, "reportRoot"),
-      reportPath: requireSafeString(value.reportPath, "reportPath"),
-      reportSchemaPath: requireSafeString(value.reportSchemaPath, "reportSchemaPath"),
-      acknowledgementPath: requireSafeString(value.acknowledgementPath, "acknowledgementPath"),
-      expectedGuardSourceDigest: requireDigest(value.expectedGuardSourceDigest, "expectedGuardSourceDigest"),
-      expectedReportSchemaDigest: requireDigest(value.expectedReportSchemaDigest, "expectedReportSchemaDigest"),
-      expectedReviewInputDigest: requireDigest(value.expectedReviewInputDigest, "expectedReviewInputDigest"),
-      allowedTools: [...FIXED_TOOLS],
-    },
+    config,
     digest: sha256(bytes),
     identity: fileIdentity(metadata),
   };

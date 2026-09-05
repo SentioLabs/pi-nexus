@@ -1,6 +1,6 @@
 import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, open, realpath, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { runArcBoundedProcess } from "./process.ts";
@@ -64,6 +64,7 @@ const PRIVATE_DIRECTORIES = {
 } as const;
 const GUARD_EXTENSION_NAME = "review-child.ts";
 const GUARD_CONFIG_NAME = "arc-review-guard.json";
+const AUTHORITY_DIGEST_PLACEHOLDER = "__ARC_REVIEW_AUTHORITY_DIGEST_PLACEHOLDER__";
 const GUARD_CONFIG_KEYS = ["acknowledgementPath", "allowedTools", "attemptId", "expectedGuardSourceDigest", "expectedReportSchemaDigest", "expectedReviewInputDigest", "inputRoots", "reportPath", "reportRoot", "reportSchemaPath", "version"] as const;
 const FIXED_GUARD_TOOLS = ["read", "grep", "find", "ls", "structured_output", "arc_review_report"] as const;
 const EVIDENCE_NAME = "guard-evidence.jsonl";
@@ -115,11 +116,6 @@ async function canonicalDestination(value: string, root: string, name: string): 
 
 async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0));
-  try { await handle.sync(); } finally { await handle.close(); }
-}
-
-async function syncFile(file: string): Promise<void> {
-  const handle = await open(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
@@ -215,18 +211,26 @@ export async function materializeArcReviewGuard(input: {
   if (below(runtimeRoot, reportRoot) || below(reportRoot, runtimeRoot) || inputRoots.some((root) => below(root, reportRoot) || below(reportRoot, root))) {
     throw new Error("reportRoot must be disjoint from runtimeRoot and inputRoots");
   }
+  const schemaBytes = Buffer.from(canonicalizeArcJson(input.reviewerSchema), "utf8");
+  if (schemaBytes.length > MAX_ARTIFACT_BYTES) throw new Error("reviewer schema exceeds materialization limit");
+  const reportSchemaDigest = createHash("sha256").update(schemaBytes).digest("hex");
+  const authority = { ...input.config, reportSchemaPath, expectedReportSchemaDigest: reportSchemaDigest };
+  const authorityDigest = createHash("sha256").update(canonicalizeArcJson(authority), "utf8").digest("hex");
+  const sourceBytes = await boundedRead(sourceModulePath, MAX_ARTIFACT_BYTES);
+  let source: string;
+  try { source = new TextDecoder("utf-8", { fatal: true }).decode(sourceBytes); }
+  catch { throw new Error("guard source module must be strict UTF-8"); }
+  if (source.split(AUTHORITY_DIGEST_PLACEHOLDER).length !== 2) throw new Error("guard source module must contain exactly one authority binding placeholder");
+  const materializedSource = Buffer.from(source.replace(AUTHORITY_DIGEST_PLACEHOLDER, authorityDigest), "utf8");
+  if (materializedSource.length > MAX_ARTIFACT_BYTES) throw new Error("materialized guard source exceeds byte limit");
   const created: string[] = [];
   try {
-    await copyFile(sourceModulePath, extensionPath, fsConstants.COPYFILE_EXCL);
+    await writeExclusive(extensionPath, materializedSource, 0o600);
     created.push(extensionPath);
-    await syncFile(extensionPath);
-    const schemaBytes = Buffer.from(canonicalizeArcJson(input.reviewerSchema), "utf8");
-    if (schemaBytes.length > MAX_ARTIFACT_BYTES) throw new Error("reviewer schema exceeds materialization limit");
     await writeExclusive(reportSchemaPath, schemaBytes, 0o600);
     created.push(reportSchemaPath);
     const sourceDigest = await sha256File(extensionPath);
-    const reportSchemaDigest = await sha256File(reportSchemaPath);
-    const completedConfig: ArcReviewGuardConfig = { ...input.config, reportSchemaPath, expectedGuardSourceDigest: sourceDigest, expectedReportSchemaDigest: reportSchemaDigest };
+    const completedConfig: ArcReviewGuardConfig = { ...authority, expectedGuardSourceDigest: sourceDigest };
     await writeExclusive(configPath, Buffer.from(canonicalizeArcJson(completedConfig), "utf8"), 0o600);
     created.push(configPath);
     await Promise.all(created.map((file) => chmod(file, 0o400)));
@@ -375,19 +379,42 @@ async function privateEnvironment(attempt: ArcPreparedReviewAttempt, source: Nod
   return result;
 }
 
+function quotedValueEnd(prompt: string, start: number, quote: string): number {
+  for (let index = start + 1; index < prompt.length; index += 1) {
+    if (prompt[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (prompt[index] === quote) return index;
+  }
+  return -1;
+}
+
+function isQuotedValueStart(prompt: string, index: number): boolean {
+  if (!["'", "\"", "`"].includes(prompt[index])) return false;
+  if (index === 0) return true;
+  return /[\s([{=:,;]/.test(prompt[index - 1]);
+}
+
 function promptContainsCanonicalPath(prompt: string, requiredPath: string): boolean {
-  let offset = 0;
-  while (offset <= prompt.length - requiredPath.length) {
-    const index = prompt.indexOf(requiredPath, offset);
-    if (index < 0) return false;
-    const before = index === 0 ? "" : prompt[index - 1];
-    const afterIndex = index + requiredPath.length;
-    const after = afterIndex === prompt.length ? "" : prompt[afterIndex];
-    const afterNext = afterIndex + 1 >= prompt.length ? "" : prompt[afterIndex + 1];
-    const validBefore = before === "" || /[\s'"`([{=:]/.test(before);
-    const validAfter = after === "" || /[\s'"`\])},;:]/.test(after) || (after === "." && (afterNext === "" || /\s/.test(afterNext)));
-    if (validBefore && validAfter) return true;
-    offset = index + 1;
+  for (let index = 0; index < prompt.length;) {
+    if (isQuotedValueStart(prompt, index)) {
+      const end = quotedValueEnd(prompt, index, prompt[index]);
+      if (end < 0) return false;
+      if (prompt.slice(index + 1, end) === requiredPath) return true;
+      index = end + 1;
+      continue;
+    }
+    if (prompt.startsWith(requiredPath, index)) {
+      const before = index === 0 ? "" : prompt[index - 1];
+      const afterIndex = index + requiredPath.length;
+      const after = afterIndex === prompt.length ? "" : prompt[afterIndex];
+      const afterNext = afterIndex + 1 >= prompt.length ? "" : prompt[afterIndex + 1];
+      const validBefore = before === "" || /[\s([{=:]/.test(before);
+      const validAfter = after === "" || /[\s\])},;:]/.test(after) || (after === "." && (afterNext === "" || /\s/.test(afterNext)));
+      if (validBefore && validAfter) return true;
+    }
+    index += 1;
   }
   return false;
 }
