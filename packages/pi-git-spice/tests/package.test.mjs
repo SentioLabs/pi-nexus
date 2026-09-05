@@ -6,17 +6,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  forbiddenManualSubprocessCommands,
-  manualInteractiveOutput,
-} from "./migration-fixtures.mjs";
-
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = join(packageRoot, "scripts/migrate-git-spice-plugin.py");
 const migrationContract = JSON.parse(execFileSync("python3", [
-  "-B",
-  "-c",
-  [
+  "-B", "-c", [
     "import importlib.util, json, sys",
     "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
     "module = importlib.util.module_from_spec(spec)",
@@ -24,13 +17,17 @@ const migrationContract = JSON.parse(execFileSync("python3", [
     "payload = {'commit': module.REVIEWED_UPSTREAM_COMMIT, 'pins': module.PINNED_SOURCE_SHA256}",
     "payload['required'] = module.REQUIRED_SOURCE_PATHS",
     "payload['runtime'] = [target for _, target in module.RUNTIME_MANIFEST]",
+    "targets = dict(module.RUNTIME_MANIFEST)",
+    "payload['manual'] = [(targets[source], target) for source, pairs in module.MANUAL_INTERACTIVE_TRANSFORMS.items() for _, target in pairs]",
+    "payload['manual_commands'] = module.MANUAL_SUBPROCESS_COMMANDS",
     "print(json.dumps(payload))",
-  ].join("; "),
+  ].join("\n"),
   migrationScript,
 ], { encoding: "utf8" }));
 const readText = (relative) => readFileSync(join(packageRoot, relative), "utf8");
 const readJson = (relative) => JSON.parse(readText(relative));
-
+const manualInteractiveOutput = migrationContract.manual;
+const forbiddenManualSubprocessCommands = migrationContract.manual_commands;
 const expectedSourceSha256 = {
   ".claude-plugin/plugin.json": "05a3bb20a09140dabb498f62e53e513bae64e92f4f6bd252944b4c14de5c4d75",
   "commands/continue.md": "36a2a0984affd272c80ee7264db39a760744cfb20e8d7900a91057fa56c76783",
@@ -83,11 +80,7 @@ test("generated resources match the reviewed SHA-256 map", async () => {
 });
 
 test("migration source contains no removed Markdown, occurrence, shell, or argv parser subsystem", () => {
-  const source = [
-    "scripts/migrate-git-spice-plugin.py",
-    "scripts/migration_contracts.py",
-    "scripts/migration_install.py",
-  ].map(readText).join("\n");
+  const source = readText("scripts/migrate-git-spice-plugin.py");
   for (const name of [
     "MarkdownRegion", "SourceLine", "GitSpiceOccurrence", "ProseReferenceManifestEntry",
     "RegisteredIdentifierKind", "RegisteredIdentifierGroup", "ShellWord", "ShellCommandSegment",
@@ -101,13 +94,22 @@ test("migration source contains no removed Markdown, occurrence, shell, or argv 
   }
 });
 
-test("generator and focused tests retain readable size headroom", () => {
+test("migration implementation and focused tests stay within their complete-area limits", () => {
   const physicalLines = (relative) => readText(relative).trimEnd().split("\n").length;
-  const generatorLines = physicalLines("scripts/migrate-git-spice-plugin.py");
-  const focusedTestLines = physicalLines("tests/migration.test.mjs")
-    + physicalLines("tests/package.test.mjs");
-  assert.ok(generatorLines <= 900, `generator has ${generatorLines} physical lines`);
-  assert.ok(focusedTestLines <= 1100, `focused tests have ${focusedTestLines} physical lines`);
+  const pythonFiles = readdirSync(join(packageRoot, "scripts")).filter((name) => name.endsWith(".py")).sort();
+  const testModules = readdirSync(join(packageRoot, "tests")).filter((name) => name.endsWith(".mjs"));
+  const fixtureModules = testModules.filter((name) => name.includes("fixture")).sort();
+  const migrationModules = testModules.filter((name) => name.startsWith("migration")).sort();
+  const focusedTestLines = physicalLines("tests/migration.test.mjs") + physicalLines("tests/package.test.mjs");
+  assert.deepEqual(pythonFiles, ["migrate-git-spice-plugin.py"]);
+  assert.deepEqual(fixtureModules, []);
+  assert.deepEqual(migrationModules, ["migration.test.mjs"]);
+  assert.ok(physicalLines("scripts/migrate-git-spice-plugin.py") <= 1000);
+  assert.ok(focusedTestLines <= 1200, `focused tests have ${focusedTestLines} physical lines`);
+  for (const relative of ["scripts/migrate-git-spice-plugin.py", "tests/migration.test.mjs", "tests/package.test.mjs"]) {
+    const longLines = readText(relative).split("\n").flatMap((line, index) => line.length > 160 ? [index + 1] : []);
+    assert.deepEqual(longLines, [], `${relative} has lines longer than 160 characters`);
+  }
 });
 
 test("package exposes the exact Pi git-spice runtime and publishable metadata", () => {
@@ -117,13 +119,15 @@ test("package exposes the exact Pi git-spice runtime and publishable metadata", 
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.repository.directory, "packages/pi-git-spice");
   assert.deepEqual(pkg.pi, {
+    extensions: ["./extensions/git-spice-workflow.ts"],
     skills: ["./skills"],
     prompts: ["./prompts/*.md"],
     subagents: { agents: ["./agents"] },
   });
-  assert.deepEqual(readdirSync(join(packageRoot, "prompts")).sort(), expectedGeneratedDigestPaths
+  const expectedPrompts = expectedGeneratedDigestPaths
     .filter((relative) => relative.startsWith("prompts/"))
-    .map((relative) => relative.slice("prompts/".length)));
+    .map((relative) => relative.slice("prompts/".length));
+  assert.deepEqual(readdirSync(join(packageRoot, "prompts")).sort(), expectedPrompts);
   assert.deepEqual(readdirSync(join(packageRoot, "skills")).sort(), ["git-spice", "stacking-workflow"]);
   assert.deepEqual(readdirSync(join(packageRoot, "agents")).sort(), ["stack-doctor.md", "stacker.md"]);
   assert.deepEqual([...migrationContract.runtime].sort(), expectedGeneratedDigestPaths);
@@ -174,31 +178,16 @@ test("skills and agents retain Pi identities, optional dispatch, and fresh conte
 test("generated command guidance separates unattended and manual-only execution", () => {
   const gitSpice = readText("skills/git-spice/SKILL.md");
   const stacking = readText("skills/stacking-workflow/SKILL.md");
-  assert.match(
-    gitSpice,
-    /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/,
-  );
-  assert.match(
-    gitSpice,
-    /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/,
-  );
-  assert.match(
-    gitSpice,
-    /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/,
-  );
+  assert.match(gitSpice, /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/);
   assert.match(gitSpice, /commit amend --no-edit\s+# or commit create -m "<message>"/);
   assert.match(stacking, /commit amend --no-edit\s+# or 'commit create -m "<message>"'/);
   assert.match(stacking, /instead of `git-spice --no-prompt commit create -m "<message>"`/);
   const combined = expectedGeneratedDigestPaths.map(readText).join("\n");
-  assert.doesNotMatch(
-    combined,
-    /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/,
-  );
-  assert.doesNotMatch(
-    combined,
-    /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*--no-edit)/,
-  );
-  for (const [, relative, literal] of manualInteractiveOutput) {
+  assert.doesNotMatch(combined, /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/);
+  assert.doesNotMatch(combined, /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*--no-edit)/);
+  for (const [relative, literal] of manualInteractiveOutput) {
     assert.equal(readText(relative).split(literal).length - 1, 1, `${relative}: ${literal}`);
   }
   for (const command of forbiddenManualSubprocessCommands) {

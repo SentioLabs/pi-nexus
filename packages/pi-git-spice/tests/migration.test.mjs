@@ -6,21 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  commandAnchorPattern,
-  editorOpeningAnchors,
-  failureVariants,
-  forbiddenManualSubprocessCommands,
-  manualInteractiveTransforms,
-  mutationAnchorPatterns,
-  rawSourceFiles,
-  sourceFiles,
-} from "./migration-fixtures.mjs";
-
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const migrationScript = path.join(packageRoot, "scripts/migrate-git-spice-plugin.py");
-const migrationContracts = path.join(packageRoot, "scripts/migration_contracts.py");
-const migrationInstall = path.join(packageRoot, "scripts/migration_install.py");
 const runtimeManifest = [
   ["commands/continue.md", "prompts/git-spice-continue.md"], ["commands/init.md", "prompts/git-spice-init.md"],
   ["commands/new.md", "prompts/git-spice-new.md"], ["commands/restack.md", "prompts/git-spice-restack.md"],
@@ -31,67 +18,349 @@ const runtimeManifest = [
 ];
 const requiredSourcePaths = [...runtimeManifest.map(([source]) => source), ".claude-plugin/plugin.json"];
 const temporaryRoots = new Set();
-
 const makeTemporaryDirectory = (prefix) => {
   const root = mkdtempSync(path.join(os.tmpdir(), prefix));
   temporaryRoots.add(root);
   return root;
 };
-
-test.after(() => {
-  for (const root of temporaryRoots) rmSync(root, { recursive: true, force: true });
-});
-
+test.after(() => temporaryRoots.forEach((root) => rmSync(root, { recursive: true, force: true })));
 const writeFixtureFile = (root, relativePath, content) => {
   const target = path.join(root, relativePath);
   mkdirSync(path.dirname(target), { recursive: true });
   writeFileSync(target, content);
 };
-
+const joinedLine = (...parts) => parts.join("");
+const prompt = (description, lines, argumentHint) => [
+  "---", `description: ${description}`, ...(argumentHint ? [`argument-hint: ${argumentHint}`] : []),
+  "---", "", ...lines, "Fixture source body remains.", "/git-spice:stack", "",
+].join("\n");
+const skill = (name, description, lines) => [
+  "---", `name: ${name}`, `description: ${description}`, "---", "", ...lines, "",
+].join("\n");
+const agent = (description, tools, lines) => [
+  "---", `description: ${description}`, "tools:", ...tools.map((tool) => `  - ${tool}`),
+  "model: sonnet", "---", "", ...lines, "",
+].join("\n");
+const manualOnly = "terminal-only; do not execute via a Pi/tool subprocess.";
+const manualSourceLines = {
+  initAuth: joinedLine(
+    "4. After init, run `git-spice auth status` and report whether the user is logged in. ",
+    "If not, suggest `git-spice auth login` — do NOT run it yourself (it's an interactive browser flow).",
+  ),
+  submitAuth: joinedLine(
+    "1. Confirm auth: `git-spice auth status`. If not logged in, stop and instruct the user to run ",
+    "`git-spice auth login` themselves (interactive). Don't proceed with an unauthenticated submit.",
+  ),
+  skillAuth: "| Log in to GitHub/GitLab/Bitbucket | `git-spice auth login` |",
+  skillCommitSplit: "| Split a commit interactively | `git-spice commit split` (`git-spice csp`) |",
+  skillBranchSplit: "| Split this branch at chosen commits | `git-spice branch split` (`git-spice bsp`) |",
+  skillBranchEdit: joinedLine(
+    "| Interactively edit/reorder this branch's commits | `git-spice branch edit` (`git-spice be`) ",
+    "— interactive; restacks upstack after |",
+  ),
+  skillStackEdit: "| Reorder branches in the stack | `git-spice stack edit` (`git-spice se`) — interactive |",
+  skillDownstackEdit: "| Reorder branches below the current one | `git-spice downstack edit` (`git-spice dse`) — interactive |",
+  skillBranchEditWarning: joinedLine(
+    "- **Don't `git rebase` inside a stack** without going through git-spice. You'll desync the recorded bases. ",
+    "Use `git-spice upstack restack`, or `git-spice branch edit` when the user is driving interactively.",
+  ),
+  stackingBranchSplit: joinedLine(
+    '- **"A branch grew too big and needs splitting."** Sizing problem. `git-spice branch split` ',
+    "at chosen commits (interactive — hand it to the user in unattended runs).",
+  ),
+  doctorAuth: joinedLine(
+    "| Submit errors with auth message | token expired or scope insufficient | `git-spice auth login` ",
+    "(user must run interactively) |",
+  ),
+};
+const manualLocations = {
+  initAuth: ["auth login", "commands/init.md"], submitAuth: ["auth login", "commands/submit.md"],
+  skillAuth: ["auth login", "skills/git-spice/SKILL.md"], skillCommitSplit: ["commit split", "skills/git-spice/SKILL.md"],
+  skillBranchSplit: ["branch split", "skills/git-spice/SKILL.md"], skillBranchEdit: ["branch edit", "skills/git-spice/SKILL.md"],
+  skillStackEdit: ["stack edit", "skills/git-spice/SKILL.md"],
+  skillDownstackEdit: ["downstack edit", "skills/git-spice/SKILL.md"],
+  skillBranchEditWarning: ["branch edit guidance", "skills/git-spice/SKILL.md"],
+  stackingBranchSplit: ["branch split", "skills/stacking-workflow/SKILL.md"],
+  doctorAuth: ["auth login", "agents/stack-doctor.md"],
+};
+const manualInteractiveTransforms = Object.entries(manualLocations)
+  .map(([key, [name, relative]]) => [name, relative, manualSourceLines[key]]);
+const forbiddenManualSubprocessCommands = [
+  "auth login", "commit split", "csp", "branch split", "bsp", "branch edit",
+  "be", "stack edit", "se", "downstack edit", "dse",
+];
+const rawSourceFiles = () => ({
+  "commands/continue.md": prompt("Resume a git-spice operation after conflicts", [
+    "# Continue", "Resume — or abort — a git-spice operation that was paused on a rebase conflict.",
+    "Parse `$ARGUMENTS` and run `git-spice rebase continue`.",
+    "To abandon a rebase, run `git-spice rebase abort`.",
+    "Why `git-spice rebase continue` instead of raw git? The wrapper resumes the outer operation.",
+  ], "[--abort]"),
+  "commands/init.md": prompt("Initialize git-spice", [
+    "# Init", "Confirm you're inside a git repository:",
+    "Check setup with `git-spice log long`, and offer `git-spice repo init --reset` only if asked.",
+    joinedLine(
+      "3. Run `git-spice repo init`. If `$ARGUMENTS` was provided, treat it as either a trunk branch name or ",
+      "`--trunk=<name> --remote=<name>` flags and pass it through. Otherwise let the interactive prompt run.",
+    ),
+    manualSourceLines.initAuth,
+  ], "[trunk-name | --trunk=<name> --remote=<name>]"),
+  "commands/new.md": prompt("Create a stacked branch", [
+    "# New", "Create a new branch on top of the current one with `git-spice branch create`.",
+    joinedLine(
+      "1. Parse `$ARGUMENTS` as the branch name. If empty, ask the user for one (or note that git-spice will ",
+      "auto-generate from the commit message if `--no-commit` isn't used).",
+    ),
+    "Clean trees use `git-spice branch create <name> --no-commit`.",
+  ], "<branch-name>"),
+  "commands/restack.md": prompt("Restack branches", [
+    "# Restack", "Rebase one or more branches onto their (current) bases.",
+    "Run `git-spice stack restack` and direct conflicts to `/git-spice:continue`.",
+  ], "[branch|upstack|stack|repo]"),
+  "commands/stack.md": prompt("Show the current stack", ["# Stack", "Run `git-spice log long` and present the output to the user verbatim."]),
+  "commands/submit.md": prompt("Submit a stack", [
+    "# Submit", "Submit the stack (or a slice of it) as PRs/MRs.", manualSourceLines.submitAuth,
+    "2. Parse `$ARGUMENTS` and resolve the scope.", "   - Remaining tokens are passed through as flags.",
+    "3. Run a dry run first: `git-spice <scope> submit --dry-run --fill`.",
+    joinedLine(
+      "4. Then run the real submit: `git-spice <scope> submit --fill <extra-flags>`. The `--fill` flag populates ",
+      "title/body from commit messages so the run is non-interactive.",
+    ),
+  ], "[branch|upstack|downstack|stack] [extra flags]"),
+  "commands/sync.md": prompt("Sync merged branches", [
+    "# Sync", "Sync with the remote: pull trunk, delete merged branches, restack survivors.",
+    "Run `git-spice repo sync --restack` and recover with `/git-spice:continue`.",
+  ]),
+  "skills/git-spice/SKILL.md": skill("git-spice", "Reference for the git-spice CLI.", [
+    "# git-spice", "## Command map", joinedLine(
+      "Interactive commands can prompt. In non-interactive runs, pass explicit arguments and `--no-prompt`. ",
+      "Leave the inherently-interactive commands to the user.",
+    ),
+    "| Initialize | `git-spice repo init --trunk=<name> --remote=<name>` (`git-spice r i`) |",
+    manualSourceLines.skillAuth,
+    "| Commit staged changes | `git-spice commit create` (`git-spice cc`) |",
+    "| Amend the tip | `git-spice commit amend` (`git-spice ca`) |",
+    "| Squash commits | `git-spice branch squash` (`git-spice bsq`) |",
+    manualSourceLines.skillCommitSplit, manualSourceLines.skillBranchSplit, manualSourceLines.skillBranchEdit,
+    manualSourceLines.skillStackEdit, manualSourceLines.skillDownstackEdit,
+    "> Prefer `git-spice commit ...` over raw `git commit` while inside a stack.",
+    "Resolve conflicts with `git-spice rebase continue`.", manualSourceLines.skillBranchEditWarning,
+    "Inspect with `git-spice log long`.",
+    "Create work with `git-spice branch create <slug>` (`git-spice bc`).",
+    "Continue with `git-spice rebase continue` (`git-spice rbc`).",
+    "git-spice branch create feat-a",
+    "git-spice commit amend          # or commit create — both auto-restack upstack",
+    "git-spice commit amend", "## Dispatching the subagents",
+    "Dispatch via Task with `subagent_type: git-spice:stacker` or `subagent_type: git-spice:stack-doctor`.",
+    "## Configuration",
+  ]),
+  "skills/stacking-workflow/SKILL.md": skill("stacking-workflow", "Build reviewable dependent branch stacks.", [
+    "# Stacking workflow", "Use `git-spice branch create <slug>` for a completed task.",
+    "After conflicts, run `git-spice rebase continue`.",
+    "git-spice commit amend            # or 'commit create' for a follow-up commit",
+    "- I committed with `git commit` instead of `git-spice commit create`.", manualSourceLines.stackingBranchSplit,
+    "## Driving with subagents",
+    "Dispatch via Task with `subagent_type: git-spice:stacker` or `subagent_type: git-spice:stack-doctor`.",
+    "## Don't",
+  ]),
+  "agents/stack-doctor.md": agent("Use this agent to diagnose and repair a wedged git-spice stack.", ["Bash", "Read", "Glob", "Grep"], [
+    "# Stack Doctor Agent", "Use `git-spice rebase continue` during a git-spice operation.",
+    "## Diagnosis checklist", "Run `git-spice rebase continue` only after diagnosis.",
+    "For repair, run `git-spice <scope> submit --fill`.",
+    joinedLine(
+      "| Branches exist in git but not in `log long --all` | untracked | `git-spice branch track` per branch, ",
+      "or `git-spice downstack track` from the top |",
+    ),
+    manualSourceLines.doctorAuth, "## Repair principles", "<paste git-spice log long and git status>",
+  ]),
+  "agents/stacker.md": agent("Use this agent to build a stack of dependent git-spice branches.", [
+    "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+  ], [
+    "# Stacker Agent", "## Non-interactive discipline", joinedLine(
+      "`git-spice branch create <prefix><slug>` (uses staged changes as the commit). The commit message defaults ",
+      "to the staged changes; if the task description maps to a clean conventional-commit subject, prefer ",
+      "`git-spice branch create <name> -m \"<subject>\"`.",
+    ),
+    "<paste git-spice log long>",
+  ]),
+  ".claude-plugin/plugin.json": JSON.stringify({
+    name: "git-spice", description: "Fixture git-spice plugin.", version: "1.0.0",
+    author: { name: "Fixture", url: "https://example.test" },
+    repository: "https://example.test/repository", homepage: "https://example.test/home",
+    license: "MIT", keywords: ["git-spice"],
+  }, null, 2) + "\n",
+  "CHANGELOG.md": "# Upstream changelog\n", "version.txt": "1.0.0\n",
+});
+const commandNames = "(?:repo|auth|log|branch|commit|upstack|downstack|stack|rebase|trunk|top|bottom|up|down|<scope>)";
+const commandAnchorPattern = new RegExp(`(?<![\\w-])git-spice(?= ${commandNames}(?:\\s|\`|$))`, "g");
+const mutationAnchorPatterns = {
+  reset: /git-spice(?: --no-prompt)? repo init(?=[^`\n]*--reset)/g,
+  init: /git-spice(?: --no-prompt)? repo init(?![^`\n]*--reset)(?=[\s`])/g,
+  branchCreate: /git-spice(?: --no-prompt)? branch create(?=[\s`])/g,
+  rebaseContinue: /git-spice(?: --no-prompt)? rebase continue(?=[\s`])/g,
+  rebaseAbort: /git-spice(?: --no-prompt)? rebase abort(?=[\s`])/g,
+  restack: /git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|repo) restack(?=[\s`])/g,
+  sync: /git-spice(?: --no-prompt)? repo sync(?=[\s`])/g,
+  submit: /git-spice(?: --no-prompt)? (?:branch|upstack|downstack|stack|<scope>) submit(?=[\s`])/g,
+};
+const expectedCommandAnchorCounts = {
+  "commands/continue.md": 4, "commands/init.md": 6, "commands/new.md": 5,
+  "commands/restack.md": 5, "commands/stack.md": 2, "commands/submit.md": 4, "commands/sync.md": 3,
+  "skills/git-spice/SKILL.md": 96, "skills/stacking-workflow/SKILL.md": 12,
+  "agents/stack-doctor.md": 24, "agents/stacker.md": 10,
+};
+const expectedMutationAnchorCounts = {
+  "commands/continue.md": { rebaseContinue: 2, rebaseAbort: 1 }, "commands/init.md": { init: 1, reset: 1 },
+  "commands/new.md": { branchCreate: 4 }, "commands/restack.md": { restack: 4 },
+  "commands/submit.md": { submit: 2 }, "commands/sync.md": { sync: 1 },
+  "skills/git-spice/SKILL.md": {
+    init: 3, reset: 2, branchCreate: 12, rebaseContinue: 3, rebaseAbort: 2, restack: 11, sync: 3, submit: 8,
+  },
+  "skills/stacking-workflow/SKILL.md": { branchCreate: 1, rebaseContinue: 1, restack: 1, sync: 1, submit: 1 },
+  "agents/stack-doctor.md": { init: 2, rebaseContinue: 3, restack: 7, submit: 3 },
+  "agents/stacker.md": { branchCreate: 3, submit: 2 },
+};
+const aliasNames = [
+  "r", "ls", "ll", "bdi", "bc", "btr", "dstr", "cc", "ca", "csp", "cf", "cp", "bco", "br",
+  "usr", "dsr", "sr", "rr", "bsq", "bsp", "be", "bfo", "bon", "uso", "se", "dse", "brn", "bd",
+  "sd", "usd", "buntr", "bs", "dss", "uss", "ss", "rs", "rbc", "rba",
+];
+const aliasCommandAnchorPattern = new RegExp(
+  `(?<![\\w-])git-spice(?= (?:${aliasNames.join("|")})(?:\\s|\`|\\)))`, "g",
+);
+const expectedAliasNames = Object.fromEntries(aliasNames.map((name) => [name, name === "ls" || name === "ll" ? 2 : 1]));
+const editorOpeningAnchors = [
+  ["commit create", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? commit create(?=[^\w-]|$)/g],
+  ["commit create alias", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? cc(?=[^\w-]|$)/g],
+  ["commit amend", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? commit amend(?=[^\w-]|$)/g],
+  ["commit amend alias", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? ca(?=[^\w-]|$)/g],
+  ["branch squash", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? branch squash(?=[^\w-]|$)/g],
+  ["branch squash alias", "skills/git-spice/SKILL.md", /git-spice(?: --no-prompt)? bsq(?=[^\w-]|$)/g],
+  ["commit create", "skills/stacking-workflow/SKILL.md", /git-spice(?: --no-prompt)? commit create(?=[^\w-]|$)/g],
+  ["commit amend", "skills/stacking-workflow/SKILL.md", /git-spice(?: --no-prompt)? commit amend(?=[^\w-]|$)/g],
+  ["direct commit create alternative", "skills/git-spice/SKILL.md", /# or commit create —/g],
+  ["direct commit create alternative", "skills/stacking-workflow/SKILL.md", /# or 'commit create' for/g],
+];
+const mutationPadding = {
+  reset: "Fixture reset: `git-spice repo init --reset`.", init: "Fixture init: `git-spice repo init`.",
+  branchCreate: "Fixture branch: `git-spice branch create <fixture> -m \"fixture\"`.",
+  rebaseContinue: "Fixture continue: `git-spice rebase continue`.", rebaseAbort: "Fixture abort: `git-spice rebase abort`.",
+  restack: "Fixture restack: `git-spice branch restack`.", sync: "Fixture sync: `git-spice repo sync`.",
+  submit: "Fixture submit: `git-spice stack submit --fill`.",
+};
+const countMatches = (text, pattern) => Array.from(text.matchAll(pattern)).length;
+const padExpectedAnchors = (relative, content) => {
+  let padded = content;
+  const body = () => padded.slice(padded.indexOf("\n---\n", 4) + 5);
+  const expectedMutations = expectedMutationAnchorCounts[relative] ?? {};
+  for (const name of Object.keys(mutationAnchorPatterns)) {
+    const missing = (expectedMutations[name] ?? 0) - countMatches(body(), mutationAnchorPatterns[name]);
+    assert.ok(missing >= 0, `${relative} ${name} fixture cardinality`);
+    padded += `${Array.from({ length: missing }, () => mutationPadding[name]).join("\n")}\n`;
+  }
+  if (relative === "skills/git-spice/SKILL.md") {
+    for (const [alias, expected] of Object.entries(expectedAliasNames)) {
+      const pattern = new RegExp(`(?<![\\w-])git-spice ${alias}(?=\\s|\`|\\))`, "g");
+      const missing = expected - countMatches(body(), pattern);
+      const invocation = alias === "r" ? "r i" : alias;
+      padded += `${Array.from({ length: missing }, () => `Alias: \`git-spice ${invocation}\`.`).join("\n")}\n`;
+    }
+  }
+  const expectedAliases = relative === "skills/git-spice/SKILL.md" ? 40 : 0;
+  assert.equal(countMatches(body(), aliasCommandAnchorPattern), expectedAliases);
+  const missingCommands = expectedCommandAnchorCounts[relative] - countMatches(body(), commandAnchorPattern);
+  assert.ok(missingCommands >= 0, `${relative} command fixture cardinality`);
+  padded += `${Array.from({ length: missingCommands }, () => "Command: `git-spice log long`.").join("\n")}\n`;
+  return padded;
+};
+const sourceFiles = () => Object.fromEntries(Object.entries(rawSourceFiles()).map(([relative, content]) => [
+  relative, relative.endsWith(".md") && relative !== "CHANGELOG.md" ? padExpectedAnchors(relative, content) : content,
+]));
+const validPluginMetadata = () => JSON.parse(rawSourceFiles()[".claude-plugin/plugin.json"]);
+const changedMetadata = (change) => {
+  const metadata = validPluginMetadata();
+  change(metadata);
+  return JSON.stringify(metadata);
+};
+const metadataVariants = [
+  ["missing field", () => changedMetadata((value) => { delete value.homepage; }), /fields.*missing=.*homepage/s],
+  ["duplicate top-level key", () => rawSourceFiles()[".claude-plugin/plugin.json"].replace(
+    '"name": "git-spice",', '"name": "git-spice",\n  "name": "duplicate",',
+  ), /Duplicate JSON key.*name/],
+  ["duplicate nested key", () => rawSourceFiles()[".claude-plugin/plugin.json"].replace(
+    '"name": "Fixture",', '"name": "Fixture",\n    "name": "duplicate",',
+  ), /Duplicate JSON key.*name/],
+  ["unknown field", () => changedMetadata((value) => { value.future = true; }), /fields.*unknown=.*future/s],
+  ["malformed JSON", () => "{ not-json\n", /Invalid source plugin\.json/],
+  ["whitespace scalar", () => changedMetadata((value) => { value.description = "   \t"; }), /description must be a non-empty/],
+  ["whitespace author", () => changedMetadata((value) => { value.author.url = "  "; }), /author must have non-empty/],
+  ["whitespace keyword", () => changedMetadata((value) => { value.keywords = ["  "]; }), /keywords must be a string array/],
+];
+const frontmatterVariants = [
+  ["missing field", (text) => text.replace(/^description:.*\n/m, ""), /description is required|missing=.*description/s],
+  ["duplicate field", (text) => text.replace(/^description:.*$/m, (line) => `${line}\n${line}`), /Duplicate source .* key/],
+  ["unknown field", (text) => text.replace(/^description:/m, "future:"), /Unsupported source .* key/],
+  ["malformed field", (text) => text.replace(/^description:/m, "description ="), /Unsupported source .* shape/],
+  ["whitespace field", (text) => text.replace(/^description:.*$/m, "description:    "), /description .* non-empty/],
+];
+const failureVariants = metadataVariants.map(([name, make, diagnostic]) => [
+  `plugin metadata ${name}`, ".claude-plugin/plugin.json", make, diagnostic,
+]);
+for (const [kind, relative] of [
+  ["prompt frontmatter", "commands/continue.md"], ["skill frontmatter", "skills/git-spice/SKILL.md"],
+  ["agent frontmatter", "agents/stacker.md"],
+]) {
+  for (const [name, mutate, diagnostic] of frontmatterVariants) {
+    failureVariants.push([`${kind} ${name}`, relative, () => mutate(sourceFiles()[relative]), diagnostic]);
+  }
+}
+failureVariants.push(
+  ["prompt empty optional field", "commands/continue.md", () => sourceFiles()["commands/continue.md"]
+    .replace(/^argument-hint:.*$/m, "argument-hint:    "), /argument-hint must be non-empty/],
+  ["agent malformed tool", "agents/stacker.md", () => sourceFiles()["agents/stacker.md"]
+    .replace(/^  - Bash$/m, " - Bash"), /Unsupported source agent frontmatter shape|Malformed source agent tool/],
+  ["agent item before field", "agents/stacker.md", () => sourceFiles()["agents/stacker.md"]
+    .replace(/^---$/m, "---\n  - Bash"), /List item outside source agent tools block/],
+  ["agent item in description", "agents/stacker.md", () => sourceFiles()["agents/stacker.md"]
+    .replace(/^description:.*$/m, (line) => `${line}\n  - Bash`), /List item outside source agent tools block/],
+  ["agent item after model", "agents/stacker.md", () => sourceFiles()["agents/stacker.md"]
+    .replace("model: sonnet", "model: sonnet\n  - Bash"), /List item outside source agent tools block/],
+  ["agent invalid model", "agents/stacker.md", () => sourceFiles()["agents/stacker.md"]
+    .replace("model: sonnet", "model: opus"), /model must be exactly/],
+  ["removed semantic anchor", "commands/init.md", () => sourceFiles()["commands/init.md"]
+    .replace("Confirm you're inside a git repository:", "Confirm setup:"), /Expected exactly one source text occurrence/],
+  ["duplicated semantic anchor", "commands/init.md", () => sourceFiles()["commands/init.md"]
+    + "Confirm you're inside a git repository:\n", /Expected exactly one source text occurrence/],
+);
 const createSourceFixture = (overrides = {}) => {
   const root = makeTemporaryDirectory("pi-git-spice-source-");
   const files = { ...sourceFiles(), ...overrides };
   for (const [relative, content] of Object.entries(files)) writeFixtureFile(root, relative, content);
   return root;
 };
-
 const createTemporaryPackage = () => {
   const root = makeTemporaryDirectory("pi-git-spice-package-");
   const scripts = path.join(root, "scripts");
   mkdirSync(scripts, { recursive: true });
   const script = path.join(scripts, "migrate-git-spice-plugin.py");
   copyFileSync(migrationScript, script);
-  copyFileSync(migrationContracts, path.join(scripts, "migration_contracts.py"));
-  copyFileSync(migrationInstall, path.join(scripts, "migration_install.py"));
   return { root, script };
 };
-
 const sourceDigestMap = (source) => Object.fromEntries(requiredSourcePaths.map((relative) => [
-  relative,
-  createHash("sha256").update(readFileSync(path.join(source, relative))).digest("hex"),
+  relative, createHash("sha256").update(readFileSync(path.join(source, relative))).digest("hex"),
 ]));
-
 const migrationImportHarness = [
   "import importlib.util, json, pathlib, sys",
   "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
-  "module = importlib.util.module_from_spec(spec)",
-  "spec.loader.exec_module(module)",
+  "module = importlib.util.module_from_spec(spec)", "spec.loader.exec_module(module)",
   "module.migrate(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), json.loads(sys.argv[4]))",
-].join("; ");
-
+].join("\n");
 const runMigration = (
-  script,
-  source,
-  cwd,
-  { expectedDigests = sourceDigestMap(source), productionCli = false } = {},
-) => spawnSync(
-  "python3",
-  productionCli
-    ? ["-B", script, source]
-    : ["-B", "-c", migrationImportHarness, script, source, cwd, JSON.stringify(expectedDigests)],
-  { cwd, encoding: "utf8" },
-);
-
+  script, source, cwd, { expectedDigests = sourceDigestMap(source), productionCli = false } = {},
+) => spawnSync("python3", productionCli
+  ? ["-B", script, source]
+  : ["-B", "-c", migrationImportHarness, script, source, cwd, JSON.stringify(expectedDigests)],
+{ cwd, encoding: "utf8" });
 const runtimeSnapshot = (root) => {
   const snapshot = new Map();
   const visit = (relative) => {
@@ -106,29 +375,19 @@ const runtimeSnapshot = (root) => {
   for (const generatedRoot of ["agents", "prompts", "skills"]) visit(generatedRoot);
   return snapshot;
 };
-
-const assertRuntimeSnapshot = (root, expected) => {
-  assert.deepEqual(runtimeSnapshot(root), expected);
-};
-
-const assertNoTransactionDebris = (root) => {
-  assert.deepEqual(
-    readdirSync(root).filter((name) => name.startsWith(".pi-git-spice-install-")),
-    [],
-    "transaction staging and backup directories",
-  );
-};
-
+const assertRuntimeSnapshot = (root, expected) => assert.deepEqual(runtimeSnapshot(root), expected);
+const assertNoTransactionDebris = (root) => assert.deepEqual(
+  readdirSync(root).filter((name) => name.startsWith(".pi-git-spice-install-")),
+  [], "transaction staging and backup directories",
+);
 const installedSentinels = (root) => {
   for (const name of ["prompts", "skills", "agents"]) writeFixtureFile(root, `${name}/sentinel.txt`, `${name} original\n`);
   return new Map(["prompts", "skills", "agents"].map((name) => [name, readFileSync(path.join(root, name, "sentinel.txt"))]));
 };
-
 const assertRollback = (root, sentinels) => {
   for (const [name, bytes] of sentinels) assert.deepEqual(readFileSync(path.join(root, name, "sentinel.txt")), bytes, name);
   assertNoTransactionDebris(root);
 };
-
 for (const relative of requiredSourcePaths) {
   test(`source digest drift for ${relative} fails before installed-root mutation`, () => {
     const source = createSourceFixture();
@@ -136,10 +395,8 @@ for (const relative of requiredSourcePaths) {
     installedSentinels(packageCopy.root);
     const expectedDigests = sourceDigestMap(source);
     const before = runtimeSnapshot(packageCopy.root);
-    writeFileSync(path.join(source, relative), Buffer.concat([
-      readFileSync(path.join(source, relative)),
-      Buffer.from("\nreview drift\n"),
-    ]));
+    const drifted = Buffer.concat([readFileSync(path.join(source, relative)), Buffer.from("\nreview drift\n")]);
+    writeFileSync(path.join(source, relative), drifted);
     const result = runMigration(packageCopy.script, source, packageCopy.root, { expectedDigests });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, new RegExp(relative.replaceAll("/", "\\/")));
@@ -163,7 +420,6 @@ test("production CLI rejects synthetic source bytes with compiled-in pins", () =
   assertRuntimeSnapshot(packageCopy.root, before);
   assertNoTransactionDebris(packageCopy.root);
 });
-
 for (const [name, mutate, diagnostic] of [
   ["missing", (digests) => { delete digests[requiredSourcePaths[0]]; }, /digest keys.*missing.*commands\/continue\.md/is],
   ["extra", (digests) => { digests["commands/future.md"] = "0".repeat(64); }, /digest keys.*extra.*commands\/future\.md/is],
@@ -199,12 +455,9 @@ test("reviewed fixture digest seam still reaches transform anchor cardinality ch
   assertRuntimeSnapshot(packageCopy.root, before);
   assertNoTransactionDebris(packageCopy.root);
 });
-
 const inlineGitSpiceCommands = (text, operation) => Array.from(
-  text.matchAll(new RegExp("`(git-spice(?: --no-prompt)? " + operation + "[^`]*)`", "g")),
-  ([, command]) => command,
+  text.matchAll(new RegExp("`(git-spice(?: --no-prompt)? " + operation + "[^`]*)`", "g")), ([, command]) => command,
 );
-
 const assertSafeBranchCreation = (text, context) => {
   const commands = Array.from(text.matchAll(/git-spice(?: --no-prompt)? branch create[^\n`]*/g), ([command]) => command.trim());
   assert.ok(commands.length > 0, `${context} contains branch creation guidance`);
@@ -213,59 +466,36 @@ const assertSafeBranchCreation = (text, context) => {
     assert.match(command, /(?:^| )-m (?:"[^"]+"|<[^>]+>)|--no-commit/, command);
   }
 };
-
 const assertSafeRebaseContinuation = (text, context) => {
   const commands = inlineGitSpiceCommands(text, "rebase continue");
   assert.ok(commands.length > 0, `${context} contains rebase continuation guidance`);
   for (const command of commands) assert.equal(command, "git-spice --no-prompt rebase continue --no-edit", context);
 };
-
 const assertSafeEditorOpeningGuidance = (gitSpice, stacking) => {
-  assert.match(
-    gitSpice,
-    /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/,
-  );
-  assert.match(
-    gitSpice,
-    /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/,
-  );
-  assert.match(
-    gitSpice,
-    /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/,
-  );
+  assert.match(gitSpice, /`git-spice --no-prompt commit create -m "<message>"` \(`git-spice --no-prompt cc -m "<message>"`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt commit amend --no-edit` \(`git-spice --no-prompt ca --no-edit`\)/);
+  assert.match(gitSpice, /`git-spice --no-prompt branch squash --no-edit` \(`git-spice --no-prompt bsq --no-edit`\)/);
   assert.match(gitSpice, /commit amend --no-edit\s+# or commit create -m "<message>"/);
   assert.match(stacking, /commit amend --no-edit\s+# or 'commit create -m "<message>"'/);
   assert.match(stacking, /instead of `git-spice --no-prompt commit create -m "<message>"`/);
   const combined = `${gitSpice}\n${stacking}`;
-  assert.doesNotMatch(
-    combined,
-    /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/,
-  );
-  assert.doesNotMatch(
-    combined,
-    /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*--no-edit)/,
-  );
+  assert.doesNotMatch(combined, /git-spice --no-prompt (?:commit create|cc)(?![^`\n]*(?:-m|--message|-F|--message-file)(?:[ =]))/);
+  assert.doesNotMatch(combined, /git-spice --no-prompt (?:commit amend|ca|branch squash|bsq)(?![^`\n]*--no-edit)/);
 };
-
 const assertManualInteractiveOutput = (packageCopy) => {
   const outputs = Object.fromEntries(runtimeManifest.map(([source, target]) => [
-    source,
-    readFileSync(path.join(packageCopy.root, target), "utf8"),
+    source, readFileSync(path.join(packageCopy.root, target), "utf8"),
   ]));
-  for (const [name, relative, , target] of manualInteractiveTransforms) {
-    assert.equal(outputs[relative].split(target).length - 1, 1, `${relative}: ${name}`);
-  }
   const combined = Object.values(outputs).join("\n");
-  for (const command of forbiddenManualSubprocessCommands) {
+  assert.equal(combined.split(manualOnly).length - 1, manualInteractiveTransforms.length);
+  for (const command of forbiddenManualSubprocessCommands)
     assert.equal(combined.includes(`git-spice --no-prompt ${command}`), false, command);
-  }
 };
 
 test("migration CLI does not leave imported helper bytecode beside the generator", () => {
   const packageCopy = createTemporaryPackage();
   const result = spawnSync("python3", [packageCopy.script, "--help"], {
-    cwd: packageCopy.root,
-    encoding: "utf8",
+    cwd: packageCopy.root, encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(path.join(packageCopy.root, "scripts/__pycache__")), false);
@@ -279,16 +509,14 @@ test("migration CLI parses positional and option source forms without a digest b
   const packageCopy = createTemporaryPackage();
   const positional = runMigration(packageCopy.script, source, packageCopy.root, { productionCli: true });
   const option = spawnSync("python3", ["-B", packageCopy.script, "--source", source], {
-    cwd: packageCopy.root,
-    encoding: "utf8",
+    cwd: packageCopy.root, encoding: "utf8",
   });
   for (const result of [positional, option]) {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Source digest drift/);
   }
   const duplicate = spawnSync("python3", ["-B", packageCopy.script, source, "--source", source], {
-    cwd: packageCopy.root,
-    encoding: "utf8",
+    cwd: packageCopy.root, encoding: "utf8",
   });
   assert.notEqual(duplicate.status, 0);
   assert.match(duplicate.stderr, /either positionally or with --source/);
@@ -299,8 +527,7 @@ test("invalid source fails before rewriting installed resources", () => {
   const packageCopy = createTemporaryPackage();
   const sentinels = installedSentinels(packageCopy.root);
   const result = runMigration(packageCopy.script, source, packageCopy.root, {
-    expectedDigests: {},
-    productionCli: true,
+    expectedDigests: {}, productionCli: true,
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Missing expected paths/);
@@ -360,7 +587,6 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   assert.match(prompts["commands/submit.md"], /submit --dry-run --fill <draft-flag>/);
   assert.match(prompts["commands/submit.md"], /reject prompt controls and conflicting draft controls/i);
   assert.doesNotMatch(prompts["commands/submit.md"], /<extra-flags>/);
-
   const generatedSkills = Object.fromEntries(["skills/git-spice/SKILL.md", "skills/stacking-workflow/SKILL.md"].map((relative) => [
     relative, readFileSync(path.join(packageCopy.root, relative), "utf8"),
   ]));
@@ -374,7 +600,6 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
     assertSafeBranchCreation(output, relative);
     assertSafeRebaseContinuation(output, relative);
   }
-
   const stacker = readFileSync(path.join(packageCopy.root, "agents/stacker.md"), "utf8");
   assert.match(stacker, /name: stacker/);
   assert.match(stacker, /package: git-spice/);
@@ -383,7 +608,6 @@ test("migration transforms source bodies while applying Pi safety adaptations", 
   assert.doesNotMatch(stacker, /model: sonnet/);
   assert.match(stacker, /<paste final stack log output>/);
   assertSafeBranchCreation(stacker, "stacker agent");
-
   const doctor = readFileSync(path.join(packageCopy.root, "agents/stack-doctor.md"), "utf8");
   assert.match(doctor, /<paste final stack log and git status output>/);
   assertSafeRebaseContinuation(doctor, "stack-doctor agent");
@@ -429,7 +653,6 @@ test("every repeated git-spice reference survives semantic transformation", () =
   assert.equal((output.match(/\/git-spice-continue/g) ?? []).length, 2);
   assert.doesNotMatch(output, /\/git-spice:continue/);
 });
-
 const assertMigrationFailure = (relative, content, diagnostic, requireSourcePath = false) => {
   const source = createSourceFixture({ [relative]: `${content}\n` });
   const packageCopy = createTemporaryPackage();
@@ -440,34 +663,27 @@ const assertMigrationFailure = (relative, content, diagnostic, requireSourcePath
   if (requireSourcePath) assert.match(result.stderr, new RegExp(relative.replaceAll("/", "\\/")));
   assertRollback(packageCopy.root, sentinels);
 };
-
 for (const [name, relative, makeContent, diagnostic] of failureVariants) {
   test(`${name} fails before installation`, () => assertMigrationFailure(relative, makeContent(), diagnostic));
 }
-
 const manualAnchorMutation = (content, source, variant) => {
   if (variant === "zero") return content.replace(source, "");
   if (variant === "duplicate") return `${content.trimEnd()}\n${source}\n`;
   const drifted = `${source[0]} ${source.slice(1)}`;
   return content.replace(source, drifted);
 };
-
 for (const [name, relative, source] of manualInteractiveTransforms) {
   for (const variant of ["zero", "duplicate", "drifted"]) {
     test(`${name} rejects ${variant} manual-interactive source anchor in ${relative}`, () => {
       const content = manualAnchorMutation(sourceFiles()[relative], source, variant);
-      assertMigrationFailure(
-        relative,
-        content,
-        /manual-interactive source anchor cardinality/,
-        true,
-      );
+      assertMigrationFailure(relative, content, /manual-interactive source anchor cardinality/, true);
     });
   }
 }
-
 const guardedMutationAnchors = [
-  ...editorOpeningAnchors.map(([operation, relative, pattern]) => [operation, relative, pattern, new RegExp(`${operation} editor-opening anchor cardinality`)]),
+  ...editorOpeningAnchors.map(([operation, relative, pattern]) => [
+    operation, relative, pattern, new RegExp(`${operation} editor-opening anchor cardinality`),
+  ]),
   ["init/reset", "commands/init.md", mutationAnchorPatterns.reset, /reset mutation anchor cardinality/],
   ["init/reconfiguration", "commands/init.md", mutationAnchorPatterns.init, /init mutation anchor cardinality/],
   ["branch create", "commands/new.md", mutationAnchorPatterns.branchCreate, /branch create mutation anchor cardinality/],
@@ -478,7 +694,6 @@ const guardedMutationAnchors = [
   ["submit draft injection", "commands/submit.md", mutationAnchorPatterns.submit, /submit mutation anchor cardinality/],
   ["other command mutation", "commands/stack.md", commandAnchorPattern, /command anchor cardinality/],
 ];
-
 const mutateAnchorCardinality = (content, pattern, variant) => {
   const matches = Array.from(content.matchAll(pattern), (match) => match[0]);
   assert.ok(matches.length > 0);
@@ -494,7 +709,6 @@ const mutateAnchorCardinality = (content, pattern, variant) => {
     : matches[0].replace("commit create", "commit  create");
   return content.replace(new RegExp(pattern.source), drifted);
 };
-
 for (const [operation, relative, pattern, diagnostic] of guardedMutationAnchors) {
   for (const variant of ["zero", "duplicate", "drifted"]) {
     test(`${operation} rejects ${variant} mutation anchors before installation`, () => assertMigrationFailure(
@@ -502,25 +716,57 @@ for (const [operation, relative, pattern, diagnostic] of guardedMutationAnchors)
     ));
   }
 }
-
 const runProbe = (python, packageCopy, source) => spawnSync(
-  "python3",
-  ["-B", "-c", python, packageCopy.script, source, JSON.stringify(sourceDigestMap(source))],
+  "python3", ["-B", "-c", python, packageCopy.script, source, JSON.stringify(sourceDigestMap(source))],
   { cwd: packageCopy.root, encoding: "utf8" },
 );
 
+test("sha256_file exposes the required lowercase digest API", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const relative = "commands/stack.md";
+  const expected = sourceDigestMap(source)[relative];
+  const probe = [
+    "import importlib.util, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)", "spec.loader.exec_module(module)",
+    "assert module.sha256_file.__annotations__ == {'path': pathlib.Path, 'return': str}",
+    "print(module.sha256_file(pathlib.Path(sys.argv[2])))",
+  ].join("\n");
+  const result = spawnSync("python3", ["-B", "-c", probe, packageCopy.script, path.join(source, relative)], {
+    cwd: packageCopy.root, encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), expected);
+  assert.match(result.stdout.trim(), /^[a-f0-9]{64}$/);
+});
+
+test("migrate reads each classified source file exactly once", () => {
+  const source = createSourceFixture();
+  const packageCopy = createTemporaryPackage();
+  const probe = [
+    "import importlib.util, json, pathlib, sys",
+    "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)", "spec.loader.exec_module(module)",
+    "source = pathlib.Path(sys.argv[2])", "expected = json.loads(sys.argv[3])",
+    "original_read_bytes = pathlib.Path.read_bytes",
+    "calls = {relative: 0 for relative in module.REQUIRED_SOURCE_PATHS}",
+    "def counted_read_bytes(path):", "    try: relative = path.relative_to(source).as_posix()",
+    "    except ValueError: relative = None", "    if relative in calls: calls[relative] += 1",
+    "    return original_read_bytes(path)", "pathlib.Path.read_bytes = counted_read_bytes",
+    "module.migrate(source, module.PACKAGE_ROOT, expected)",
+    "assert calls == {relative: 1 for relative in module.REQUIRED_SOURCE_PATHS}, calls",
+  ].join("\n");
+  const result = runProbe(probe, packageCopy, source);
+  assert.equal(result.status, 0, result.stderr);
+});
 const sourceSnapshotProbe = (directory, body, beforeBuild = "") => [
   "import importlib.util, json, pathlib, sys",
   "spec = importlib.util.spec_from_file_location('migration', sys.argv[1])",
-  "module = importlib.util.module_from_spec(spec)",
-  "spec.loader.exec_module(module)",
-  "source = pathlib.Path(sys.argv[2])",
-  `temporary = pathlib.Path(module.PACKAGE_ROOT) / '${directory}'`,
-  "temporary.mkdir()",
-  "snapshot = module.load_validated_source(source, json.loads(sys.argv[3]))",
-  beforeBuild,
-  "generated = module.build_generated_tree(snapshot, temporary)",
-  body,
+  "module = importlib.util.module_from_spec(spec)", "spec.loader.exec_module(module)",
+  "source = pathlib.Path(sys.argv[2])", `temporary = pathlib.Path(module.PACKAGE_ROOT) / '${directory}'`,
+  "temporary.mkdir()", "snapshot = module.load_validated_source(source, json.loads(sys.argv[3]))",
+  beforeBuild, "generated = module.build_generated_tree(snapshot, temporary)", body,
 ].join("\n");
 const generatedTreeProbe = (body) => sourceSnapshotProbe("validator-probe", `${body}\nmodule.validate_generated_tree(generated)`);
 
@@ -530,17 +776,14 @@ test("validate_source returns None and migrate installs one immutable validated 
   const source = createSourceFixture({ [relative]: `${sourceFiles()[relative]}\n${reviewed}\n` });
   const packageCopy = createTemporaryPackage();
   const interception = [
-    "expected = json.loads(sys.argv[3])",
-    "assert module.validate_source(source, expected) is None",
-    "calls = []",
-    "original_load = module.load_validated_source",
-    "def mutating_load(source, expected_digests):",
-    "    snapshot = original_load(source, expected_digests); calls.append(snapshot)",
+    "expected = json.loads(sys.argv[3])", "assert module.validate_source(source, expected) is None",
+    "calls = []", "original_load = module.load_validated_source",
+    "def mutating_load(source, expected_digests):", "    snapshot = original_load(source, expected_digests)",
+    "    calls.append(snapshot)",
     "    assert not hasattr(snapshot, '__setitem__'), 'source snapshot must be immutable'",
     `    target = source / ${JSON.stringify(relative)}`,
     `    target.write_bytes(target.read_bytes().replace(b'${reviewed}', b'${unreviewed}'))`,
-    "    return snapshot",
-    "module.load_validated_source = mutating_load",
+    "    return snapshot", "module.load_validated_source = mutating_load",
   ].join("\n");
   const migration = "module.migrate(source, module.PACKAGE_ROOT, expected)\nassert len(calls) == 1, 'migrate must load one source snapshot'";
   const result = runProbe(sourceSnapshotProbe("snapshot-probe", migration, interception), packageCopy, source);
@@ -562,7 +805,6 @@ test("generated-tree validation rejects required Pi literal cardinality drift", 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /required literal.*cardinality/i);
 });
-
 for (const [relative, literal] of [
   ["skills/git-spice/SKILL.md", "name: git-spice\n"], ["skills/git-spice/SKILL.md", "license: MIT\n"],
   ["skills/stacking-workflow/SKILL.md", "name: stacking-workflow\n"], ["skills/stacking-workflow/SKILL.md", "license: MIT\n"],
@@ -593,26 +835,21 @@ test("generated-tree validation rejects forbidden Pi-delta literals", () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /forbidden generated content/i);
 });
-
-const installationProbe = (injection) => sourceSnapshotProbe("installation-probe", injection);
-
+const installProbe = (exceptionExpression) => sourceSnapshotProbe("installation-probe", exceptionExpression);
 const transactionDirectories = (root) => readdirSync(root).filter((name) => name.startsWith(".pi-git-spice-install-"));
-
 for (const swap of [1, 2, 3, 4, 5, 6]) {
   test(`failure during atomic root swap ${swap} restores all originals and cleans artifacts`, () => {
     const source = createSourceFixture();
     const packageCopy = createTemporaryPackage();
     const sentinels = installedSentinels(packageCopy.root);
     const injection = [
-      "calls = {'moves': 0}",
-      "original_move = module.rename_path",
-      "def failing_move(source, destination):",
-      "    calls['moves'] += 1",
+      "calls = {'moves': 0}", "original_move = module.rename_path",
+      "def failing_move(source, destination):", "    calls['moves'] += 1",
       `    if calls['moves'] == ${swap}: raise OSError('injected swap ${swap}')`,
       "    return original_move(source, destination)",
       "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=failing_move, remove=module.remove_tree)",
     ].join("\n");
-    const result = runProbe(installationProbe(injection), packageCopy, source);
+    const result = runProbe(installProbe(injection), packageCopy, source);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, new RegExp(`injected swap ${swap}`));
     assertRollback(packageCopy.root, sentinels);
@@ -624,16 +861,13 @@ test("KeyboardInterrupt during staging preserves installed roots and removes sta
   const packageCopy = createTemporaryPackage();
   const sentinels = installedSentinels(packageCopy.root);
   const injection = [
-    "calls = {'copies': 0}",
-    "original_copytree = module.shutil.copytree",
-    "def failing_copytree(source, destination):",
-    "    calls['copies'] += 1",
-    "    if calls['copies'] == 2: raise KeyboardInterrupt()",
-    "    return original_copytree(source, destination)",
+    "calls = {'copies': 0}", "original_copytree = module.shutil.copytree",
+    "def failing_copytree(source, destination):", "    calls['copies'] += 1",
+    "    if calls['copies'] == 2: raise KeyboardInterrupt()", "    return original_copytree(source, destination)",
     "module.shutil.copytree = failing_copytree",
     "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=module.rename_path, remove=module.remove_tree)",
   ].join("\n");
-  const result = runProbe(installationProbe(injection), packageCopy, source);
+  const result = runProbe(installProbe(injection), packageCopy, source);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /KeyboardInterrupt/);
   assertRollback(packageCopy.root, sentinels);
@@ -645,21 +879,17 @@ test("KeyboardInterrupt during a live-root swap restores every original byte and
   installedSentinels(packageCopy.root);
   const before = runtimeSnapshot(packageCopy.root);
   const injection = [
-    "calls = {'backups': 0, 'installs': 0}",
-    "original_move = module.rename_path",
-    "def interrupted_move(source, destination):",
-    "    result = original_move(source, destination)",
+    "calls = {'backups': 0, 'installs': 0}", "original_move = module.rename_path",
+    "def interrupted_move(source, destination):", "    result = original_move(source, destination)",
     "    if destination.parent.name == 'backups': calls['backups'] += 1",
-    "    if source.parent.name == 'staged':",
-    "        calls['installs'] += 1",
-    "        if calls['installs'] == 1:",
-    "            assert calls['backups'] >= 1",
+    "    if source.parent.name == 'staged':", "        calls['installs'] += 1",
+    "        if calls['installs'] == 1:", "            assert calls['backups'] >= 1",
     "            assert destination.exists()",
     "            raise KeyboardInterrupt('injected live-root swap interruption')",
     "    return result",
     "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=interrupted_move, remove=module.remove_tree)",
   ].join("\n");
-  const result = runProbe(installationProbe(injection), packageCopy, source);
+  const result = runProbe(installProbe(injection), packageCopy, source);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /KeyboardInterrupt: injected live-root swap interruption/);
   assertRuntimeSnapshot(packageCopy.root, before);
@@ -671,17 +901,14 @@ test("installed-root verification failure restores all originals", () => {
   const packageCopy = createTemporaryPackage();
   const sentinels = installedSentinels(packageCopy.root);
   const injection = [
-    "calls = {'installs': 0}",
-    "original_move = module.rename_path",
-    "def corrupting_move(source, destination):",
-    "    result = original_move(source, destination)",
-    "    if source.parent.name == 'staged':",
-    "        calls['installs'] += 1",
+    "calls = {'installs': 0}", "original_move = module.rename_path",
+    "def corrupting_move(source, destination):", "    result = original_move(source, destination)",
+    "    if source.parent.name == 'staged':", "        calls['installs'] += 1",
     "        if calls['installs'] == 3: next(path for path in destination.rglob('*') if path.is_file()).unlink()",
     "    return result",
     "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=corrupting_move, remove=module.remove_tree)",
   ].join("\n");
-  const result = runProbe(installationProbe(injection), packageCopy, source);
+  const result = runProbe(installProbe(injection), packageCopy, source);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Installed generated resource verification failed/);
   assertRollback(packageCopy.root, sentinels);
@@ -692,16 +919,13 @@ test("interrupted committed cleanup is retried without hiding the committed stat
   const packageCopy = createTemporaryPackage();
   installedSentinels(packageCopy.root);
   const injection = [
-    "calls = {'cleanup': 0}",
-    "original_remove = module.remove_tree",
-    "def interrupted_remove(target):",
-    "    if target.name.startswith('.pi-git-spice-install-'):",
-    "        calls['cleanup'] += 1",
-    "        if calls['cleanup'] == 1: raise KeyboardInterrupt()",
+    "calls = {'cleanup': 0}", "original_remove = module.remove_tree",
+    "def interrupted_remove(target):", "    if target.name.startswith('.pi-git-spice-install-'):",
+    "        calls['cleanup'] += 1", "        if calls['cleanup'] == 1: raise KeyboardInterrupt()",
     "    return original_remove(target)",
     "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=module.rename_path, remove=interrupted_remove)",
   ].join("\n");
-  const result = runProbe(installationProbe(injection), packageCopy, source);
+  const result = runProbe(installProbe(injection), packageCopy, source);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /installation committed and verified.*cleanup was interrupted/is);
   assert.deepEqual(transactionDirectories(packageCopy.root), []);
@@ -713,20 +937,15 @@ test("rollback deletion failure retains recoverable backups and reports their pa
   const packageCopy = createTemporaryPackage();
   installedSentinels(packageCopy.root);
   const injection = [
-    "calls = {'installs': 0}",
-    "original_move = module.rename_path",
-    "original_remove = module.remove_tree",
-    "def failing_move(source, destination):",
-    "    if source.parent.name == 'staged':",
-    "        calls['installs'] += 1",
-    "        if calls['installs'] == 2: raise OSError('trigger rollback')",
-    "    return original_move(source, destination)",
-    "def failing_remove(target):",
+    "calls = {'installs': 0}", "original_move = module.rename_path", "original_remove = module.remove_tree",
+    "def failing_move(source, destination):", "    if source.parent.name == 'staged':",
+    "        calls['installs'] += 1", "        if calls['installs'] == 2: raise OSError('trigger rollback')",
+    "    return original_move(source, destination)", "def failing_remove(target):",
     "    if target == module.PACKAGE_ROOT / 'agents': raise OSError('cannot delete installed agents')",
     "    return original_remove(target)",
     "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=failing_move, remove=failing_remove)",
   ].join("\n");
-  const result = runProbe(installationProbe(injection), packageCopy, source);
+  const result = runProbe(installProbe(injection), packageCopy, source);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Failed to roll back generated resource installation/);
   assert.match(result.stderr, /Recovery artifacts retained at/);
@@ -740,17 +959,14 @@ test("backup restoration failure never deletes the last recoverable original", (
   const packageCopy = createTemporaryPackage();
   installedSentinels(packageCopy.root);
   const injection = [
-    "calls = {'installs': 0}",
-    "original_move = module.rename_path",
-    "def failing_move(source, destination):",
-    "    if source.parent.name == 'staged':",
-    "        calls['installs'] += 1",
-    "        if calls['installs'] == 2: raise OSError('trigger rollback')",
+    "calls = {'installs': 0}", "original_move = module.rename_path",
+    "def failing_move(source, destination):", "    if source.parent.name == 'staged':",
+    "        calls['installs'] += 1", "        if calls['installs'] == 2: raise OSError('trigger rollback')",
     "    if source.parent.name == 'backups' and source.name == 'agents': raise OSError('cannot restore agents')",
     "    return original_move(source, destination)",
     "module.install_generated_tree(generated, module.PACKAGE_ROOT, move=failing_move, remove=module.remove_tree)",
   ].join("\n");
-  const result = runProbe(installationProbe(injection), packageCopy, source);
+  const result = runProbe(installProbe(injection), packageCopy, source);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /cannot restore agents/);
   assert.match(result.stderr, /Recovery artifacts retained at/);
