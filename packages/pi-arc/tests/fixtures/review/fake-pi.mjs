@@ -1,24 +1,28 @@
 #!/usr/bin/env node
-import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import fsPromises, { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const mode = process.env.FAKE_PI_MODE ?? 'success';
-const recordPath = process.env.FAKE_PI_RECORD;
-const acknowledgementPath = process.env.FAKE_PI_ACK;
-const reportPath = process.env.FAKE_PI_REPORT;
-const guardPath = process.env.FAKE_PI_GUARD;
-const schemaPath = process.env.FAKE_PI_SCHEMA;
-const attemptId = process.env.FAKE_PI_ATTEMPT;
-const digest = process.env.FAKE_PI_DIGEST;
-const guardDigest = process.env.FAKE_PI_GUARD_DIGEST;
-const schemaDigest = process.env.FAKE_PI_SCHEMA_DIGEST;
-
-if (!recordPath) throw new Error('FAKE_PI_RECORD is required');
+const control = JSON.parse(await readFile(new URL('./fake-pi-control.json', import.meta.url), 'utf8'));
+const {
+  mode = 'success', recordPath, acknowledgementPath, reportPath, guardPath, schemaPath,
+  attemptId, digest, guardDigest, schemaDigest, absoluteReadPaths = [], allowedData = {},
+  publicationFault, failureEvidenceUnavailable = false, evidenceStuck = false,
+} = control;
+if (!recordPath) throw new Error('fixture recordPath is required');
+const privateKeys = [
+  'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PI_SERVER_DIR', 'HOME',
+  'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME',
+  'XDG_RUNTIME_DIR', 'TMPDIR', 'TMP', 'TEMP',
+];
 await writeFile(recordPath, JSON.stringify({
   argv: process.argv.slice(2),
   cwd: process.cwd(),
-  env: Object.fromEntries(['PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PI_PACKAGE_DIR', 'PI_SERVER_DIR', 'HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'TMPDIR'].map((name) => [name, process.env[name]])),
-  absoluteReadPaths: (process.env.FAKE_PI_ABSOLUTE_READ_PATHS ?? '').split(path.delimiter).filter(Boolean),
+  env: Object.fromEntries(privateKeys.map((name) => [name, process.env[name]])),
+  flags: Object.fromEntries(['PI_OFFLINE', 'PI_SKIP_VERSION_CHECK', 'PI_TELEMETRY', 'PI_PACKAGE_DIR', 'NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'AWS_PROFILE', 'GOOGLE_APPLICATION_CREDENTIALS'].map((name) => [name, process.env[name] ?? null])),
+  allowedDataPreserved: Object.fromEntries(Object.entries(allowedData).map(([name, expected]) => [name, process.env[name] === expected])),
+  absoluteReadPaths,
 }));
 
 if (mode === 'timeout') {
@@ -42,7 +46,87 @@ else if (mode === 'valid-crlf') process.stdout.write(`${JSON.stringify({ type: '
 else process.stdout.write(`${JSON.stringify({ type: 'fixture-complete' })}\n`);
 
 if (mode === 'no-artifacts') process.exit(0);
-if (!acknowledgementPath || !reportPath || !guardPath || !schemaPath || !attemptId || !digest || !guardDigest || !schemaDigest) throw new Error('fake artifact environment is incomplete');
+if (!acknowledgementPath || !reportPath || !guardPath || !schemaPath || !attemptId || !digest || !guardDigest || !schemaDigest) throw new Error('fake artifact control is incomplete');
+const report = {
+  schemaVersion: 1,
+  reviewInputDigest: digest,
+  verdict: 'PASS',
+  summary: 'The deterministic fixture completed.',
+  findings: [],
+  coverage: { reviewedPaths: ['source/a.ts'], reviewedRequirements: ['SC3'] },
+  limitations: [],
+};
+
+if (mode === 'copied-guard') {
+  const evidencePath = path.join(path.dirname(reportPath), 'guard-evidence.jsonl');
+  const realLink = fsPromises.link;
+  const realOpen = fsPromises.open;
+  const realUnlink = fsPromises.unlink;
+  let linkedChannel;
+  let syncFaultConsumed = false;
+  let cleanupFaultConsumed = false;
+  fsPromises.link = async (from, to) => {
+    if (publicationFault === 'unsupported-link') {
+      const error = new Error('fixture unsupported link');
+      error.code = 'ENOTSUP';
+      throw error;
+    }
+    const result = await realLink(from, to);
+    if (to === reportPath) linkedChannel = 'report';
+    if (to === acknowledgementPath) linkedChannel = 'acknowledgement';
+    return result;
+  };
+  fsPromises.unlink = async (file) => {
+    if (publicationFault === 'temporary-cleanup' && linkedChannel && !cleanupFaultConsumed && file !== reportPath && file !== acknowledgementPath) {
+      cleanupFaultConsumed = true;
+      const error = new Error('fixture temporary cleanup failure');
+      error.code = 'EIO';
+      throw error;
+    }
+    return realUnlink(file);
+  };
+  fsPromises.open = async (file, ...args) => {
+    if (failureEvidenceUnavailable && file === evidencePath) {
+      const error = new Error('fixture evidence unavailable');
+      error.code = 'EACCES';
+      throw error;
+    }
+    const handle = await realOpen(file, ...args);
+    if (evidenceStuck && file === evidencePath) {
+      handle.sync = () => new Promise(() => {});
+      return handle;
+    }
+    const originalSync = handle.sync.bind(handle);
+    handle.sync = async () => {
+      const shouldFail = !syncFaultConsumed && ((publicationFault === 'report-directory-sync' && linkedChannel === 'report' && file === path.dirname(reportPath)) ||
+        (publicationFault === 'ack-directory-sync' && linkedChannel === 'acknowledgement' && file === path.dirname(acknowledgementPath)));
+      if (shouldFail) {
+        syncFaultConsumed = true;
+        const error = new Error('fixture directory sync failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return originalSync();
+    };
+    return handle;
+  };
+  syncBuiltinESMExports();
+  const handlers = new Map();
+  const tools = new Map();
+  const pi = {
+    on(name, handler) { const values = handlers.get(name) ?? []; values.push(handler); handlers.set(name, values); },
+    registerTool(tool) { tools.set(tool.name, tool); },
+    events: { emit() {} },
+  };
+  try {
+    const guard = await import(`${pathToFileURL(guardPath).href}?fixture=${Date.now()}`);
+    await guard.default(pi);
+    for (const handler of handlers.get('session_start') ?? []) await handler({}, {});
+    await tools.get('arc_review_report').execute('fixture-report', report, new AbortController().signal);
+  } catch {}
+  process.exit(0);
+}
+
 await mkdir(path.dirname(acknowledgementPath), { recursive: true });
 const ack = {
   version: 1,
@@ -57,15 +141,6 @@ if (mode !== 'missing-ack') {
   await writeFile(acknowledgementPath, JSON.stringify(ack), { mode: 0o600, flag: 'wx' });
   await chmod(acknowledgementPath, 0o600);
 }
-const report = {
-  schemaVersion: 1,
-  reviewInputDigest: digest,
-  verdict: 'PASS',
-  summary: 'The deterministic fixture completed.',
-  findings: [],
-  coverage: { reviewedPaths: ['source/a.ts'], reviewedRequirements: ['SC3'] },
-  limitations: [],
-};
 if (mode === 'wrong-digest') report.reviewInputDigest = 'f'.repeat(64);
 if (mode !== 'missing-report') {
   const contents = mode === 'duplicate' ? `${JSON.stringify(report)}\n${JSON.stringify(report)}` : mode === 'malformed-report' ? '{bad' : JSON.stringify(report);

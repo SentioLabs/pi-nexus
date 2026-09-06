@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, open, realpath, rename, unlink } from "node:fs/promises";
+import { link, lstat, open, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -279,17 +279,41 @@ async function syncDirectory(directory: string): Promise<void> {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
+async function assertStagedEntry(
+  name: string,
+  handle: Awaited<ReturnType<typeof open>>,
+  identity: FileIdentity,
+  contents: Uint8Array,
+  mode: number,
+): Promise<void> {
+  const descriptorBefore = await handle.stat({ bigint: true });
+  if (!descriptorBefore.isFile() || !sameIdentity(fileIdentity(descriptorBefore), identity) || descriptorBefore.size !== BigInt(contents.byteLength) ||
+      (descriptorBefore.mode & 0o777n) !== BigInt(mode) || (typeof process.getuid === "function" && descriptorBefore.uid !== BigInt(process.getuid()))) {
+    throw new Error("staged publication descriptor identity changed");
+  }
+  const namedBefore = await lstat(name, { bigint: true });
+  if (!namedBefore.isFile() || !sameIdentity(fileIdentity(namedBefore), identity) || namedBefore.size !== BigInt(contents.byteLength) ||
+      (namedBefore.mode & 0o777n) !== BigInt(mode)) throw new Error("staged publication entry identity changed");
+  const actual = await boundedRegularFile(name, contents.byteLength, mode);
+  if (!Buffer.from(actual).equals(Buffer.from(contents))) throw new Error("staged publication contents changed");
+  const descriptorAfter = await handle.stat({ bigint: true });
+  const namedAfter = await lstat(name, { bigint: true });
+  if (!descriptorAfter.isFile() || !namedAfter.isFile() || !sameIdentity(fileIdentity(descriptorAfter), identity) ||
+      !sameIdentity(fileIdentity(namedAfter), identity) || !sameFileMetadata(descriptorBefore, descriptorAfter) ||
+      !sameFileMetadata(namedBefore, namedAfter)) throw new Error("staged publication changed while verifying");
+}
+
 async function writeExclusiveAtomic(destination: string, contents: Uint8Array, mode: number): Promise<void> {
   const directory = path.dirname(destination);
   const temporary = path.join(directory, `.${path.basename(destination)}.${process.pid}.${Date.now()}.${createHash("sha256").update(contents).digest("hex").slice(0, 12)}.tmp`);
-  const flags = fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0);
+  const flags = fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0);
   const handle = await open(temporary, flags, mode);
-  let artifact: { dev: number | bigint; ino: number | bigint } | undefined;
-  let reservation: { dev: number | bigint; ino: number | bigint } | undefined;
-  let renamed = false;
-  let completed = false;
+  let failed = false;
   try {
     await handle.chmod(mode);
+    const initial = await handle.stat({ bigint: true });
+    if (!initial.isFile() || (typeof process.getuid === "function" && initial.uid !== BigInt(process.getuid()))) throw new Error("staged publication must be an owner-owned regular file");
+    const stagedIdentity = fileIdentity(initial);
     let offset = 0;
     while (offset < contents.byteLength) {
       const { bytesWritten } = await handle.write(contents, offset, contents.byteLength - offset, offset);
@@ -297,30 +321,19 @@ async function writeExclusiveAtomic(destination: string, contents: Uint8Array, m
       offset += bytesWritten;
     }
     await handle.sync();
-    const artifactInfo = await handle.stat();
-    artifact = { dev: artifactInfo.dev, ino: artifactInfo.ino };
-    await handle.close();
-    const reserved = await open(destination, flags, mode);
-    try {
-      await reserved.chmod(mode);
-      const info = await reserved.stat();
-      reservation = { dev: info.dev, ino: info.ino };
-      await reserved.sync();
-    } finally { await reserved.close(); }
-    await rename(temporary, destination);
-    renamed = true;
+    await assertStagedEntry(temporary, handle, stagedIdentity, contents, mode);
+    await link(temporary, destination);
+    await assertStagedEntry(destination, handle, stagedIdentity, contents, mode);
+    await assertStagedEntry(temporary, handle, stagedIdentity, contents, mode);
+    await unlink(temporary);
     await syncDirectory(directory);
-    completed = true;
+    await assertStagedEntry(destination, handle, stagedIdentity, contents, mode);
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    await handle.close().catch(() => {});
-    if (!completed) {
-      await unlink(temporary).catch(() => {});
-      const owned = renamed ? artifact : reservation;
-      if (owned) {
-        const current = await lstat(destination).catch(() => undefined);
-        if (current && current.dev === owned.dev && current.ino === owned.ino) await unlink(destination).catch(() => {});
-      }
-    }
+    try { await handle.close(); }
+    catch (error) { if (!failed) throw error; }
   }
 }
 
@@ -392,7 +405,12 @@ async function requireAbsent(file: string, label: string): Promise<void> {
   }
 }
 
-function createReportTool(config: GuardRuntimeConfig, schema: Readonly<JsonRecord>, canWrite: () => boolean) {
+function createReportTool(
+  config: GuardRuntimeConfig,
+  schema: Readonly<JsonRecord>,
+  canWrite: () => boolean,
+  onPublicationFailure: () => Promise<never>,
+) {
   let writeInFlight: Promise<void> | undefined;
   let written = false;
   return {
@@ -409,7 +427,8 @@ function createReportTool(config: GuardRuntimeConfig, schema: Readonly<JsonRecor
       if (bytes.length > MAX_REPORT_BYTES) throw new Error("review report exceeds byte limit");
       writeInFlight = writeExclusiveAtomic(config.canonicalReportPath, bytes, 0o600);
       try {
-        await writeInFlight;
+        try { await writeInFlight; }
+        catch { return await onPublicationFailure(); }
         written = true;
       } finally {
         writeInFlight = undefined;
@@ -502,8 +521,23 @@ async function reattestStartup(): Promise<void> {
 
 export default async function reviewChild(pi: ExtensionAPI): Promise<void> {
   let initialized = false;
+  let publicationFailed = false;
   let schema: Readonly<JsonRecord> | undefined;
   const evidence = evidenceWriter(config);
+  const publicationFailure = async (channel: "acknowledgement" | "report"): Promise<never> => {
+    publicationFailed = true;
+    initialized = false;
+    const timer = setTimeout(() => process.exit(1), 1000);
+    try {
+      await evidence.record("guard-publication", channel, "publication failed");
+      if (!(await boundedRegularFile(config.evidencePath, MAX_EVIDENCE_BYTES, 0o600)).length) process.exit(1);
+    } catch {
+      process.exit(1);
+    } finally {
+      clearTimeout(timer);
+    }
+    throw new Error("publication failed; guard evidence retained");
+  };
 
   pi.on("session_start", async () => {
     initialized = false;
@@ -515,12 +549,13 @@ export default async function reviewChild(pi: ExtensionAPI): Promise<void> {
       requireAbsent(config.evidencePath, "guard evidence"),
     ]);
     const ack = Buffer.from(canonicalize(acknowledgement(config)), "utf8");
-    await writeExclusiveAtomic(config.canonicalAcknowledgementPath, ack, 0o600);
-    initialized = true;
+    try { await writeExclusiveAtomic(config.canonicalAcknowledgementPath, ack, 0o600); }
+    catch { return await publicationFailure("acknowledgement"); }
+    initialized = !publicationFailed;
     pi.events.emit("subagent:acknowledge-extension", { id: ARC_REVIEW_GUARD_ACK_PREFIX + config.attemptId });
   });
-  pi.on("tool_call", async (event) => enforceToolCall(event, config, initialized && evidence.satisfied(), evidence.record));
+  pi.on("tool_call", async (event) => enforceToolCall(event, config, initialized && !publicationFailed && evidence.satisfied(), evidence.record));
 
   schema = await verifyOwnModuleAndSchema(config);
-  pi.registerTool(createReportTool(config, schema, () => initialized && evidence.satisfied()));
+  pi.registerTool(createReportTool(config, schema, () => initialized && !publicationFailed && evidence.satisfied(), () => publicationFailure("report")));
 }

@@ -356,6 +356,70 @@ test('evidence byte overflow is enforced independently before the record cap', a
   await assert.rejects(() => harness.toolRegistry.get('arc_review_report').execute('after-byte-overflow', validReport(prepared.digest)), /not satisfied/i);
 });
 
+test('no-replace publication preserves raced acknowledgement and report destinations', async (t) => {
+  for (const channel of ['acknowledgement', 'report']) {
+    await t.test(channel, async (t) => {
+      const prepared = await preparedGuard(t);
+      const { harness } = await loadGuard(prepared);
+      const target = channel === 'acknowledgement' ? prepared.config.acknowledgementPath : prepared.config.reportPath;
+      if (channel === 'report') await harness.emit('session_start');
+      const saved = fsPromises.link;
+      let occupant;
+      fsPromises.link = async (from, to) => {
+        if (to === target) {
+          await writeFile(to, 'raced-occupant', { flag: 'wx', mode: 0o600 });
+          occupant = await lstat(to);
+        }
+        return saved(from, to);
+      };
+      syncBuiltinESMExports();
+      try {
+        const operation = channel === 'acknowledgement'
+          ? () => harness.emit('session_start')
+          : () => harness.toolRegistry.get('arc_review_report').execute('race', validReport(prepared.digest));
+        await assert.rejects(operation, /publication|exist|failed/i);
+        assert.equal((await lstat(target)).ino, occupant.ino);
+        assert.equal(await readFile(target, 'utf8'), 'raced-occupant');
+        if (channel === 'acknowledgement') assert.equal(harness.emitted.length, 0);
+      } finally {
+        fsPromises.link = saved;
+        syncBuiltinESMExports();
+      }
+    });
+  }
+});
+
+test('publication rejects same-content replacement of its temporary source and retains both occupants', async (t) => {
+  const prepared = await preparedGuard(t);
+  const { harness } = await loadGuard(prepared);
+  await harness.emit('session_start');
+  const saved = fsPromises.link;
+  let held;
+  let replacement;
+  fsPromises.link = async (from, to) => {
+    if (to === prepared.config.reportPath) {
+      const bytes = await readFile(from);
+      held = `${from}.held`;
+      await rename(from, held);
+      await writeFile(from, bytes, { flag: 'wx', mode: 0o600 });
+      replacement = from;
+    }
+    return saved(from, to);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      () => harness.toolRegistry.get('arc_review_report').execute('replace-temp', validReport(prepared.digest)),
+      /publication|identity|staged|failed/i,
+    );
+    assert.equal(await exists(held), true);
+    assert.equal(await exists(replacement), true);
+  } finally {
+    fsPromises.link = saved;
+    syncBuiltinESMExports();
+  }
+});
+
 test('actual registered mutation canary is blocked before its callback executes', async (t) => {
   const prepared = await preparedGuard(t);
   const harness = createHarness();
