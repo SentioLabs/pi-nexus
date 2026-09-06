@@ -119,7 +119,7 @@ arc list --parent=<epic-id> --json | jq '.[] | select(.status != "closed")'
 ### 2. Claim Task
 
 ```bash
-arc update <task-id> --take
+arc update <task-id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"
 ```
 
 ### 3. Dispatch Agent
@@ -473,7 +473,7 @@ After successful verification, return to the normal orchestration loop (step 1) 
 
 ```bash
 arc ready                           # Find next task
-arc update <id> --take                  # Claim task (sets session ID + in_progress)
+arc update <id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}" # Claim task (sets session ID + in_progress)
 arc show <id>                        # Get task description for subagent
 arc close <id> -r "reason"            # Close completed task
 ```

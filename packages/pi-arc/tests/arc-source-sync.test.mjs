@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -127,6 +127,79 @@ test('migration script rewrites renamed skill path references', () => {
   assert.match(arcSkill, /skills\/arc-brainstorm\/SKILL\.md/);
   assert.match(arcSkill, /skills\/arc-plan\/SKILL\.md/);
   assert.doesNotMatch(arcSkill, /skills\/(brainstorm|plan)\/SKILL\.md/);
+});
+
+test('migration preserves Pi-native guarded session arguments in operational resources', () => {
+  const migration = read('scripts/migrate-arc-plugin.py');
+  assert.match(migration, /ARC_SESSION_ID", "PI_SESSION_ID/);
+  const transformStart = migration.indexOf('skill_map = {');
+  const transformEnd = migration.indexOf('\nfor src_dir in sorted', transformStart);
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-session-transform-'));
+  const script = path.join(fixture, 'transform.py');
+  try {
+    writeFileSync(script, `import re\n${migration.slice(transformStart, transformEnd)}\nprint(transform_text('arc update <id> --take --session-id "\${ARC_SESSION_ID:?ARC_SESSION_ID is required}"\\narc prime --session-id "\${ARC_SESSION_ID:?ARC_SESSION_ID is required}"'))\n`);
+    const transformed = execFileSync('python3', [script], { encoding: 'utf8' });
+    assert.doesNotMatch(transformed, /ARC_SESSION_ID/);
+    assert.match(transformed, /\$\{PI_SESSION_ID:\?PI_SESSION_ID is required\}/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+
+  const files = execFileSync('find', ['prompts', 'skills', 'agents', '-name', '*.md'], { encoding: 'utf8' })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+  for (const file of files) {
+    for (const line of read(file).split('\n')) {
+      if (/arc update .*--take/.test(line)) {
+        assert.match(line, /--session-id "\$\{PI_SESSION_ID:\?PI_SESSION_ID is required\}"/, file);
+      }
+      if (/(^\s*arc prime|`arc prime)/.test(line) && !/automatically/.test(line)) {
+        assert.match(line, /--session-id "\$\{PI_SESSION_ID:\?PI_SESSION_ID is required\}"/, file);
+      }
+    }
+  }
+});
+
+test('packaged Pi claim and prime commands preserve a guarded session ID as one argv value', () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-session-command-'));
+  const bin = path.join(fixture, 'bin');
+  const capture = path.join(fixture, 'argv.json');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'arc'), '#!/usr/bin/env node\nrequire("node:fs").writeFileSync(process.env.ARC_TEST_CAPTURE, JSON.stringify(process.argv.slice(2)))\n');
+  chmodSync(path.join(bin, 'arc'), 0o755);
+
+  try {
+    for (const [file, prefix] of [
+      ['skills/arc-build/SKILL.md', 'arc update <task-id> --take'],
+      ['prompts/arc-prime.md', 'arc prime'],
+    ]) {
+      const source = read(file);
+      const line = source.split('\n').find((candidate) => candidate.includes(prefix));
+      assert.ok(line, `missing command in ${file}`);
+      assert.match(line, /--session-id "\$\{PI_SESSION_ID:\?PI_SESSION_ID is required\}"/);
+      const command = (line.match(/`([^`]+)`/)?.[1] ?? line.trim()).replace(/<[^>]+>/g, 'task-1');
+      const sessionID = 'pi session; $(never)';
+      const result = spawnSync('sh', ['-c', command], {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, ARC_TEST_CAPTURE: capture, ARC_SESSION_ID: 'inherited arc', CODEX_THREAD_ID: 'inherited Codex', PI_SESSION_ID: sessionID },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(capture, 'utf8')).slice(-2), ['--session-id', sessionID]);
+
+      rmSync(capture, { force: true });
+      const missing = spawnSync('sh', ['-c', command], {
+        cwd: fixture,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, ARC_TEST_CAPTURE: capture, ARC_SESSION_ID: 'inherited arc', CODEX_THREAD_ID: 'inherited Codex', PI_SESSION_ID: '' },
+      });
+      assert.notEqual(missing.status, 0, `${file} must guard PI_SESSION_ID`);
+      assert.equal(existsSync(capture), false, `${file} must reject missing PI_SESSION_ID before running arc`);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test('arc extension does not ship arc-source-sync slash alias', () => {

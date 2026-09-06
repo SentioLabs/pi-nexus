@@ -81,7 +81,11 @@ Run `arc onboard` at session start to get project context and available issues.
 
 ## CLI Reference
 
-Run `arc prime` for full workflow context, or `arc <command> --help` for specific commands.
+Run `arc prime --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"` for full workflow context, or `arc <command> --help` for specific commands.
+
+## Session Binding
+
+Operational claim commands and manual `arc prime` commands must pass `--session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"`. `PI_SESSION_ID` is the current shell session-manager identity; do not substitute an agent ID or another runtime's session value. The Pi extension captures its current session-manager identity for registration and its own prime command without mutating the process environment.
 
 **Essential commands:**
 - `arc ready` - Find unblocked work
@@ -201,7 +205,7 @@ EOF
 arc onboard                         # Get context (recovers project if needed)
 arc ready                           # Find available work
 arc show <id>                       # View details
-arc update <id> --take                  # Claim work (sets session ID + in_progress)
+arc update <id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}" # Claim work (sets session ID + in_progress)
 ```
 
 ### Creating Issues

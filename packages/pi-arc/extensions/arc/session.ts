@@ -18,26 +18,31 @@ export type ArcCommandResult = {
 };
 
 export function registerArcSession(ctx: ArcSessionContext): Promise<ArcCommandResult> {
+  const sessionID = ctx.sessionManager.getSessionId();
   return runArcCommand(["ai", "session", "start", "--stdin"], ctx, {
     stdin: {
-      session_id: ctx.sessionManager.getSessionId(),
+      session_id: sessionID,
       cwd: ctx.cwd,
       transcript_path: ctx.sessionManager.getSessionFile() ?? "",
     },
+    sessionID,
   });
 }
 
 export function runArcCommand(
   args: string[],
   ctx: ArcSessionContext,
-  options: { stdin?: unknown; timeoutMs?: number } = {},
+  options: { stdin?: unknown; timeoutMs?: number; sessionID?: string } = {},
 ): Promise<ArcCommandResult> {
   const { signal } = ctx;
-  const { stdin, timeoutMs = 15_000 } = options;
+  const { stdin, timeoutMs = 15_000, sessionID = ctx.sessionManager.getSessionId() } = options;
+  if (!sessionID) {
+    return Promise.resolve({ code: 2, stdout: "", stderr: "Pi session ID is required" });
+  }
   return new Promise((resolve) => {
     const child = spawn("arc", args, {
       cwd: ctx.cwd,
-      env: { ...process.env, ARC_SESSION_ID: ctx.sessionManager.getSessionId() },
+      env: { ...process.env, ARC_SESSION_ID: sessionID },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -86,4 +91,3 @@ export function runArcCommand(
     child.stdin.end(stdin === undefined ? undefined : `${JSON.stringify(stdin)}\n`);
   });
 }
-

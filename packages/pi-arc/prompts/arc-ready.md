@@ -10,6 +10,6 @@ Present the results to the user showing:
 - Priority
 - Issue type
 
-If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run `arc update <id> --take` to claim it (sets session ID + in_progress).
+If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run `arc update <id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"` to claim it (sets session ID + in_progress).
 
 If there are no ready tasks, suggest checking `arc blocked` or creating a new issue with `arc create`.

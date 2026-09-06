@@ -51,7 +51,7 @@ Types: task, bug, feature, epic, chore
 
 ### Updating Issues
 ```bash
-arc update <id> --take                     # Claim work (sets session ID + in_progress)
+arc update <id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}" # Claim work (sets session ID + in_progress)
 arc update <id> --status=blocked        # Mark as blocked
 arc update <id> --priority=1            # Change priority
 arc update <id> --title="New title"     # Update title

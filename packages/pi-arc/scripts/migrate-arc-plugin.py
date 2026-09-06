@@ -94,6 +94,7 @@ for f in sorted((SRC / "commands").glob("*.md")):
     text = re.sub(r"/arc:([a-zA-Z0-9_-]+)", r"/arc-\1", text)
     text = text.replace("Claude Code", "Pi")
     text = text.replace("Claude", "Pi")
+    text = text.replace("ARC_SESSION_ID", "PI_SESSION_ID")
     text = text.replace("SessionStart and PreCompact hooks", "the Pi arc extension on session start and before compaction")
     text = re.sub(r"When to use arc vs TodoWrite", "When to use arc vs the bundled `todo` checklist workflow", text, flags=re.IGNORECASE)
     text = re.sub(r"todowrite vs arc", "todo checklist vs arc", text, flags=re.IGNORECASE)
@@ -126,6 +127,7 @@ def transform_text(text: str) -> str:
     # Harness naming and Claude-specific tool names.
     text = text.replace("Claude Code", "Pi")
     text = text.replace("Claude", "Pi")
+    text = text.replace("ARC_SESSION_ID", "PI_SESSION_ID")
     text = text.replace("SessionStart/PreCompact hooks", "Pi extension session-start and before-compaction handlers")
     text = text.replace("SessionStart and PreCompact hooks", "Pi extension session-start and before-compaction handlers")
     text = text.replace("via the Task tool", "through the auto-materialized `arc-issue-manager` pi-subagent when available, or the bundled `arc_agent` fallback")
@@ -226,8 +228,8 @@ patch_file("prompts/arc-team.md", [
         "Show teammate-label planning context with `arc team`.\n\nPi does not support Claude-style team deployment. Use this command only to inspect `teammate:*` issue groupings; implementation remains orchestrated through `/arc-build`.",
     ),
     (
-        "**Related commands:**\n- `arc prime --role=lead` — Team lead context output\n- `arc prime --role=frontend` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
-        "**Related commands:**\n- `arc prime --role=lead` — Lead-oriented context output\n- `arc prime --role=frontend` — Role-filtered context (or use `ARC_TEAMMATE_ROLE` env var)",
+        "**Related commands:**\n- `arc prime --role=lead --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Team lead context output\n- `arc prime --role=frontend --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
+        "**Related commands:**\n- `arc prime --role=lead --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Lead-oriented context output\n- `arc prime --role=frontend --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Role-filtered context (or use `ARC_TEAMMATE_ROLE` env var)",
     ),
 ])
 
@@ -235,6 +237,10 @@ patch_file("skills/arc/SKILL.md", [
     (
         "- **Agentic team**: Add `teammate:*` labels, invoke `/arc-team-dispatch`. Best for parallel multi-role work.",
         "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+    ),
+    (
+        "Operational claim commands and manual `arc prime` commands must pass `--session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"`. `PI_SESSION_ID` is the canonical identity persisted by the lifecycle hook; do not substitute an agent ID or another runtime's session value. Lifecycle hooks keep their stdin-provided session identity and do not need this shell variable.",
+        "Operational claim commands and manual `arc prime` commands must pass `--session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"`. `PI_SESSION_ID` is the current shell session-manager identity; do not substitute an agent ID or another runtime's session value. The Pi extension captures its current session-manager identity for registration and its own prime command without mutating the process environment.",
     ),
 ])
 

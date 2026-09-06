@@ -729,17 +729,20 @@ export default function arcExtension(pi: ExtensionAPI) {
 
   async function refreshPrime(ctx: ExtensionContext): Promise<boolean> {
     try {
-      const result = await runArc(["prime"], ctx, 20_000);
+      const sessionID = ctx.sessionManager.getSessionId();
+      const result = await runArcCommand(["prime", "--session-id", sessionID], ctx, { timeoutMs: 20_000, sessionID });
       lastPrimeAt = Date.now();
       if (result.code === 0) {
         primeCache = result.stdout.trim();
         primeError = "";
         return true;
       }
+      primeCache = "";
       primeError = outputOf(result);
       return false;
     } catch (error) {
       lastPrimeAt = Date.now();
+      primeCache = "";
       primeError = error instanceof Error ? error.message : String(error);
       return false;
     }
