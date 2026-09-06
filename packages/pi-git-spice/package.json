@@ -1,0 +1,72 @@
+{
+  "name": "@sentiolabs/pi-git-spice",
+  "version": "0.1.0",
+  "description": "Pi skills, prompt templates, and optional subagents for git-spice stacked-branch workflows.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-skill",
+    "git",
+    "git-spice",
+    "stacked-prs",
+    "stacked-diffs",
+    "branch-stack",
+    "code-review"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Sentio Labs",
+    "url": "https://github.com/sentiolabs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/SentioLabs/pi-nexus.git",
+    "directory": "packages/pi-git-spice"
+  },
+  "homepage": "https://github.com/SentioLabs/pi-nexus/tree/main/packages/pi-git-spice#readme",
+  "bugs": {
+    "url": "https://github.com/SentioLabs/pi-nexus/issues"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs && npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json",
+    "pack:dry-run": "npm pack --dry-run",
+    "prepublishOnly": "npm test && npm run pack:dry-run"
+  },
+  "files": [
+    "agents/",
+    "extensions/",
+    "prompts/",
+    "skills/",
+    "src/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
+    "typebox": "^1.3.7"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
+    "@types/node": "^24.13.3",
+    "typebox": "^1.3.7",
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": ["./extensions/git-spice-workflow.ts"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts/*.md"],
+    "subagents": {
+      "agents": ["./agents"]
+    }
+  }
+}
