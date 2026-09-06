@@ -39,6 +39,8 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
   - `/arc-subagents-sync` is deprecated for normal activation and remains a repair/backcompat command.
 - **Session context injection**:
   - On session start, the extension runs `arc prime` and injects its output into the system prompt as `<arc-context>`.
+  - It registers Pi's exact session ID, cwd, and available session file with Arc. Extension commands bind to the current Pi session per invocation, including after a session switch.
+  - Shell commands use `PI_SESSION_ID` with an Arc CLI that supports it; older Arc versions can use `--session-id "$PI_SESSION_ID"` with `--take`. For nested runtimes with conflicting native IDs, set `ARC_SESSION_ID` to the intended current session.
   - Before compaction, the extension refreshes `arc prime`.
 - **Bundled `@juicesharp/rpiv-todo` integration** (auto-installed + auto-loaded):
   - `todo` tool for managing in-session checklist items.
