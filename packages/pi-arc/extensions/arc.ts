@@ -28,6 +28,7 @@ import {
   toArcModelInfo,
 } from "./arc/model-profiles.ts";
 import { openArcModelProfilesEditor } from "./arc/model-profiles-ui.ts";
+import { dispatchArcSubagent } from "./arc/native-dispatch.ts";
 import {
   ARC_PI_SUBAGENTS,
   ARC_SUBAGENT_GENERATED_MARKER,
@@ -547,37 +548,6 @@ async function maybeEnsureBrainstormProfileReady(ctx: ExtensionContext, _args?: 
   return false;
 }
 
-function runPiSubprocess(args: string[], cwd: string, signal?: AbortSignal): Promise<ArcCommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn("pi", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const finish = (result: ArcCommandResult) => {
-      if (settled) return;
-      settled = true;
-      if (signal) signal.removeEventListener("abort", abort);
-      resolve(result);
-    };
-
-    const abort = () => child.kill("SIGTERM");
-    if (signal) {
-      if (signal.aborted) abort();
-      else signal.addEventListener("abort", abort, { once: true });
-    }
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => finish({ code: 127, stdout, stderr: stderr + error.message }));
-    child.on("close", (code) => finish({ code, stdout, stderr }));
-  });
-}
-
 function truncatedOutput(text: string): string {
   const truncation = truncateTail(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
   if (!truncation.truncated) return truncation.content;
@@ -831,13 +801,16 @@ export default function arcExtension(pi: ExtensionAPI) {
     name: "arc_agent",
     label: "Arc Agent",
     description:
-      "Run a bundled Arc specialist agent (builder, devops-builder, reviewer, issue-manager, etc.) in a fresh Pi subprocess. Output is truncated to 50KB/2000 lines.",
-    promptSnippet: "Delegate Arc issue-management, implementation, operations, review, docs, and evaluation tasks to bundled specialist agents.",
+      "Requires pi-subagents. Dispatch one asynchronous specialist and return its native dispatch receipt, not task completion. Receipt text is truncated to 50KB/2000 lines.",
+    promptSnippet:
+      "Delegate Arc issue-management, implementation, operations, review, docs, and evaluation tasks as one native asynchronous run; wait for native completion separately.",
     promptGuidelines: [
-      "Prefer true pi-subagents Arc specialists (arc-builder, arc-issue-manager, arc-code-reviewer, etc.) when available/auto-materialized so long runs can be monitored with /subagents-status.",
-      "For bulk issue creation, do not use arc_agent issue-manager when subagent({ action: \"list\" }) shows arc-issue-manager; dispatch arc-issue-manager asynchronously instead.",
-      "Use arc_agent only as the self-contained fallback when Arc pi-subagents definitions are unavailable or a workflow skill explicitly asks for the fallback.",
-      "Right-size fallback arc_agent dispatches with model tiers: nano for bulk CLI issue creation, small for mechanical/docs tasks, standard for normal contained work, large for devops, complex, or high-risk work.",
+      "arc_agent is one-child-only: it dispatches one asynchronous specialist through pi-subagents and returns a native dispatch receipt, not task completion.",
+      "Use native workflows for coordinated waves; this wrapper does not schedule or coordinate multiple children.",
+      "There is no fallback or automatic retry. The provider owns missing-agent and disabled-capability errors; never bypass intentional disabling or register replacements. An inactive pi-subagents tool fails locally before submission.",
+      "For uncertain launches, use native status/stop with any known identity; transport cancellation is not child termination.",
+      "isolation: \"worktree\" delegates one child to native worktree handling; omitted or none isolation uses native structured dispatch.",
+      "Model overrides retain legacy tier aliases, including nano for bulk CLI issue creation; the resolved model and thinking suffix are forwarded unchanged.",
     ],
     parameters: Type.Object({
       agent: StringEnum(ARC_AGENT_NAMES),
@@ -845,16 +818,14 @@ export default function arcExtension(pi: ExtensionAPI) {
       model: Type.Optional(Type.String({ description: "Optional Pi model pattern override, e.g. nano, haiku, sonnet, opus." })),
       isolation: Type.Optional(StringEnum(["none", "worktree"] as const)),
     }),
-    async execute(_toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: ExtensionContext) {
-      if (params.isolation === "worktree") {
-        throw new Error("arc_agent worktree isolation is not implemented yet. Use isolation='none' or run tasks sequentially.");
-      }
-
+    async execute(_toolCallId: string, params: any, signal: AbortSignal | undefined, _onUpdate: any, ctx: ExtensionContext) {
       const agent = params.agent as ArcAgentName;
+      const nativeAgent = ARC_PI_SUBAGENTS.find(({ source }) => source === agent)?.target;
+      if (!nativeAgent) throw new Error(`Unknown Arc specialist: ${agent}`);
+
       const agentPath = path.join(AGENTS_DIR, `${agent}.md`);
       const markdown = await readFile(agentPath, "utf8");
       const config = parseAgentMarkdown(markdown);
-      const requestedModel = params.model ?? config.model;
       const modelResolution = await resolveArcModelForAgent(
         agent,
         params.model,
@@ -864,53 +835,28 @@ export default function arcExtension(pi: ExtensionAPI) {
         ctx.model?.provider,
       );
       const selectedModel = modelResolution.model;
-      const selectedTools = config.tools?.map((tool) => tool.toLowerCase()).join(",");
+      const receipt = await dispatchArcSubagent(
+        pi.events,
+        pi.getActiveTools().includes("subagent"),
+        {
+          agent: nativeAgent,
+          task: params.task,
+          cwd: ctx.cwd,
+          ...(selectedModel ? { model: selectedModel } : {}),
+          worktree: params.isolation === "worktree",
+        },
+        signal,
+      );
 
-      const args = ["-p", "--no-session", "--system-prompt", config.prompt];
-      if (selectedModel) args.push("--model", selectedModel);
-      if (selectedTools) args.push("--tools", selectedTools);
-      args.push(params.task);
-
-      onUpdate?.({
+      return {
         content: [
           {
             type: "text",
-            text: `Running arc_agent ${agent}${selectedModel ? ` with model ${selectedModel}` : ""}...`,
+            text:
+              `Dispatched ${nativeAgent}${selectedModel ? ` with ${selectedModel}` : ""}. Request ${receipt.requestId}; native run ${receipt.details.runId}. This is a dispatch receipt, not task completion. Wait for native completion before verification or issue closure.\n${modelResolution.warning ?? ""}\n${truncatedOutput(receipt.text)}`,
           },
         ],
-        details: {
-          agent,
-          requestedModel,
-          profileKey: modelResolution.profileKey,
-          modelSource: modelResolution.modelSource,
-          warning: modelResolution.warning,
-          model: selectedModel,
-          tools: selectedTools,
-        },
-      });
-
-      const result = await runPiSubprocess(args, ctx.cwd, signal);
-      const combined = outputOf(result);
-      const text = truncatedOutput(combined);
-
-      if (result.code !== 0) {
-        throw new Error(`arc_agent ${agent} failed with exit code ${result.code}.\n\n${text}`);
-      }
-
-      return {
-        content: [{ type: "text", text }],
-        details: {
-          agent,
-          requestedModel,
-          profileKey: modelResolution.profileKey,
-          modelSource: modelResolution.modelSource,
-          warning: modelResolution.warning,
-          model: selectedModel,
-          tools: selectedTools,
-          exitCode: result.code,
-          stdout: result.stdout,
-          stderr: result.stderr,
-        },
+        details: receipt.details,
       };
     },
   } as any);
