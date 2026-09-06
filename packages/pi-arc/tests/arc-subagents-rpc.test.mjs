@@ -163,3 +163,58 @@ test('ping rejects malformed payloads and capabilities.events cannot replace top
     });
   }
 });
+
+test('RPC success data is structurally bounded before cloning and always cleans its listener', async (t) => {
+  const deep = {};
+  let cursor = deep;
+  for (let index = 0; index < 80; index += 1) cursor = cursor.next = {};
+  const cyclic = {};
+  cyclic.self = cyclic;
+  const wide = Object.fromEntries(Array.from({ length: 5_000 }, (_, index) => [`key-${index}`, index]));
+  let getterReads = 0;
+  const oversized = { payload: 'x'.repeat(1024 * 1024 + 1) };
+  Object.defineProperty(oversized, 'mustNotRead', { enumerable: true, get() { getterReads += 1; return 'unsafe'; } });
+
+  for (const [name, data] of [['deep', deep], ['cyclic', cyclic], ['wide', wide], ['oversized', oversized]]) {
+    await t.test(name, async () => {
+      const bus = createFakeEventBus();
+      bus.on(ARC_SUBAGENTS_RPC_REQUEST_EVENT, (request) => reply(bus, request, data));
+      const client = createArcSubagentsRpcClient({ events: bus, requestTimeoutMs: 100 });
+      await assert.rejects(() => client.request(ids.one, 'spawn', {}), /bound|structur|cycle|depth|count|size|payload|plain|clone|accessor/i);
+      assert.equal(bus.listenerCount(`${replyPrefix}${ids.one}`), 0);
+      client.dispose();
+    });
+  }
+  assert.equal(getterReads, 0, 'oversized payload must fail before clone/accessor evaluation');
+});
+
+test('RPC error details and every ping string projection are bounded', async (t) => {
+  await t.test('oversized error', async () => {
+    const bus = createFakeEventBus();
+    bus.on(ARC_SUBAGENTS_RPC_REQUEST_EVENT, (request) => {
+      bus.emit(`${replyPrefix}${request.requestId}`, {
+        version: 1, requestId: request.requestId, method: request.method, success: false,
+        error: { code: 'x'.repeat(5000), message: 'message' },
+      });
+    });
+    const client = createArcSubagentsRpcClient({ events: bus, requestTimeoutMs: 100 });
+    await assert.rejects(() => client.request(ids.one, 'spawn', {}), /malformed|bound|error/i);
+    assert.equal(bus.listenerCount(`${replyPrefix}${ids.one}`), 0);
+    client.dispose();
+  });
+
+  for (const [name, mutate] of [
+    ['method', (value) => { value.methods[0] = 'x'.repeat(5000); }],
+    ['sessionFile', (value) => { value.session.sessionFile = 'x'.repeat(5000); }],
+  ]) {
+    await t.test(name, async () => {
+      const bus = createFakeEventBus();
+      const value = validPing();
+      mutate(value);
+      bus.on(ARC_SUBAGENTS_RPC_REQUEST_EVENT, (request) => reply(bus, request, value));
+      const client = createArcSubagentsRpcClient({ events: bus, requestTimeoutMs: 100, randomUUID: () => ids.one });
+      await assert.rejects(() => client.ping(), /malformed|bound|method|sessionFile|payload/i);
+      client.dispose();
+    });
+  }
+});

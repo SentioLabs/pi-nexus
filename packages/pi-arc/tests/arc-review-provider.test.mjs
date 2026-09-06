@@ -86,9 +86,9 @@ async function scenario(t, additions = {}) {
     reviewInputDigest: 'a'.repeat(64), baselineDigest: 'b'.repeat(64),
     baselineArtifactDigest: 'c'.repeat(64), inputDescriptorArtifactDigest: 'd'.repeat(64),
     attemptId, repositoryKey: 'repository', request, reservedAt: new Date().toISOString(), attemptNumber: 1,
-    effectiveAttemptBudgetMs: executionTimeoutMs + 100,
+    effectiveAttemptBudgetMs: additions.effectiveAttemptBudgetMs ?? executionTimeoutMs + 10_000,
     executionTimeoutMs,
-    dispatchDeadlineAt: new Date(Date.now() + executionTimeoutMs + 100).toISOString(),
+    dispatchDeadlineAt: new Date(Date.now() + (additions.effectiveAttemptBudgetMs ?? executionTimeoutMs + 10_000)).toISOString(),
   };
   const prompt = {
     systemPrompt: 'You are a fresh read-only Arc reviewer. Use only supplied absolute paths and return the required structured report.',
@@ -179,7 +179,8 @@ function installProvider(value, behavior = {}) {
     calls.registrations.push(request);
     if (behavior.registrationResult === 'collision') request.result = { ok: false, error: new Error('runtime name collision') };
     else if (behavior.registrationResult === 'malformed') request.result = { ok: true, registration: {} };
-    else request.result = { ok: true, registration: { dispose() { calls.disposed += 1; } } };
+    else request.result = { ok: true, registration: { dispose() { calls.disposed += 1; if (behavior.disposerThrows) throw new Error('fixture disposer failed'); } } };
+    behavior.onRegistration?.(request, value, calls);
   });
   return { calls, dispose() { offRpc(); offRegistration(); } };
 }
@@ -435,12 +436,13 @@ test('terminal success still rejects stopped/paused/failed/malformed output and 
   }
 });
 
-test('registration provider loss, collision, malformed handle, spawn rejection, timeout, and malformed receipt never retry spawn', async (t) => {
+test('registration provider loss, collision, malformed handle, ambiguous spawn errors, timeout, and malformed receipt never retry spawn', async (t) => {
   const cases = [
     ['provider loss', { noRegistration: true }, 'provider_lost', 0],
     ['collision', { registrationResult: 'collision' }, 'provider_lost', 0],
     ['malformed registration', { registrationResult: 'malformed' }, 'provider_lost', 0],
-    ['spawn rejection', { onSpawn(request, value) { rpcError(value.options.events, request, 'launch_rejected', 'rejected'); } }, 'spawn_failed', 1],
+    ['launch rejection', { onSpawn(request, value) { rpcError(value.options.events, request, 'launch_rejected', 'rejected'); } }, 'provider_lost', 1],
+    ['execution failed', { onSpawn(request, value) { rpcError(value.options.events, request, 'execution_failed', 'may have launched'); } }, 'provider_lost', 1],
     ['malformed receipt', { onSpawn(request, value) { rpcReply(value.options.events, request, { text: 'x', details: { mode: 'single', runId: 'a', asyncId: 'b', asyncDir: value.asyncRoot, results: [] } }); } }, 'provider_lost', 1],
     ['spawn silence', { onSpawn() {} }, 'provider_lost', 1],
   ];
@@ -453,7 +455,8 @@ test('registration provider loss, collision, malformed handle, spawn rejection, 
       const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
       assert.equal(execution.lifecycle, lifecycle);
       assert.equal(provider.calls.spawns.length, spawnCount);
-      assert.equal(execution.termination.status, spawnCount ? (name === 'spawn rejection' ? 'not_applicable' : 'unknown') : 'not_applicable');
+      assert.equal(execution.termination.status, spawnCount ? 'unknown' : 'not_applicable');
+      if (name === 'launch rejection' || name === 'execution failed') assert.equal(provider.calls.disposed, 0, 'ambiguous post-emission error retains registration ownership');
       await assert.rejects(() => adapter.execute(value.attempt, new AbortController().signal, observer()), /already|attempted|execute/i);
       assert.equal(provider.calls.spawns.length, spawnCount);
       provider.dispose();
@@ -1080,4 +1083,396 @@ test('filesystem aliases outside immutable roots cannot return paths resolving i
   assert.equal(execution.lifecycle, 'guard_failed');
   assert.match(execution.boundedDiagnostics.join('\n'), /canonical|symlink|alias|input|checkout/i);
   provider.dispose();
+});
+
+test('all public returned-path projections are observed across spawn and completion', async (t) => {
+  const value = await scenario(t);
+  const artifactRoot = path.join(value.root, 'public-path-projections');
+  await mkdir(artifactRoot);
+  const names = [
+    'spawn-saved', 'spawn-output-ref', 'details-handoff',
+    'details-artifact-file', 'spawn-result-artifact', 'spawn-result-truncation',
+    'completion-saved', 'completion-output-ref', 'completion-handoff',
+    'result-saved', 'result-output-ref', 'result-truncation',
+  ];
+  const files = Object.fromEntries(names.map((name) => [name, path.join(artifactRoot, `${name}.json`)]));
+  await Promise.all(Object.values(files).map((file) => writeFile(file, '{}')));
+  const provider = installProvider(value, { onSpawn(request) {
+    const runId = `run-${value.attempt.attemptId}`;
+    const asyncDir = path.join(value.asyncRoot, runId);
+    return mkdir(asyncDir).then(() => {
+      const payload = completion(value, runId, {
+        expectedToolCallId: `rpc-spawn-${request.requestId}`,
+        savedOutputPath: files['completion-saved'],
+        outputReference: { path: files['completion-output-ref'] },
+        parallelHandoff: { path: files['completion-handoff'] },
+        truncation: { truncated: false },
+      });
+      Object.assign(payload.results[0], {
+        savedOutputPath: files['result-saved'],
+        outputReference: { path: files['result-output-ref'] },
+        truncation: { artifactPath: files['result-truncation'] },
+      });
+      value.options.events.emit(ASYNC_COMPLETE, payload);
+      value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+      rpcReply(value.options.events, request, {
+        text: '',
+        savedOutputPath: files['spawn-saved'],
+        outputReference: { path: files['spawn-output-ref'] },
+        details: {
+          mode: 'single', runId, asyncId: runId, asyncDir,
+          parallelHandoff: { path: files['details-handoff'] },
+          artifacts: { dir: artifactRoot, files: [{ outputPath: files['details-artifact-file'] }] },
+          results: [{
+            artifactPaths: { outputPath: files['spawn-result-artifact'] },
+            truncation: { artifactPath: files['spawn-result-truncation'] },
+          }],
+        },
+      });
+    });
+  } });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  assert.deepEqual(await preflight(adapter, value), { ok: true });
+  const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+  assert.equal(execution.lifecycle, 'succeeded');
+  assert.deepEqual(execution.artifactReferences.sort(), [path.join(value.asyncRoot, execution.identity.runId), artifactRoot, ...Object.values(files)].sort());
+  provider.dispose();
+});
+
+test('malformed public path-bearing containers fail closed', async (t) => {
+  const cases = [
+    ['artifactPaths', { artifactPaths: [] }],
+    ['outputReference', { outputReference: 'bad' }],
+    ['parallelHandoff', { parallelHandoff: {} }],
+    ['artifacts', { artifacts: { dir: '/tmp', files: 'bad' } }],
+    ['artifacts file projection', { artifacts: { dir: '/tmp', files: [42] } }],
+    ['truncation', { truncation: { artifactPath: 4 } }],
+  ];
+  for (const [name, malformed] of cases) {
+    await t.test(name, async (t) => {
+      const value = await scenario(t);
+      const provider = installProvider(value, { onSpawn(request) {
+        const runId = `run-${value.attempt.attemptId}`;
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => rpcReply(value.options.events, request, {
+          text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [], ...malformed },
+        }));
+      } });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.notEqual(execution.lifecycle, 'succeeded');
+      assert.equal(execution.termination.status, 'unknown');
+      assert.match(execution.boundedDiagnostics.join('\n'), /path|artifact|output|handoff|truncation|malformed/i);
+      assert.equal(provider.calls.stops.length, 1);
+      provider.dispose();
+    });
+  }
+});
+
+test('every nested public path alias rejects immutable-root escapes', async (t) => {
+  const cases = [
+    ['savedOutputPath', (result, unsafe) => { result.savedOutputPath = unsafe; }],
+    ['outputReference.path', (result, unsafe) => { result.outputReference = { path: unsafe }; }],
+    ['parallelHandoff.path', (result, unsafe) => { result.parallelHandoff = { path: unsafe }; }],
+    ['artifactPaths value', (result, unsafe) => { result.artifactPaths = { outputPath: unsafe }; }],
+    ['artifacts.dir', (result, unsafe) => { result.artifacts = { dir: unsafe, files: [] }; }],
+    ['artifacts.files', (result, unsafe, value) => { result.artifacts = { dir: value.asyncRoot, files: [{ outputPath: unsafe }] }; }],
+    ['truncation.artifactPath', (result, unsafe) => { result.truncation = { artifactPath: unsafe }; }],
+  ];
+  for (const [name, project] of cases) {
+    await t.test(name, async (t) => {
+      const value = await scenario(t);
+      const provider = installProvider(value, { onSpawn(request) {
+        const runId = `run-${value.attempt.attemptId}`;
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => {
+          const payload = completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` });
+          project(payload.results[0], value.attempt.manifestPath, value);
+          value.options.events.emit(ASYNC_COMPLETE, payload);
+          value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+          rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+        });
+      } });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.equal(execution.lifecycle, 'guard_failed');
+      assert.match(execution.boundedDiagnostics.join('\n'), /input|checkout|path|artifact/i);
+      provider.dispose();
+    });
+  }
+});
+
+test('contradictory completion and result projections cannot settle as success', async (t) => {
+  const cases = [
+    ['attention', 'completion', { activityState: 'needs_attention' }],
+    ['paused status', 'completion', { status: 'paused' }],
+    ['failed state', 'completion', { state: 'failed' }],
+    ['partial', 'completion', { status: 'partial' }],
+    ['detached', 'completion', { detached: true }],
+    ['tool budget flag', 'result', { toolBudgetBlocked: true }],
+    ['tool budget outcome', 'result', { toolBudget: { outcome: 'hard-blocked' } }],
+    ['turn budget flag', 'result', { turnBudgetExceeded: true }],
+    ['turn budget outcome', 'result', { turnBudget: { outcome: 'exceeded' } }],
+    ['usage budget exhaustion', 'completion', { usageBudget: { exhausted: true } }],
+    ['structured output failed', 'result', { structuredOutputFailed: true }],
+    ['nonzero exit', 'result', { exitCode: 2 }],
+    ['signal', 'result', { processSignal: 'SIGTERM' }],
+    ['error', 'result', { error: 'child failed' }],
+    ['interrupted', 'result', { interrupted: true }],
+    ['timed out', 'result', { timedOut: true }],
+  ];
+  for (const [name, level, contradiction] of cases) {
+    await t.test(name, async (t) => {
+      const value = await scenario(t);
+      const provider = installProvider(value, { onSpawn(request) {
+        const runId = `run-${value.attempt.attemptId}`;
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => {
+          const payload = completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` });
+          Object.assign(level === 'completion' ? payload : payload.results[0], contradiction);
+          value.options.events.emit(ASYNC_COMPLETE, payload);
+          value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+          rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+        });
+      } });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.notEqual(execution.lifecycle, 'succeeded');
+      assert.equal(execution.structuredReport, undefined);
+      provider.dispose();
+    });
+  }
+});
+
+test('post-stop persistence drains proof contradictions from both callbacks', async (t) => {
+  for (const stage of ['refinement', 'termination']) {
+    await t.test(stage, async (t) => {
+      const value = await scenario(t, { executionTimeoutMs: 25 });
+      const runId = `run-${value.attempt.attemptId}`;
+      const provider = installProvider(value, {
+        onSpawn(request) {
+          const asyncDir = path.join(value.asyncRoot, runId);
+          return mkdir(asyncDir).then(() => rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } }));
+        },
+        onStop(request) {
+          value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-original'));
+          rpcReply(value.options.events, request, { runId, state: 'stopping' });
+        },
+      });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const observed = observer({
+        receipt(_value, count) {
+          if (stage === 'refinement' && count === 2) value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-conflict'));
+        },
+        termination() {
+          if (stage === 'termination') value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-conflict'));
+        },
+      });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observed);
+      assert.equal(execution.lifecycle, 'timed_out');
+      assert.equal(execution.termination.status, 'unknown');
+      assert.match(execution.boundedDiagnostics.join('\n'), /conflict|proof/i);
+      assert.equal(provider.calls.disposed, 0);
+      provider.dispose();
+    });
+  }
+});
+
+test('event and spawn structures are rejected before canonicalization or result traversal', async (t) => {
+  await t.test('event', async (t) => {
+    const value = await scenario(t);
+    let getterReads = 0;
+    const provider = installProvider(value, { onSpawn(request) {
+      const runId = `run-${value.attempt.attemptId}`;
+      const asyncDir = path.join(value.asyncRoot, runId);
+      return mkdir(asyncDir).then(() => {
+        const event = { payload: 'x'.repeat(1024 * 1024 + 1) };
+        Object.defineProperty(event, 'mustNotRead', { enumerable: true, get() { getterReads += 1; return 'unsafe'; } });
+        value.options.events.emit(ASYNC_COMPLETE, event);
+        rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+      });
+    } });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+    assert.notEqual(execution.lifecycle, 'succeeded');
+    assert.equal(getterReads, 0);
+    provider.dispose();
+  });
+
+  await t.test('spawn results count', async (t) => {
+    const value = await scenario(t);
+    let getterReads = 0;
+    const provider = installProvider(value, { onSpawn(request) {
+      const runId = `run-${value.attempt.attemptId}`;
+      const asyncDir = path.join(value.asyncRoot, runId);
+      return mkdir(asyncDir).then(() => {
+        const results = Array.from({ length: 5_000 }, () => ({}));
+        Object.defineProperty(results[4999], 'mustNotRead', { enumerable: true, get() { getterReads += 1; return 'unsafe'; } });
+        rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results } });
+      });
+    } });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+    assert.notEqual(execution.lifecycle, 'succeeded');
+    assert.equal(getterReads, 0);
+    assert.match(execution.boundedDiagnostics.join('\n'), /bound|count|structur|result|payload/i);
+    provider.dispose();
+  });
+});
+
+test('stop UUID generation retries collisions and never emits a colliding ID', async (t) => {
+  await t.test('collision then success', async (t) => {
+    const value = await scenario(t);
+    const spawnId = '00000000-0000-4000-8000-000000000099';
+    const distinctId = '00000000-0000-4000-8000-000000000100';
+    const ids = [spawnId, distinctId];
+    value.options.randomUUID = () => ids.shift() ?? distinctId;
+    const provider = installProvider(value);
+    const adapter = createArcNativeReviewAdapter(value.options);
+    await adapter.stop(value.attempt, { adapter: 'native', attemptId: value.attempt.attemptId, requestId: spawnId, runId: 'exact-run' });
+    assert.equal(provider.calls.stops.length, 1);
+    assert.equal(provider.calls.stops[0].requestId, distinctId);
+    provider.dispose();
+  });
+
+  await t.test('collision exhaustion', async (t) => {
+    const value = await scenario(t);
+    const spawnId = '00000000-0000-4000-8000-000000000099';
+    value.options.randomUUID = () => spawnId;
+    const provider = installProvider(value);
+    const adapter = createArcNativeReviewAdapter(value.options);
+    await assert.rejects(() => adapter.stop(value.attempt, { adapter: 'native', attemptId: value.attempt.attemptId, requestId: spawnId, runId: 'exact-run' }), /UUID|collision|distinct/i);
+    assert.equal(provider.calls.stops.length, 0);
+    provider.dispose();
+  });
+});
+
+test('stop UUID collision exhaustion is surfaced and retains unresolved registration ownership', async (t) => {
+  const value = await scenario(t);
+  const first = '00000000-0000-4000-8000-000000000001';
+  const second = '00000000-0000-4000-8000-000000000002';
+  const spawnId = '00000000-0000-4000-8000-000000000003';
+  let generated = 0;
+  value.options.randomUUID = () => generated++ === 0 ? first : generated === 2 ? second : spawnId;
+  const provider = installProvider(value, { onSpawn(request) {
+    const runId = `run-${value.attempt.attemptId}`;
+    const asyncDir = path.join(value.asyncRoot, runId);
+    return mkdir(asyncDir).then(() => rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } }));
+  } });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  assert.deepEqual(await preflight(adapter, value), { ok: true });
+  const execution = await adapter.execute(value.attempt, new AbortController().signal, observer({ receipt() { throw new Error('fixture receipt failed'); } }));
+  assert.equal(provider.calls.spawns[0].requestId, spawnId);
+  assert.equal(provider.calls.stops.length, 0);
+  assert.equal(provider.calls.disposed, 0);
+  assert.equal(execution.termination.status, 'unknown');
+  assert.match(execution.boundedDiagnostics.join('\n'), /stop request failed|distinct stop UUID|collision/i);
+  provider.dispose();
+});
+
+test('registration disposer failures are visible on pre-spawn and terminal cleanup', async (t) => {
+  await t.test('pre-spawn abort', async (t) => {
+    const value = await scenario(t);
+    const controller = new AbortController();
+    const provider = installProvider(value, { disposerThrows: true, onRegistration() { controller.abort(new Error('abort after registration')); } });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const execution = await adapter.execute(value.attempt, controller.signal, observer());
+    assert.equal(execution.lifecycle, 'guard_failed');
+    assert.equal(provider.calls.spawns.length, 0);
+    assert.equal(provider.calls.disposed, 1);
+    assert.match(execution.boundedDiagnostics.join('\n'), /dispos/i);
+    provider.dispose();
+  });
+
+  await t.test('fallback cleanup', async (t) => {
+    const value = await scenario(t);
+    const realNow = Date.now();
+    let throwClock = false;
+    t.mock.method(Date, 'now', () => { if (throwClock) throw new Error('fixture clock failed'); return realNow; });
+    const provider = installProvider(value, { disposerThrows: true, onRegistration() { throwClock = true; } });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+    assert.equal(execution.lifecycle, 'guard_failed');
+    assert.equal(provider.calls.spawns.length, 0);
+    assert.equal(provider.calls.disposed, 1);
+    assert.match(execution.boundedDiagnostics.join('\n'), /fallback|dispos/i);
+    provider.dispose();
+  });
+
+  await t.test('terminal cleanup', async (t) => {
+    const value = await scenario(t);
+    const provider = installProvider(value, { disposerThrows: true, onSpawn(request) {
+      const runId = `run-${value.attempt.attemptId}`;
+      const asyncDir = path.join(value.asyncRoot, runId);
+      return mkdir(asyncDir).then(() => {
+        value.options.events.emit(ASYNC_COMPLETE, completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` }));
+        value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+        rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+      });
+    } });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+    assert.equal(execution.lifecycle, 'guard_failed');
+    assert.equal(execution.termination.status, 'observed');
+    assert.equal(provider.calls.disposed, 1);
+    assert.match(execution.boundedDiagnostics.join('\n'), /dispos/i);
+    provider.dispose();
+  });
+});
+
+test('native timing validates shared maxima/coherence and resists backward wall clocks', async (t) => {
+  for (const [name, mutate] of [
+    ['over shared max', (attempt) => { attempt.effectiveAttemptBudgetMs = 900_001; }],
+    ['unsafe integer', (attempt) => { attempt.executionTimeoutMs = Number.MAX_SAFE_INTEGER + 1; }],
+    ['missing stop and kill grace', (attempt) => { attempt.effectiveAttemptBudgetMs = attempt.executionTimeoutMs + 9_999; }],
+  ]) {
+    await t.test(name, async (t) => {
+      const value = await scenario(t);
+      mutate(value.attempt);
+      const provider = installProvider(value);
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.notEqual(execution.lifecycle, 'succeeded');
+      assert.match(execution.boundedDiagnostics.join('\n'), /timing|budget|timeout|integer|invalid/i);
+      assert.equal(provider.calls.registrations.length, 0);
+      assert.equal(provider.calls.spawns.length, 0);
+      provider.dispose();
+    });
+  }
+
+  await t.test('backward wall clock', async (t) => {
+    const value = await scenario(t, { executionTimeoutMs: 25 });
+    const runId = `run-${value.attempt.attemptId}`;
+    const provider = installProvider(value, {
+      onSpawn(request) {
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } }));
+      },
+      onStop(request) {
+        value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+        rpcReply(value.options.events, request, { runId, state: 'stopping' });
+      },
+    });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const entered = Date.now();
+    t.mock.method(Date, 'now', () => entered - 60_000);
+    const controller = new AbortController();
+    const safety = setTimeout(() => controller.abort(new Error('backward-clock safety abort')), 150);
+    const execution = await adapter.execute(value.attempt, controller.signal, observer());
+    clearTimeout(safety);
+    assert.equal(execution.lifecycle, 'timed_out');
+    assert.doesNotMatch(execution.boundedDiagnostics.join('\n'), /safety abort/i);
+    provider.dispose();
+  });
 });

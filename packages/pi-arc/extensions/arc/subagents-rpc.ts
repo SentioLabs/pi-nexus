@@ -1,6 +1,7 @@
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 
 import {
+  ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES,
   ARC_REVIEW_RPC_TIMEOUT_MS,
   ARC_SUBAGENTS_RPC_REQUEST_EVENT,
   type ArcSubagentsPing,
@@ -9,6 +10,10 @@ import {
 
 const REPLY_PREFIX = "subagents:rpc:v1:reply:";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_RPC_DEPTH = 64;
+const MAX_RPC_NODES = 4096;
+const MAX_RPC_ENTRIES = 4096;
+const MAX_RPC_FIELD_BYTES = 4096;
 
 type ArcEvents = {
   on(name: string, handler: (value: unknown) => void): () => void;
@@ -33,6 +38,51 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function validateUuid(value: string): void {
   if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new Error("requestId must be a UUID");
+}
+
+function validateJsonLikeStructure(value: unknown, label: string): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const seen = new Set<object>();
+  let nodes = 0;
+  let entries = 0;
+  let bytes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.depth > MAX_RPC_DEPTH) throw new Error(`${label} exceeds the structural depth bound`);
+    const item = current.value;
+    if (item === null || typeof item === "boolean") continue;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) throw new Error(`${label} contains a non-JSON number`);
+      continue;
+    }
+    if (typeof item === "string") {
+      const size = Buffer.byteLength(item, "utf8");
+      if (size > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) throw new Error(`${label} contains an oversized string`);
+      bytes += size;
+      if (bytes > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) throw new Error(`${label} exceeds the aggregate byte bound`);
+      continue;
+    }
+    if (typeof item !== "object") throw new Error(`${label} is not plain JSON-like data`);
+    if (seen.has(item)) throw new Error(`${label} contains a cycle`);
+    seen.add(item);
+    nodes += 1;
+    if (nodes > MAX_RPC_NODES) throw new Error(`${label} exceeds the structural node bound`);
+    if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) {
+      throw new Error(`${label} contains an unsupported prototype`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(item);
+    const keys = Reflect.ownKeys(descriptors);
+    entries += keys.length;
+    if (entries > MAX_RPC_ENTRIES) throw new Error(`${label} exceeds the structural entry bound`);
+    for (const key of keys) {
+      if (typeof key !== "string") throw new Error(`${label} contains a symbol key`);
+      bytes += Buffer.byteLength(key, "utf8");
+      if (bytes > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) throw new Error(`${label} exceeds the aggregate byte bound`);
+      const descriptor = descriptors[key];
+      if (!("value" in descriptor) || descriptor.get || descriptor.set) throw new Error(`${label} contains an accessor property`);
+      pending.push({ value: descriptor.value, depth: current.depth + 1 });
+    }
+  }
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -78,11 +128,19 @@ function awaitSingleBoundedReply(input: {
       if (!isRecord(raw) || raw.version !== 1 || raw.requestId !== input.requestId || raw.method !== input.method || typeof raw.success !== "boolean") return;
       if (raw.success) {
         if (!Object.hasOwn(raw, "data")) return;
-        try { succeed(structuredClone(raw.data)); }
-        catch { fail(new Error(`subagents RPC ${input.method} returned non-cloneable data`)); }
+        try {
+          validateJsonLikeStructure(raw.data, `subagents RPC ${input.method} data`);
+          succeed(structuredClone(raw.data));
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error(`subagents RPC ${input.method} returned invalid data`));
+        }
         return;
       }
-      if (!isRecord(raw.error) || typeof raw.error.code !== "string" || !raw.error.code || typeof raw.error.message !== "string" || !raw.error.message) return;
+      if (!isRecord(raw.error) || typeof raw.error.code !== "string" || !raw.error.code || typeof raw.error.message !== "string" || !raw.error.message ||
+          Buffer.byteLength(raw.error.code, "utf8") > MAX_RPC_FIELD_BYTES || Buffer.byteLength(raw.error.message, "utf8") > MAX_RPC_FIELD_BYTES) {
+        fail(new Error(`subagents RPC ${input.method} returned malformed bounded error details`));
+        return;
+      }
       fail(new Error(`subagents RPC ${raw.error.code}: ${raw.error.message}`));
     };
 
@@ -110,7 +168,7 @@ function optionalString(value: unknown, at: string): string | undefined {
 
 function validatePing(value: unknown): ArcSubagentsPing {
   if (!isRecord(value) || value.version !== 1) throw new Error("malformed ping version");
-  if (!Array.isArray(value.methods) || value.methods.length > 64 || value.methods.some((method) => typeof method !== "string" || !method || /[\0\r\n]/.test(method)) || new Set(value.methods).size !== value.methods.length) throw new Error("malformed ping methods");
+  if (!Array.isArray(value.methods) || value.methods.length > 64 || value.methods.some((method) => typeof method !== "string" || !method || /[\0\r\n]/.test(method) || Buffer.byteLength(method, "utf8") > MAX_RPC_FIELD_BYTES) || new Set(value.methods).size !== value.methods.length) throw new Error("malformed ping methods");
   if (!isRecord(value.capabilities)) throw new Error("malformed ping capabilities");
   if (!isRecord(value.events)) throw new Error("malformed ping events");
 
@@ -149,7 +207,7 @@ function validatePing(value: unknown): ArcSubagentsPing {
     const cwd = optionalString(value.session.cwd, "session.cwd");
     const sessionId = optionalString(value.session.sessionId, "session.sessionId");
     const sessionFileValue = value.session.sessionFile;
-    if (sessionFileValue !== undefined && sessionFileValue !== null && (typeof sessionFileValue !== "string" || !sessionFileValue)) throw new Error("malformed ping session.sessionFile");
+    if (sessionFileValue !== undefined && sessionFileValue !== null && (typeof sessionFileValue !== "string" || !sessionFileValue || /[\0\r\n]/.test(sessionFileValue) || Buffer.byteLength(sessionFileValue, "utf8") > MAX_RPC_FIELD_BYTES)) throw new Error("malformed ping session.sessionFile");
     session = {
       ...(cwd ? { cwd } : {}),
       ...(sessionId ? { sessionId } : {}),

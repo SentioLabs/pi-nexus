@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   ARC_REVIEWER_REPORT_JSON_SCHEMA,
+  ARC_REVIEW_ATTEMPT_TIMEOUT_MS,
   ARC_REVIEW_GUARD_ACK_PREFIX,
+  ARC_REVIEW_KILL_GRACE_MS,
   ARC_REVIEW_MAX_EVENT_BUFFER,
   ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES,
   ARC_REVIEW_STOP_GRACE_MS,
@@ -43,20 +45,6 @@ interface ArcNativeAvailabilityProbe {
 
 interface RegistrationHandle { dispose(): void }
 
-interface ArcNativeSpawnData {
-  text: string;
-  isError?: boolean;
-  details: {
-    mode: "single";
-    runId: string;
-    asyncId: string;
-    asyncDir: string;
-    results: unknown[];
-    launchContractDigest?: string;
-    launchResolvedExtensions?: unknown;
-  };
-}
-
 interface ArcNativeObservedTerminal {
   version: 1;
   runId: string;
@@ -75,7 +63,6 @@ interface ArcNativeObservedTerminal {
 
 interface BoundSpawn {
   receipt: ArcReviewDispatchReceipt;
-  data: ArcNativeSpawnData;
   artifacts: ReturnedArtifactSet;
 }
 
@@ -102,6 +89,12 @@ const MODULE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const PARENT_EXTENSION_DIRECTORY = path.dirname(MODULE_DIRECTORY);
 const MAX_RETURNED_ARTIFACTS = 128;
 const MAX_PATH_BYTES = 4096;
+const MAX_STRUCTURE_DEPTH = 64;
+const MAX_STRUCTURE_NODES = 4096;
+const MAX_STRUCTURE_ENTRIES = 4096;
+const MAX_SPAWN_RESULTS = 128;
+const MAX_STOP_UUID_ATTEMPTS = 8;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) &&
@@ -112,6 +105,51 @@ function below(root: string, candidate: string): boolean {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
 }
 
+function validateJsonLikeStructure(value: unknown, label: string): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  const seen = new Set<object>();
+  let nodes = 0;
+  let entries = 0;
+  let bytes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.depth > MAX_STRUCTURE_DEPTH) throw new Error(`${label} exceeds the structural depth bound`);
+    const item = current.value;
+    if (item === null || typeof item === "boolean") continue;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) throw new Error(`${label} contains a non-JSON number`);
+      continue;
+    }
+    if (typeof item === "string") {
+      const size = Buffer.byteLength(item, "utf8");
+      if (size > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) throw new Error(`${label} contains an oversized string`);
+      bytes += size;
+      if (bytes > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) throw new Error(`${label} exceeds the aggregate byte bound`);
+      continue;
+    }
+    if (typeof item !== "object") throw new Error(`${label} is not plain JSON-like data`);
+    if (seen.has(item)) throw new Error(`${label} contains a cycle`);
+    seen.add(item);
+    nodes += 1;
+    if (nodes > MAX_STRUCTURE_NODES) throw new Error(`${label} exceeds the structural node bound`);
+    if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) {
+      throw new Error(`${label} contains an unsupported prototype`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(item);
+    const keys = Reflect.ownKeys(descriptors);
+    entries += keys.length;
+    if (entries > MAX_STRUCTURE_ENTRIES) throw new Error(`${label} exceeds the structural entry bound`);
+    for (const key of keys) {
+      if (typeof key !== "string") throw new Error(`${label} contains a symbol key`);
+      bytes += Buffer.byteLength(key, "utf8");
+      if (bytes > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) throw new Error(`${label} exceeds the aggregate byte bound`);
+      const descriptor = descriptors[key];
+      if (!("value" in descriptor) || descriptor.get || descriptor.set) throw new Error(`${label} contains an accessor property`);
+      pending.push({ value: descriptor.value, depth: current.depth + 1 });
+    }
+  }
+}
+
 function boundedMessage(value: unknown): string {
   const message = value instanceof Error ? `${value.name}: ${value.message}` : String(value);
   const bytes = Buffer.from(message, "utf8");
@@ -119,6 +157,13 @@ function boundedMessage(value: unknown): string {
   let end = 4096;
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString("utf8");
+}
+
+function monotonicClock(): { entered: number; clock: () => number } {
+  const entered = Date.now();
+  const monotonic = performance.now();
+  let last = entered;
+  return { entered, clock: () => last = Math.max(last, Date.now(), entered + performance.now() - monotonic) };
 }
 
 function nowIso(now: () => Date): string {
@@ -266,8 +311,12 @@ function validatePrompt(attempt: ArcPreparedReviewAttempt, buildPrompt: ArcNativ
 function validateAttemptIdentity(attempt: ArcPreparedReviewAttempt): void {
   if (typeof attempt.attemptId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(attempt.attemptId)) throw new Error("attemptId cannot form a private runtime agent name");
   if (attempt.request.role !== "spec" && attempt.request.role !== "code") throw new Error("review role must be spec or code");
-  if (!Number.isSafeInteger(attempt.executionTimeoutMs) || attempt.executionTimeoutMs <= 0) throw new Error("executionTimeoutMs must be a positive integer");
-  if (!Number.isSafeInteger(attempt.effectiveAttemptBudgetMs) || attempt.effectiveAttemptBudgetMs <= 0) throw new Error("effectiveAttemptBudgetMs must be a positive integer");
+  if (!Number.isSafeInteger(attempt.executionTimeoutMs) || attempt.executionTimeoutMs <= 0 ||
+      !Number.isSafeInteger(attempt.effectiveAttemptBudgetMs) || attempt.effectiveAttemptBudgetMs <= 0 ||
+      attempt.effectiveAttemptBudgetMs > ARC_REVIEW_ATTEMPT_TIMEOUT_MS ||
+      attempt.executionTimeoutMs + ARC_REVIEW_STOP_GRACE_MS + ARC_REVIEW_KILL_GRACE_MS > attempt.effectiveAttemptBudgetMs) {
+    throw new Error("attempt timing budgets are invalid");
+  }
   const deadline = Date.parse(attempt.dispatchDeadlineAt);
   if (!Number.isFinite(deadline) || new Date(deadline).toISOString() !== attempt.dispatchDeadlineAt) throw new Error("dispatchDeadlineAt must be an ISO timestamp");
 }
@@ -382,12 +431,35 @@ async function canonicalReturnedPath(value: unknown, attempt: ArcPreparedReviewA
 }
 
 function* collectReturnedPaths(value: Record<string, unknown>, includeAsyncDir = true): Generator<unknown> {
-  for (const key of ["asyncDir", "artifactsDir", "sessionFile", "sessionPath", "outputFile", "outputPath", "artifactPath", "reportPath", "transcriptPath", "structuredOutputPath", "structuredOutputSchemaPath"]) {
+  for (const key of ["asyncDir", "artifactsDir", "sessionFile", "sessionPath", "outputFile", "outputPath", "artifactPath", "reportPath", "transcriptPath", "structuredOutputPath", "structuredOutputSchemaPath", "savedOutputPath"]) {
     if ((!includeAsyncDir && key === "asyncDir") || !Object.hasOwn(value, key)) continue;
     yield value[key];
   }
-  if (isRecord(value.artifactPaths)) {
+  if (Object.hasOwn(value, "artifactPaths")) {
+    if (!isRecord(value.artifactPaths)) throw new Error("provider artifactPaths must be a plain path object");
     for (const key of Object.keys(value.artifactPaths)) yield value.artifactPaths[key];
+  }
+  for (const key of ["outputReference", "parallelHandoff"] as const) {
+    if (!Object.hasOwn(value, key)) continue;
+    const reference = value[key];
+    if (!isRecord(reference) || !Object.hasOwn(reference, "path")) throw new Error(`provider ${key} must be a path-bearing object`);
+    yield reference.path;
+  }
+  if (Object.hasOwn(value, "artifacts")) {
+    const artifacts = value.artifacts;
+    if (!isRecord(artifacts) || !Object.hasOwn(artifacts, "dir") || !Array.isArray(artifacts.files)) {
+      throw new Error("provider artifacts must contain dir and files projections");
+    }
+    yield artifacts.dir;
+    for (const [index, fileSet] of artifacts.files.entries()) {
+      if (!isRecord(fileSet)) throw new Error(`provider artifacts.files[${index}] must be an artifactPaths object`);
+      for (const key of Object.keys(fileSet)) yield fileSet[key];
+    }
+  }
+  if (Object.hasOwn(value, "truncation")) {
+    const truncation = value.truncation;
+    if (!isRecord(truncation)) throw new Error("provider truncation must be an object");
+    if (Object.hasOwn(truncation, "artifactPath")) yield truncation.artifactPath;
   }
 }
 
@@ -409,11 +481,12 @@ async function validateSpawnReceipt(
   dispatchedAt: string,
   receivedAt: string,
 ): Promise<BoundSpawn> {
+  validateJsonLikeStructure(value, "native spawn payload");
   if (!isRecord(value) || typeof value.text !== "string" || (value.isError !== undefined && typeof value.isError !== "boolean") || value.isError === true || !isRecord(value.details)) {
     throw new Error("native spawn returned a malformed or error receipt");
   }
   const details = value.details;
-  if (details.mode !== "single" || typeof details.runId !== "string" || !details.runId || details.runId.length > 256 || /[\0\r\n]/.test(details.runId) || details.runId !== details.asyncId || !Array.isArray(details.results)) {
+  if (details.mode !== "single" || typeof details.runId !== "string" || !details.runId || details.runId.length > 256 || /[\0\r\n]/.test(details.runId) || details.runId !== details.asyncId || !Array.isArray(details.results) || details.results.length > MAX_SPAWN_RESULTS || details.results.some((result) => !isRecord(result))) {
     throw new Error("native spawn receipt has an invalid exact run identity or mode");
   }
   identity.runId = details.runId;
@@ -423,10 +496,10 @@ async function validateSpawnReceipt(
   artifacts.add(asyncDir);
   await addReturnedPaths([value], attempt, artifacts);
   await addReturnedPaths([details], attempt, artifacts, false);
-  await addReturnedPaths(details.results.filter(isRecord), attempt, artifacts);
+  await addReturnedPaths(details.results as Record<string, unknown>[], attempt, artifacts);
   const boundIdentity: ArcReviewLaunchIdentity = { ...identity };
   const receipt: ArcReviewDispatchReceipt = { identity: boundIdentity, dispatchedAt, receivedAt, artifactReferences: artifacts.values() };
-  return { receipt, data: value as unknown as ArcNativeSpawnData, artifacts };
+  return { receipt, artifacts };
 }
 
 function finiteTimestamp(value: unknown, at: string): number {
@@ -471,6 +544,25 @@ function normalizeObservedProof(proof: ArcNativeObservedTerminal): ArcTerminatio
   };
 }
 
+function contradictorySuccessFact(value: Record<string, unknown>): string | undefined {
+  const failedStates = new Set(["attention", "needs_attention", "paused", "stopped", "failed", "failure", "partial", "detached", "incomplete", "interrupted", "timed_out", "timeout", "signaled", "budget_exhausted", "budget_blocked", "blocked"]);
+  for (const key of ["activityState", "status", "state"] as const) {
+    if (typeof value[key] === "string" && failedStates.has((value[key] as string).toLowerCase())) return `${key} contradicts success`;
+  }
+  for (const key of ["attention", "paused", "stopped", "failed", "partial", "detached", "incomplete", "interrupted", "timedOut", "signaled", "budgetExhausted", "budgetBlocked", "toolBudgetBlocked", "turnBudgetExceeded", "structuredOutputFailed", "isError"] as const) {
+    if (value[key] === true) return `${key} contradicts success`;
+  }
+  if (Object.hasOwn(value, "exitCode") && value.exitCode !== 0) return "exitCode contradicts success";
+  for (const key of ["processSignal", "signal"] as const) {
+    if (Object.hasOwn(value, key) && value[key] !== null && value[key] !== undefined) return `${key} contradicts success`;
+  }
+  if (Object.hasOwn(value, "error") && value.error !== null && value.error !== undefined && value.error !== "") return "error contradicts success";
+  if (isRecord(value.toolBudget) && value.toolBudget.outcome === "hard-blocked") return "toolBudget outcome contradicts success";
+  if (isRecord(value.turnBudget) && value.turnBudget.outcome === "exceeded") return "turnBudget outcome contradicts success";
+  if (isRecord(value.usageBudget) && value.usageBudget.exhausted === true) return "usageBudget exhaustion contradicts success";
+  return undefined;
+}
+
 async function parseCompletion(
   value: unknown,
   attempt: ArcPreparedReviewAttempt,
@@ -489,8 +581,9 @@ async function parseCompletion(
     return { lifecycle: "guard_failed", guardAcknowledgements: [], diagnostics: [boundedMessage(error)], artifactReferences: [] };
   }
   let artifactReferences = artifacts.values();
-  if (value.mode !== "single" || value.state !== "complete" || value.success !== true || value.stopped === true || value.timedOut === true || value.interrupted === true || value.processSignal) {
-    return { lifecycle: "provider_lost", guardAcknowledgements: [], diagnostics: ["native completion was not a successful single terminal result"], artifactReferences };
+  const completionContradiction = contradictorySuccessFact(value);
+  if (value.mode !== "single" || value.state !== "complete" || value.success !== true || completionContradiction) {
+    return { lifecycle: "provider_lost", guardAcknowledgements: [], diagnostics: [completionContradiction ?? "native completion was not a successful single terminal result"], artifactReferences };
   }
   if (!Array.isArray(value.results) || value.results.length !== 1 || !isRecord(value.results[0])) {
     return { lifecycle: "malformed_report", guardAcknowledgements: [], diagnostics: ["native completion has no exact single result"], artifactReferences };
@@ -502,8 +595,9 @@ async function parseCompletion(
   } catch (error) {
     return { lifecycle: "guard_failed", guardAcknowledgements: [], diagnostics: [boundedMessage(error)], artifactReferences: [] };
   }
-  if (result.success !== true || result.stopped === true || result.timedOut === true || result.interrupted === true || result.processSignal || !Object.hasOwn(result, "structuredOutput")) {
-    return { lifecycle: "malformed_report", guardAcknowledgements: [], diagnostics: ["native child result did not contain successful structured output"], artifactReferences };
+  const resultContradiction = contradictorySuccessFact(result);
+  if (result.success !== true || resultContradiction || !Object.hasOwn(result, "structuredOutput")) {
+    return { lifecycle: "malformed_report", guardAcknowledgements: [], diagnostics: [resultContradiction ?? "native child result did not contain successful structured output"], artifactReferences };
   }
   const validation = validateArcReviewerReport(result.structuredOutput, attempt.reviewInputDigest);
   if (validation.ok === false) return { lifecycle: "malformed_report", guardAcknowledgements: [], diagnostics: validation.errors.slice(0, MAX_DIAGNOSTICS), artifactReferences };
@@ -527,8 +621,11 @@ class BoundedEventBuffer {
   add(kind: "completion" | "terminal", value: unknown): void {
     if (this.#overflow) return;
     let digest: string;
+    let detached: unknown;
     try {
+      validateJsonLikeStructure(value, `native ${kind} event`);
       digest = `${kind}:${canonicalizeArcJson(value)}`;
+      detached = structuredClone(value);
     } catch {
       this.#overflow = true;
       this.#revision += 1;
@@ -549,7 +646,7 @@ class BoundedEventBuffer {
       return;
     }
     this.#digests.add(digest);
-    this.#events.push({ kind, value });
+    this.#events.push({ kind, value: detached });
     this.#revision += 1;
     this.#notify();
   }
@@ -563,10 +660,10 @@ class BoundedEventBuffer {
     return { events: [...this.#events], overflow: this.#overflow, revision: this.#revision };
   }
 
-  wait(signal: AbortSignal, deadline: number, expectedRevision: number): Promise<void> {
+  wait(signal: AbortSignal, deadline: number, expectedRevision: number, clock: () => number): Promise<void> {
     if (signal.aborted) return Promise.reject(new Error("review attempt aborted"));
     if (this.#revision !== expectedRevision) return Promise.resolve();
-    const remaining = deadline - Date.now();
+    const remaining = deadline - clock();
     if (remaining <= 0) return Promise.reject(new Error("review attempt timed out waiting for native completion and process proof"));
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -592,7 +689,8 @@ async function awaitExactRootProof(input: {
   runId: string;
   signal: AbortSignal;
   deadline: number;
-}): Promise<ArcNativeObservedTerminal | undefined> {
+  clock: () => number;
+}): Promise<{ proof: ArcNativeObservedTerminal; processedEvents: number } | undefined> {
   let processed = 0;
   let proof: ArcNativeObservedTerminal | undefined;
   for (;;) {
@@ -608,8 +706,8 @@ async function awaitExactRootProof(input: {
       if (proof && canonicalizeArcJson(proof) !== canonicalizeArcJson(candidate)) return undefined;
       proof = candidate;
     }
-    if (proof) return proof;
-    try { await input.buffer.wait(input.signal, input.deadline, snapshot.revision); }
+    if (proof) return { proof, processedEvents: processed };
+    try { await input.buffer.wait(input.signal, input.deadline, snapshot.revision, input.clock); }
     catch { return undefined; }
   }
 }
@@ -621,6 +719,7 @@ async function awaitExactRootProofAndCompletion(input: {
   artifacts: ReturnedArtifactSet;
   signal: AbortSignal;
   deadline: number;
+  clock: () => number;
 }): Promise<ExactSettlement> {
   let processed = 0;
   let proof: ArcNativeObservedTerminal | undefined;
@@ -647,7 +746,7 @@ async function awaitExactRootProofAndCompletion(input: {
       }
     }
     if (proof && completion) return { proof, completion, processedEvents: processed };
-    await input.buffer.wait(input.signal, input.deadline, snapshot.revision);
+    await input.buffer.wait(input.signal, input.deadline, snapshot.revision, input.clock);
   }
 }
 
@@ -688,6 +787,32 @@ async function recheckBufferedSettlement(input: {
     if (canonicalizeArcJson(proof) !== canonicalizeArcJson(input.expectedProof)) return new Error("exact-run process-terminal proof changed during persistence");
     if (canonicalizeArcJson(completion) !== canonicalizeArcJson(input.expectedCompletion)) return new Error("exact-run completion changed during persistence");
     return undefined;
+  }
+}
+
+function recheckBufferedProof(input: {
+  buffer: BoundedEventBuffer;
+  runId: string;
+  processedEvents: number;
+  expectedProof: ArcNativeObservedTerminal;
+}): Error | undefined {
+  let processed = input.processedEvents;
+  for (;;) {
+    const snapshot = input.buffer.snapshot();
+    if (snapshot.overflow) return new Error(`native event buffer exceeded ${ARC_REVIEW_MAX_EVENT_BUFFER} unique events`);
+    while (processed < snapshot.events.length) {
+      const event = snapshot.events[processed++];
+      if (event.kind !== "terminal") continue;
+      let candidate: ArcNativeObservedTerminal | undefined;
+      try { candidate = parseExactTerminal(event.value, input.runId); }
+      catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+      if (candidate && canonicalizeArcJson(candidate) !== canonicalizeArcJson(input.expectedProof)) {
+        return new Error("conflicting exact-run process-terminal refinements after stop");
+      }
+    }
+    const stable = input.buffer.snapshot();
+    if (stable.overflow) return new Error(`native event buffer exceeded ${ARC_REVIEW_MAX_EVENT_BUFFER} unique events`);
+    if (stable.revision === snapshot.revision) return undefined;
   }
 }
 
@@ -732,23 +857,24 @@ function settleValidatedCompletion(input: {
   };
 }
 
-function operationSignal(signal: AbortSignal, deadline: number): { signal: AbortSignal; timedOut: () => boolean; close(): void } {
+function operationSignal(signal: AbortSignal, deadline: number, clock: () => number): { signal: AbortSignal; close(): void } {
   const controller = new AbortController();
-  let timeout = false;
   const onAbort = () => controller.abort(signal.reason);
   signal.addEventListener("abort", onAbort, { once: true });
   if (signal.aborted) onAbort();
-  const remaining = Math.max(0, deadline - Date.now());
-  const timer = setTimeout(() => { timeout = true; controller.abort(new Error("native operation timed out")); }, remaining);
+  const remaining = deadline - clock();
+  const timer = remaining > 0
+    ? setTimeout(() => controller.abort(new Error("native operation timed out")), remaining)
+    : undefined;
+  if (remaining <= 0) controller.abort(new Error("native operation timed out"));
   return {
     signal: controller.signal,
-    timedOut: () => timeout,
-    close() { clearTimeout(timer); signal.removeEventListener("abort", onAbort); },
+    close() { if (timer !== undefined) clearTimeout(timer); signal.removeEventListener("abort", onAbort); },
   };
 }
 
-async function boundedWait<T>(start: () => Promise<T>, signal: AbortSignal, deadline: number): Promise<T> {
-  const operation = operationSignal(signal, deadline);
+async function boundedWait<T>(start: () => Promise<T>, signal: AbortSignal, deadline: number, clock: () => number): Promise<T> {
+  const operation = operationSignal(signal, deadline, clock);
   try {
     if (operation.signal.aborted) throw new Error(signal.aborted ? "review attempt aborted" : "native operation timed out");
     return await new Promise<T>((resolve, reject) => {
@@ -803,14 +929,29 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
     }
   };
 
-  const requestStop = async (identity: ArcReviewLaunchIdentity | undefined, deadline = Date.now() + ARC_REVIEW_STOP_GRACE_MS): Promise<void> => {
-    if (!identity?.runId) return;
-    const requestId = randomUUID();
+  const requestStop = async (identity: ArcReviewLaunchIdentity | undefined, clock: () => number, deadline = clock() + ARC_REVIEW_STOP_GRACE_MS): Promise<Error | undefined> => {
+    if (!identity?.runId) return undefined;
+    let requestId: string | undefined;
+    for (let attempt = 0; attempt < MAX_STOP_UUID_ATTEMPTS; attempt += 1) {
+      const candidate = randomUUID();
+      if (typeof candidate === "string" && UUID_PATTERN.test(candidate) && candidate !== identity.requestId) {
+        requestId = candidate;
+        break;
+      }
+    }
+    if (!requestId) return new Error(`could not generate a valid distinct stop UUID after ${MAX_STOP_UUID_ATTEMPTS} attempts`);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("native stop timed out")), Math.max(0, deadline - Date.now()));
-    try { await rpc.request(requestId, "stop", { id: identity.runId }, controller.signal); }
-    catch { /* Stop is best-effort; exact-run unknown termination remains unresolved. */ }
-    finally { clearTimeout(timer); }
+    const remaining = deadline - clock();
+    if (remaining <= 0) return new Error("native stop deadline elapsed before emission");
+    const timer = setTimeout(() => controller.abort(new Error("native stop timed out")), remaining);
+    try {
+      await rpc.request(requestId, "stop", { id: identity.runId }, controller.signal);
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   return {
@@ -850,6 +991,8 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
     async execute(attempt: ArcPreparedReviewAttempt, signal: AbortSignal, observer: ArcAdapterObserver): Promise<ArcAdapterExecution> {
       if (attempted.has(attempt.attemptId)) throw new Error(`native review attempt ${attempt.attemptId} was already executed or attempted`);
       attempted.add(attempt.attemptId);
+      const timing = monotonicClock();
+      const { entered, clock } = timing;
       const startedAt = nowIso(now);
       const identity: ArcReviewLaunchIdentity = {
         adapter: "native",
@@ -860,6 +1003,7 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
       let receipt: ArcReviewDispatchReceipt | undefined;
       let returnedArtifacts: ReturnedArtifactSet | undefined;
       let registration: RegistrationHandle | undefined;
+      let registrationDisposalAttempted = false;
       let spawnEmitted = false;
       let terminalObserved = false;
       let buffer: BoundedEventBuffer | undefined;
@@ -868,23 +1012,28 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
       const finishFailure = (lifecycle: ArcAdapterExecution["lifecycle"], reason: unknown, termination?: ArcTerminationEvidence) => failedExecution({
         attempt, identity: receipt?.identity ?? identity, receipt, lifecycle, startedAt, endedAt: nowIso(now), reason, termination,
       });
+      const disposeOwnedRegistration = (): Error | undefined => {
+        registrationDisposalAttempted = true;
+        return disposeRegistration(attempt.attemptId);
+      };
+      const includeStopFailure = (reason: unknown, stopError: Error | undefined): string =>
+        stopError ? `${boundedMessage(reason)}; exact stop request failed: ${boundedMessage(stopError)}` : boundedMessage(reason);
       try {
         validateAttemptIdentity(attempt);
-        const entered = Date.now();
         const hardDeadline = Math.min(Date.parse(attempt.dispatchDeadlineAt), entered + attempt.effectiveAttemptBudgetMs);
-        const workDeadline = Math.min(hardDeadline, entered + attempt.executionTimeoutMs);
-        const terminalDeadline = Math.min(hardDeadline, workDeadline + ARC_REVIEW_STOP_GRACE_MS);
-        if (!Number.isFinite(workDeadline) || workDeadline <= Date.now()) return finishFailure("timed_out", "native dispatch deadline elapsed before preparation");
-        await boundedWait(() => validatePreparationPaths({ request: attempt.request, preparation: attempt }, options.trustedProviderExtensions), signal, workDeadline);
+        const workDeadline = Math.min(entered + attempt.executionTimeoutMs, hardDeadline - ARC_REVIEW_STOP_GRACE_MS - ARC_REVIEW_KILL_GRACE_MS);
+        const terminalDeadline = Math.min(hardDeadline - ARC_REVIEW_KILL_GRACE_MS, workDeadline + ARC_REVIEW_STOP_GRACE_MS);
+        if (!Number.isFinite(workDeadline) || workDeadline <= clock()) return finishFailure("timed_out", "native dispatch deadline elapsed before preparation");
+        await boundedWait(() => validatePreparationPaths({ request: attempt.request, preparation: attempt }, options.trustedProviderExtensions), signal, workDeadline, clock);
         if (!readyProbe || readyProbe.fingerprint !== preparationFingerprint({ request: attempt.request, preparation: attempt })) {
           return finishFailure("provider_lost", "native execute requires a matching successful ready preflight");
         }
         identity.ownerSessionId = ownerSessionId(readyProbe.probe);
         const prompt = validatePrompt(attempt, options.buildPrompt);
         if (signal.aborted) return finishFailure("cancelled", "review attempt was cancelled before dispatch");
-        try { await boundedWait(() => observer.persistBeforeDispatch(identity), signal, workDeadline); }
+        try { await boundedWait(() => observer.persistBeforeDispatch(identity), signal, workDeadline, clock); }
         catch (error) { return finishFailure(signal.aborted ? "cancelled" : "guard_failed", `before-dispatch persistence failed: ${boundedMessage(error)}`); }
-        await boundedWait(() => validatePreparationPaths({ request: attempt.request, preparation: attempt }, options.trustedProviderExtensions), signal, workDeadline);
+        await boundedWait(() => validatePreparationPaths({ request: attempt.request, preparation: attempt }, options.trustedProviderExtensions), signal, workDeadline, clock);
 
         buffer = new BoundedEventBuffer();
         unsubscribeCompletion = options.events.on(readyProbe.probe.secondPing.events.asyncComplete!, (value) => buffer!.add("completion", value));
@@ -894,8 +1043,12 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
         catch (error) { return finishFailure("provider_lost", error); }
         retainedRegistrations.set(attempt.attemptId, registration);
 
-        if (workDeadline <= Date.now()) return finishFailure("timed_out", "native dispatch deadline elapsed before spawn");
-        const operation = operationSignal(signal, workDeadline);
+        if (signal.aborted || workDeadline <= clock()) {
+          const disposalError = disposeOwnedRegistration();
+          if (disposalError) return finishFailure("guard_failed", `runtime registration disposal failed before spawn: ${boundedMessage(disposalError)}`);
+          return finishFailure(signal.aborted ? "cancelled" : "timed_out", signal.aborted ? "review attempt was cancelled before spawn" : "native dispatch deadline elapsed before spawn");
+        }
+        const operation = operationSignal(signal, workDeadline, clock);
         const dispatchedAt = nowIso(now);
         let spawnValue: unknown;
         try {
@@ -910,66 +1063,88 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
             outputSchema: ARC_REVIEWER_REPORT_JSON_SCHEMA,
           }, operation.signal);
         } catch (error) {
-          if (!operation.timedOut() && !signal.aborted && error instanceof Error && /subagents RPC [a-z_]+:/i.test(error.message)) {
-            disposeRegistration(attempt.attemptId);
-            return finishFailure("spawn_failed", error, { status: "not_applicable", source: "not_started", detail: "provider explicitly rejected native spawn" });
-          }
           return finishFailure(signal.aborted ? "cancelled" : "provider_lost", error, { status: "unknown", source: "provider_process_terminal", detail: "native spawn was emitted but no exact run receipt established" });
         } finally {
           operation.close();
         }
 
         try {
-          const bound = await boundedWait(() => validateSpawnReceipt(attempt, identity, spawnValue, dispatchedAt, nowIso(now)), signal, workDeadline);
+          const bound = await boundedWait(() => validateSpawnReceipt(attempt, identity, spawnValue, dispatchedAt, nowIso(now)), signal, workDeadline, clock);
           receipt = bound.receipt;
           returnedArtifacts = bound.artifacts;
           Object.assign(identity, receipt.identity);
         } catch (error) {
-          if (identity.runId) await requestStop(identity);
-          return finishFailure("provider_lost", error, {
+          const stopError = identity.runId ? await requestStop(identity, clock) : undefined;
+          return finishFailure("provider_lost", includeStopFailure(error, stopError), {
             status: "unknown",
             source: "provider_process_terminal",
             ...(identity.runId ? { runId: identity.runId } : {}),
             detail: identity.runId
-              ? "native spawn bound an exact run but later receipt path validation failed"
+              ? "native spawn bound an exact run but later receipt validation failed"
               : "native spawn was emitted but its malformed reply did not establish an exact run identity",
           });
         }
 
-        try { await boundedWait(() => observer.persistDispatchReceipt(receipt!), signal, workDeadline); }
+        try { await boundedWait(() => observer.persistDispatchReceipt(receipt!), signal, workDeadline, clock); }
         catch (error) {
-          await requestStop(receipt.identity);
-          return finishFailure("guard_failed", `initial dispatch receipt persistence failed: ${boundedMessage(error)}`);
+          const stopError = await requestStop(receipt.identity, clock);
+          return finishFailure("guard_failed", includeStopFailure(`initial dispatch receipt persistence failed: ${boundedMessage(error)}`, stopError));
         }
         observer.progress(`native review run ${identity.runId} dispatched`);
 
         let settlement: ExactSettlement;
-        try { settlement = await awaitExactRootProofAndCompletion({ buffer, attempt, identity, artifacts: returnedArtifacts!, signal, deadline: workDeadline }); }
+        try { settlement = await awaitExactRootProofAndCompletion({ buffer, attempt, identity, artifacts: returnedArtifacts!, signal, deadline: workDeadline, clock }); }
         catch (error) {
           const lifecycle = signal.aborted ? "cancelled" : "timed_out";
-          const stopDeadline = Math.min(hardDeadline, Date.now() + ARC_REVIEW_STOP_GRACE_MS);
-          await requestStop(identity, stopDeadline);
-          const proof = await awaitExactRootProof({ buffer, runId: identity.runId!, signal: new AbortController().signal, deadline: stopDeadline });
-          if (!proof) return finishFailure(lifecycle, error);
+          const stopDeadline = Math.min(hardDeadline - ARC_REVIEW_KILL_GRACE_MS, clock() + ARC_REVIEW_STOP_GRACE_MS);
+          const stopError = await requestStop(identity, clock, stopDeadline);
+          const postStop = await awaitExactRootProof({ buffer, runId: identity.runId!, signal: new AbortController().signal, deadline: stopDeadline, clock });
+          if (!postStop) return finishFailure(lifecycle, includeStopFailure(error, stopError));
           if (!receipt) return finishFailure("provider_lost", "post-stop proof was observed without a durable spawn receipt");
+          const proof = postStop.proof;
           const refined: ArcReviewDispatchReceipt = { ...receipt, identity: { ...receipt.identity, runnerProcessInstanceId: proof.runnerProcessInstanceId } };
           Object.assign(identity, refined.identity);
           const termination = normalizeObservedProof(proof);
           try {
-            await boundedWait(() => observer.persistDispatchReceipt(refined), new AbortController().signal, stopDeadline);
+            await boundedWait(() => observer.persistDispatchReceipt(refined), new AbortController().signal, stopDeadline, clock);
             receipt = refined;
-            await boundedWait(() => observer.persistObservedTermination(termination), new AbortController().signal, stopDeadline);
-            terminalObserved = true;
-            const disposalError = disposeRegistration(attempt.attemptId);
-            if (disposalError) return finishFailure("guard_failed", `runtime registration disposal failed: ${boundedMessage(disposalError)}`, termination);
           } catch (persistenceError) {
-            return finishFailure("guard_failed", `post-stop terminal persistence failed: ${boundedMessage(persistenceError)}`, termination);
+            return finishFailure("guard_failed", `post-stop receipt refinement persistence failed: ${boundedMessage(persistenceError)}`, termination);
           }
-          return finishFailure(lifecycle, error, termination);
+          const contradictionTermination = (): ArcTerminationEvidence => ({
+            status: "unknown",
+            source: "provider_process_terminal",
+            runId: identity.runId,
+            runnerProcessInstanceId: proof.runnerProcessInstanceId,
+            detail: "post-stop process-terminal proof became contradictory during persistence",
+          });
+          const refinementConflict = recheckBufferedProof({
+            buffer,
+            runId: identity.runId!,
+            processedEvents: postStop.processedEvents,
+            expectedProof: proof,
+          });
+          if (refinementConflict) return finishFailure(lifecycle, refinementConflict, contradictionTermination());
+          try {
+            await boundedWait(() => observer.persistObservedTermination(termination), new AbortController().signal, stopDeadline, clock);
+          } catch (persistenceError) {
+            return finishFailure("guard_failed", `post-stop termination persistence failed: ${boundedMessage(persistenceError)}`, termination);
+          }
+          const proofConflict = recheckBufferedProof({
+            buffer,
+            runId: identity.runId!,
+            processedEvents: postStop.processedEvents,
+            expectedProof: proof,
+          });
+          if (proofConflict) return finishFailure(lifecycle, proofConflict, contradictionTermination());
+          terminalObserved = true;
+          const disposalError = disposeOwnedRegistration();
+          if (disposalError) return finishFailure("guard_failed", `runtime registration disposal failed: ${boundedMessage(disposalError)}`, termination);
+          return finishFailure(lifecycle, includeStopFailure(error, stopError), termination);
         }
         if (settlement.error || !settlement.proof || !settlement.completion) {
-          await requestStop(identity);
-          return finishFailure("provider_lost", settlement.error ?? "native completion or exact root proof was missing");
+          const stopError = await requestStop(identity, clock);
+          return finishFailure("provider_lost", includeStopFailure(settlement.error ?? "native completion or exact root proof was missing", stopError));
         }
 
         const proof = settlement.proof;
@@ -980,12 +1155,12 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
         Object.assign(identity, refined.identity);
         const termination = normalizeObservedProof(proof);
         try {
-          await boundedWait(() => observer.persistDispatchReceipt(refined), signal, terminalDeadline);
+          await boundedWait(() => observer.persistDispatchReceipt(refined), signal, terminalDeadline, clock);
           receipt = refined;
-          await boundedWait(() => observer.persistObservedTermination(termination), signal, terminalDeadline);
+          await boundedWait(() => observer.persistObservedTermination(termination), signal, terminalDeadline, clock);
         } catch (error) {
-          await requestStop(identity);
-          return finishFailure("guard_failed", `terminal identity persistence failed: ${boundedMessage(error)}`, termination);
+          const stopError = await requestStop(identity, clock);
+          return finishFailure("guard_failed", includeStopFailure(`terminal identity persistence failed: ${boundedMessage(error)}`, stopError), termination);
         }
         let persistenceConflict: Error | undefined;
         try {
@@ -997,31 +1172,36 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
             processedEvents: settlement.processedEvents,
             expectedProof: proof,
             expectedCompletion: settlement.completion,
-          }), signal, terminalDeadline);
+          }), signal, terminalDeadline, clock);
         } catch (error) {
-          await requestStop(identity);
-          return finishFailure("guard_failed", `post-persistence settlement barrier failed: ${boundedMessage(error)}`, termination);
+          const stopError = await requestStop(identity, clock);
+          return finishFailure("guard_failed", includeStopFailure(`post-persistence settlement barrier failed: ${boundedMessage(error)}`, stopError), termination);
         }
         if (persistenceConflict) {
-          await requestStop(identity);
-          return finishFailure("provider_lost", persistenceConflict, termination);
+          const stopError = await requestStop(identity, clock);
+          return finishFailure("provider_lost", includeStopFailure(persistenceConflict, stopError), termination);
         }
         terminalObserved = true;
-        const disposalError = disposeRegistration(attempt.attemptId);
+        const disposalError = disposeOwnedRegistration();
         if (disposalError) return finishFailure("guard_failed", `runtime registration disposal failed: ${boundedMessage(disposalError)}`, termination);
         return settleValidatedCompletion({ attempt, receipt: refined, completion: settlement.completion, proof, termination, startedAt, endedAt: nowIso(now) });
       } catch (error) {
-        if (spawnEmitted && receipt?.identity.runId) await requestStop(receipt.identity);
-        return finishFailure(signal.aborted ? "cancelled" : "provider_lost", error);
+        const stopError = spawnEmitted && receipt?.identity.runId ? await requestStop(receipt.identity, clock) : undefined;
+        return finishFailure(signal.aborted ? "cancelled" : "provider_lost", includeStopFailure(error, stopError));
       } finally {
         unsubscribeCompletion();
         unsubscribeTerminal();
-        if (registration && (!spawnEmitted || terminalObserved)) disposeRegistration(attempt.attemptId);
+        if (registration && (!spawnEmitted || terminalObserved) && !registrationDisposalAttempted) {
+          const cleanupError = disposeOwnedRegistration();
+          if (cleanupError) return finishFailure("guard_failed", `fallback runtime registration disposal failed: ${boundedMessage(cleanupError)}`);
+        }
       }
     },
     async stop(attempt: ArcPreparedReviewAttempt, identity: ArcReviewLaunchIdentity | undefined): Promise<void> {
       if (!identity || identity.adapter !== "native" || identity.attemptId !== attempt.attemptId) return;
-      await requestStop(identity);
+      const { clock } = monotonicClock();
+      const error = await requestStop(identity, clock);
+      if (error) throw error;
     },
   };
 }
