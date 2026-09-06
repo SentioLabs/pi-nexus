@@ -1,10 +1,76 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { registerHooks } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import { dispatchArcSubagent } from '../extensions/arc/native-dispatch.ts';
 import { ARC_PI_SUBAGENTS } from '../extensions/arc/subagents.ts';
+
+const extensionModuleStubs = new Map([
+  ['@mariozechner/pi-ai', `
+    export function StringEnum(values) { return { type: 'string', enum: [...values] }; }
+  `],
+  ['@mariozechner/pi-coding-agent', `
+    export const DEFAULT_MAX_BYTES = 50 * 1024;
+    export const DEFAULT_MAX_LINES = 2_000;
+    export function formatSize(value) { return String(value); }
+    export function truncateTail(text) { return { content: text, truncated: false }; }
+  `],
+  ['@mariozechner/pi-tui', `
+    export function matchesKey() { return false; }
+    export function truncateToWidth(value) { return value; }
+  `],
+  ['typebox', `
+    export const Type = {
+      Object(properties) { return { type: 'object', properties }; },
+      Optional(schema) { return schema; },
+      String(options = {}) { return { type: 'string', ...options }; },
+    };
+  `],
+]);
+
+const extensionBuiltinStubs = new Map([
+  ['node:child_process', `
+    export function spawn() { throw new Error('arc_agent behavior tests must not launch subprocesses'); }
+  `],
+  ['node:os', `
+    export function homedir() {
+      if (!process.env.ARC_AGENT_NATIVE_TEST_HOME) throw new Error('missing hermetic Arc test home');
+      return process.env.ARC_AGENT_NATIVE_TEST_HOME;
+    }
+  `],
+]);
+
+function stubModuleUrl(source) {
+  return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+}
+
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const packageStub = extensionModuleStubs.get(specifier);
+    if (packageStub !== undefined) return { url: stubModuleUrl(packageStub), shortCircuit: true };
+
+    const builtinStub = extensionBuiltinStubs.get(specifier);
+    if (builtinStub !== undefined && context.parentURL?.includes('/packages/pi-arc/extensions/')) {
+      return { url: stubModuleUrl(builtinStub), shortCircuit: true };
+    }
+
+    if (specifier === './arc/model-profiles-ui.ts' && context.parentURL?.includes('/packages/pi-arc/extensions/arc.ts')) {
+      return {
+        url: stubModuleUrl('export async function openArcModelProfilesEditor() { throw new Error("UI must not run in arc_agent behavior tests"); }'),
+        shortCircuit: true,
+      };
+    }
+
+    return nextResolve(specifier, context);
+  },
+});
+
+const { default: registerArcExtension } = await import('../extensions/arc.ts?arc-agent-native-behavior');
 
 function endpoint(answer) {
   const emitter = new EventEmitter();
@@ -33,10 +99,207 @@ function reply(events, request, data = {}) {
   });
 }
 
+function registerArcAgent(events, activeTools) {
+  let arcAgent;
+  let activeToolChecks = 0;
+  let execCalls = 0;
+  const registeredHooks = [];
+  const pi = {
+    events,
+    getActiveTools() {
+      activeToolChecks += 1;
+      return [...activeTools];
+    },
+    registerTool(tool) {
+      if (tool.name === 'arc_agent') arcAgent = tool;
+    },
+    registerCommand() {},
+    on(name, handler) {
+      registeredHooks.push([name, handler]);
+    },
+    async exec() {
+      execCalls += 1;
+      throw new Error('arc_agent behavior tests must not execute Arc commands');
+    },
+    sendMessage() {},
+    sendUserMessage() {},
+  };
+
+  registerArcExtension(pi);
+  assert.ok(arcAgent, 'arc_agent should be registered');
+  return {
+    arcAgent,
+    activeToolChecks: () => activeToolChecks,
+    execCalls: () => execCalls,
+    registeredHooks,
+  };
+}
+
+function toolText(result) {
+  return result.content
+    .filter(part => part.type === 'text')
+    .map(part => part.text)
+    .join('\n');
+}
+
 const intent = { agent: 'arc-builder', task: 'Inspect only', cwd: '/tmp/arc-native-fixture' };
 
 const arcSource = readFileSync(new URL('../extensions/arc.ts', import.meta.url), 'utf8');
 const helperSource = readFileSync(new URL('../extensions/arc/native-dispatch.ts', import.meta.url), 'utf8');
+
+test('registered arc_agent executes the real native wrapper behavior', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'arc-agent-native-wrapper-'));
+  const cwd = path.join(root, 'project');
+  const homeDir = path.join(root, 'home');
+  const configHome = path.join(root, 'config');
+  const configPath = path.join(configHome, 'pi-arc', 'models.json');
+  const previousConfigHome = process.env.XDG_CONFIG_HOME;
+  const previousTestHome = process.env.ARC_AGENT_NATIVE_TEST_HOME;
+
+  const configuredModels = ARC_PI_SUBAGENTS.map((mapping, index) => ({
+    mapping,
+    provider: 'fixture-provider',
+    id: `${mapping.source}-model`,
+    thinking: index % 2 === 0 ? 'high' : 'medium',
+  }));
+  const configText = `${JSON.stringify({
+    version: 1,
+    modelProfiles: Object.fromEntries(configuredModels.map(entry => [entry.mapping.profileKey, {
+      model: `${entry.provider}/${entry.id}`,
+      thinking: entry.thinking,
+    }])),
+  }, null, 2)}\n`;
+
+  await mkdir(cwd, { recursive: true });
+  await mkdir(homeDir, { recursive: true });
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, configText, 'utf8');
+  process.env.XDG_CONFIG_HOME = configHome;
+  process.env.ARC_AGENT_NATIVE_TEST_HOME = homeDir;
+
+  const ctx = {
+    cwd,
+    model: { provider: 'fixture-provider' },
+    modelRegistry: {
+      getAvailable() {
+        return configuredModels.map(entry => ({ provider: entry.provider, id: entry.id, reasoning: true }));
+      },
+    },
+  };
+
+  try {
+    await t.test('maps all roles, resolves models, and presents native receipts without completion claims', async () => {
+      const nativeDetails = new Map();
+      const nativeText = 'DONE: native child claims its work is complete';
+      const bus = endpoint((request, events) => {
+        const details = {
+          runId: `native-${request.params.agent}`,
+          asyncId: `async-${request.params.agent}`,
+          asyncDir: `/opaque/${request.params.agent}`,
+          futureField: { retained: true },
+        };
+        nativeDetails.set(request.requestId, details);
+        reply(events, request, { text: nativeText, details });
+      });
+      const harness = registerArcAgent(bus.events, ['read', 'subagent']);
+
+      for (const entry of configuredModels) {
+        const task = `Dispatch actual ${entry.mapping.source}`;
+        const expectedModel = `${entry.provider}/${entry.id}:${entry.thinking}`;
+        const before = bus.requests.length;
+        const result = await harness.arcAgent.execute(
+          `call-${entry.mapping.source}`,
+          { agent: entry.mapping.source, task, isolation: 'none' },
+          undefined,
+          undefined,
+          ctx,
+        );
+        const request = bus.requests.at(-1);
+
+        assert.equal(bus.requests.length, before + 1, entry.mapping.source);
+        assert.deepEqual(request.params, {
+          agent: entry.mapping.target,
+          task,
+          model: expectedModel,
+          cwd,
+          context: 'fresh',
+          async: true,
+        });
+        assert.equal(result.details, nativeDetails.get(request.requestId));
+
+        const text = toolText(result);
+        const dispatchLabel = 'This is a dispatch receipt, not task completion. Wait for native completion before verification or issue closure.';
+        assert.ok(text.includes(`Dispatched ${entry.mapping.target} with ${expectedModel}.`));
+        assert.ok(text.includes(`Request ${request.requestId}; native run ${result.details.runId}.`));
+        assert.ok(text.includes(dispatchLabel));
+        assert.ok(text.includes(nativeText));
+        assert.ok(text.indexOf(dispatchLabel) < text.indexOf(nativeText), 'dispatch-only label must precede DONE-like native text');
+      }
+
+      const explicitModel = 'explicit-provider/direct-model:xhigh';
+      const explicitTask = 'Explicit model override must stay exact';
+      const explicitResult = await harness.arcAgent.execute(
+        'call-explicit-builder',
+        { agent: 'builder', task: explicitTask, model: explicitModel },
+        undefined,
+        undefined,
+        ctx,
+      );
+      const explicitRequest = bus.requests.at(-1);
+      assert.deepEqual(explicitRequest.params, {
+        agent: 'arc-builder',
+        task: explicitTask,
+        model: explicitModel,
+        cwd,
+        context: 'fresh',
+        async: true,
+      });
+      assert.equal(explicitResult.details, nativeDetails.get(explicitRequest.requestId));
+      assert.match(toolText(explicitResult), /dispatch receipt, not task completion/);
+
+      assert.equal(bus.requests.length, ARC_PI_SUBAGENTS.length + 1);
+      assert.equal(harness.activeToolChecks(), ARC_PI_SUBAGENTS.length + 1);
+      assert.equal(harness.execCalls(), 0);
+      assert.ok(harness.registeredHooks.length > 0, 'session hooks should register without being executed');
+    });
+
+    await t.test('rejects inactive or missing subagent tools before native submission', async () => {
+      for (const activeTools of [[], ['read', 'bash']]) {
+        const bus = endpoint();
+        const harness = registerArcAgent(bus.events, activeTools);
+
+        await assert.rejects(
+          harness.arcAgent.execute(
+            'call-inactive-provider',
+            { agent: 'builder', task: 'Must not submit', model: 'fixture-provider/explicit:high' },
+            undefined,
+            undefined,
+            ctx,
+          ),
+          error => {
+            assert.match(error.message, /requires the loaded and enabled pi-subagents subagent tool/);
+            assert.match(error.message, /Check Pi package configuration and native agent availability/);
+            assert.match(error.message, /no fallback was launched/);
+            return true;
+          },
+        );
+        assert.equal(bus.requests.length, 0);
+        assert.equal(harness.activeToolChecks(), 1);
+        assert.equal(harness.execCalls(), 0);
+      }
+    });
+
+    assert.equal(await readFile(configPath, 'utf8'), configText, 'wrapper must not rewrite model configuration');
+    assert.deepEqual(await readdir(homeDir), [], 'wrapper must not write user settings or runtime state');
+    assert.deepEqual(await readdir(cwd), [], 'wrapper must not write project settings or runtime state');
+  } finally {
+    if (previousConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previousConfigHome;
+    if (previousTestHome === undefined) delete process.env.ARC_AGENT_NATIVE_TEST_HOME;
+    else process.env.ARC_AGENT_NATIVE_TEST_HOME = previousTestHome;
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('one dispatch returns native receipt without waiting for completion', async () => {
   const details = {
