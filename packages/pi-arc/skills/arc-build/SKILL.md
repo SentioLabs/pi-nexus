@@ -228,13 +228,19 @@ The evaluator is **not dispatched by default**. Dispatch only when:
 - Task has a `high-risk` label
 - The orchestrator judges the task warrants independent verification (e.g., complex spec with multiple valid interpretations, security-sensitive code, tasks that modify shared contracts)
 
-Evaluations use explicitly requested native worktree isolation. Record `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint, fill `./evaluator-prompt.md`, and dispatch:
+Evaluations use explicitly requested native worktree isolation. Record the full SHA with `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint as immutable verification evidence, then fill `./evaluator-prompt.md`. Do not pass that commit ID as the native `baseRef`; the launch uses symbolic `HEAD`, resolved at worktree allocation.
+
+Immediately before launch, prove the checkout still matches the recorded SHA:
+
+```bash
+test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after evaluator anchor" >&2; exit 1; }
+```
 
 ```typescript
 subagent({
   workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md" });`,
   context: "fresh", async: true, globalConcurrencyLimit: 1,
-  baseRef: PARALLEL_BASE,
+  baseRef: "HEAD",
 })
 ```
 
@@ -325,7 +331,7 @@ PARALLEL_BASE=$(git rev-parse HEAD)
 echo "Parallel base: $PARALLEL_BASE"
 ```
 
-This is the baseline all temporary worktrees will branch from. Record it — you'll need it for verification after patch application.
+This full SHA is immutable verification evidence for later history and HEAD checks, not the native `baseRef`. Immediately before worktree allocation, verify symbolic `HEAD` still resolves to it.
 
 ### P3. Verify Independence
 
@@ -346,7 +352,15 @@ If any task fails these checks, remove it from the parallel batch and handle it 
 
 ### P4. Dispatch with `pi-subagents`
 
-Define `PARALLEL_BASE` from the recorded clean Git HEAD. Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
+The full SHA recorded earlier with `PARALLEL_BASE=$(git rev-parse HEAD)` is immutable verification evidence for later history and HEAD checks. Do not pass that commit ID as the native `baseRef`; the launch uses symbolic `HEAD`, resolved at worktree allocation.
+
+Immediately before launch, prove the checkout still matches the recorded SHA:
+
+```bash
+test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after parallel anchor" >&2; exit 1; }
+```
+
+Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
 
 ```typescript
 subagent({
@@ -359,7 +373,7 @@ subagent({
     return results;
   `,
   context: "fresh", async: true, globalConcurrencyLimit: 3,
-  baseRef: PARALLEL_BASE,
+  baseRef: "HEAD",
 })
 ```
 
@@ -441,7 +455,7 @@ arc close <id> -r "reason"            # Close completed task
 - Never write implementation code as the main agent — always dispatch
 - Never close a task without confirming tests pass yourself (fresh run)
 - Never close a task if the implementer reported `BLOCKED`, `NEEDS_CONTEXT`, or unresolved `DONE_WITH_CONCERNS` without re-dispatching
-- When re-dispatching after `BLOCKED`, escalate one model tier per the Model Selection table — never retry the same dispatch unchanged
+- Classify every `BLOCKED` report before choosing a response. Only a verified reasoning-limit blocker may escalate one model tier. Infrastructure or tooling failures must stop for same-protocol diagnosis or recovery without model escalation; context, scope, or plan blockers follow their specific handling above.
 - If in doubt about the result, re-dispatch rather than fixing manually
 - Never dispatch parallel agents without committing and pushing all sequential work first
 - Never dispatch parallel agents on tasks that share files

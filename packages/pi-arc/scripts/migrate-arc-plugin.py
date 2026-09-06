@@ -1326,13 +1326,19 @@ Fill `./spec-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, and `{HEAD_SHA}
 The call returns a dispatch receipt, not review success. Return control for native completion, then require successful terminal runtime state and a complete final review artifact. Failure, pause, stop, incomplete or malformed output blocks the stage regardless of compliance prose. Do not substitute generic `worker` or `reviewer` agents.
 """)
 
-replace_section("skills/arc-build/SKILL.md", "When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run.", "\nTriage evaluator findings:", """Evaluations use explicitly requested native worktree isolation. Record `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint, fill `./evaluator-prompt.md`, and dispatch:
+replace_section("skills/arc-build/SKILL.md", "When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run.", "\nTriage evaluator findings:", """Evaluations use explicitly requested native worktree isolation. Record the full SHA with `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint as immutable verification evidence, then fill `./evaluator-prompt.md`. Do not pass that commit ID as the native `baseRef`; the launch uses symbolic `HEAD`, resolved at worktree allocation.
+
+Immediately before launch, prove the checkout still matches the recorded SHA:
+
+```bash
+test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after evaluator anchor" >&2; exit 1; }
+```
 
 ```typescript
 subagent({
   workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md" });`,
   context: "fresh", async: true, globalConcurrencyLimit: 1,
-  baseRef: PARALLEL_BASE,
+  baseRef: "HEAD",
 })
 ```
 
@@ -1341,7 +1347,15 @@ Return control for native completion. Require a successful terminal child result
 
 replace_section("skills/arc-build/SKILL.md", "### P4. Dispatch with `pi-subagents`\n\n", "\n### P5. Apply and Verify Patches One at a Time", """### P4. Dispatch with `pi-subagents`
 
-Define `PARALLEL_BASE` from the recorded clean Git HEAD. Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
+The full SHA recorded earlier with `PARALLEL_BASE=$(git rev-parse HEAD)` is immutable verification evidence for later history and HEAD checks. Do not pass that commit ID as the native `baseRef`; the launch uses symbolic `HEAD`, resolved at worktree allocation.
+
+Immediately before launch, prove the checkout still matches the recorded SHA:
+
+```bash
+test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after parallel anchor" >&2; exit 1; }
+```
+
+Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
 
 ```typescript
 subagent({
@@ -1354,7 +1368,7 @@ subagent({
     return results;
   `,
   context: "fresh", async: true, globalConcurrencyLimit: 3,
-  baseRef: PARALLEL_BASE,
+  baseRef: "HEAD",
 })
 ```
 
@@ -1375,12 +1389,20 @@ patch_file("skills/arc-build/SKILL.md", [
         "Use this protocol only for a coordinated `pi-subagents` worktree wave. `arc_agent(isolation=\"worktree\")` supports one child through the same provider, not a coordinated multi-child wave.",
     ),
     (
+        "This is the baseline all temporary worktrees will branch from. Record it — you'll need it for verification after patch application.",
+        "This full SHA is immutable verification evidence for later history and HEAD checks, not the native `baseRef`. Immediately before worktree allocation, verify symbolic `HEAD` still resolves to it.",
+    ),
+    (
         "When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.",
         "After native completion confirms successful terminal runtime state and final artifacts, interpret the completed Arc specialist report's **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the specialist report alone.",
     ),
     (
         "Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:",
         "After native completion/runtime success is established, interpret each completed `builder`, `devops-builder`, or `doc-writer` Arc specialist report as one of four statuses. Handle each explicitly:",
+    ),
+    (
+        "- When re-dispatching after `BLOCKED`, escalate one model tier per the Model Selection table — never retry the same dispatch unchanged",
+        "- Classify every `BLOCKED` report before choosing a response. Only a verified reasoning-limit blocker may escalate one model tier. Infrastructure or tooling failures must stop for same-protocol diagnosis or recovery without model escalation; context, scope, or plan blockers follow their specific handling above.",
     ),
 ])
 insert_before_if_missing("skills/arc-build/SKILL.md", "\n## When to Invoke Debug", """## Targeted Fix and Recovery

@@ -30,7 +30,19 @@ function assertOrdered(source, markers) {
 
 function assertCompleteOrderedHandoffs(requests, results) {
   assert.deepEqual(results.map((result) => result.key), requests.map((request) => request.key));
-  assert.ok(results.every((result) => result.outputReference?.path));
+  assert.ok(results.every((result) => result.ok === true));
+  assert.ok(results.every((result) => typeof result.outputReference === 'string'));
+  assert.ok(results.every((result) => Array.isArray(result.artifactPaths)));
+  assert.ok(results.every((result) => result.artifactPaths.every((path) => typeof path === 'string')));
+}
+
+function nativeResult(key) {
+  return {
+    key,
+    ok: true,
+    outputReference: `/native/${key}.md`,
+    artifactPaths: [`/native/${key}.json`],
+  };
 }
 
 function section(source, start, end) {
@@ -88,7 +100,7 @@ test('single-child flow sections use their exact Arc specialist and prompt', () 
   assert.match(plan, /Use this task payload for whichever dispatcher you choose:\n\n$/);
 });
 
-test('documented workflowScript bodies execute and retain ordered native handoffs', async () => {
+test('documented workflowScript bodies execute and retain realistic native handoffs', async () => {
   const build = read('skills/arc-build/SKILL.md');
   const scripts = workflowScripts(build);
   assert.ok(scripts.length >= 2, 'expected evaluator and coordinated-wave workflowScript examples');
@@ -98,11 +110,11 @@ test('documented workflowScript bodies execute and retain ordered native handoff
     const runs = {
       run(key, item) {
         seen.push([key, item]);
-        return Promise.resolve({ key, outputReference: { path: `/native/${key}` } });
+        return Promise.resolve(nativeResult(key));
       },
       all(items) {
         seen.push(...items.map((item) => [item.key, item]));
-        return Promise.resolve(items.map((item) => ({ key: item.key, outputReference: { path: `/native/${item.key}` } })));
+        return Promise.resolve(items.map((item) => nativeResult(item.key)));
       },
     };
     const result = await new AsyncFunction('runs', script)(runs);
@@ -118,14 +130,38 @@ test('documented workflowScript bodies execute and retain ordered native handoff
       assertCompleteOrderedHandoffs(requests, result);
     } else {
       assert.equal(seen[0][1].output, 'evaluator.md');
-      assert.equal(result.outputReference.path, '/native/evaluate');
+      assert.equal(result.ok, true);
+      assert.equal(result.outputReference, '/native/evaluate.md');
+      assert.deepEqual(result.artifactPaths, ['/native/evaluate.json']);
     }
   }
 });
 
+test('outer workflow calls retain a full-SHA evidence anchor but launch from symbolic HEAD', () => {
+  const build = read('skills/arc-build/SKILL.md');
+  const outerSections = [
+    section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
+    section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
+  ];
+
+  for (const outerSection of outerSections) {
+    assert.match(outerSection, /PARALLEL_BASE=\$\(git rev-parse HEAD\)/);
+    assert.match(outerSection, /immutable verification (?:anchor|evidence)/i);
+    assert.match(outerSection, /test "\$\(git rev-parse HEAD\)" = "\$PARALLEL_BASE"[\s\S]*?subagent\(\{/);
+    assert.deepEqual(
+      [...outerSection.matchAll(/baseRef:\s*([^,\r\n]+)/g)].map((match) => match[1].trim()),
+      ['"HEAD"'],
+      'outer call must use only the supported literal symbolic ref',
+    );
+    assert.match(outerSection, /symbolic `HEAD`.*resolved at (?:worktree )?allocation/i);
+    assert.doesNotMatch(outerSection, /baseRef:\s*["'][a-f0-9]{40,64}["']/i);
+  }
+  assert.equal((build.match(/baseRef: "HEAD"/g) ?? []).length, 2);
+});
+
 test('ordered-handoff contract rejects dropped and reordered results', () => {
   const requests = [{ key: 'a' }, { key: 'b' }, { key: 'docs' }];
-  const results = requests.map(({ key }) => ({ key, outputReference: { path: `/native/${key}` } }));
+  const results = requests.map(({ key }) => nativeResult(key));
   assert.doesNotThrow(() => assertCompleteOrderedHandoffs(requests, results));
   assert.throws(() => assertCompleteOrderedHandoffs(requests, results.slice(1)), /deep-equal/);
   assert.throws(() => assertCompleteOrderedHandoffs(requests, [results[1], results[0], results[2]]), /deep-equal/);
@@ -183,4 +219,11 @@ test('repair guidance uses native resumability or steering while keeping reviews
   assert.match(build, /live child.*native steering/i);
   assert.match(build, /Reviews remain fresh independent Arc specialist runs/);
   assert.match(build, /explicit same-protocol fresh attempt/i);
+});
+
+test('blocked work is classified before any reasoning-only model escalation', () => {
+  const build = read('skills/arc-build/SKILL.md');
+  assert.doesNotMatch(build, /When re-dispatching after `BLOCKED`, escalate one model tier/);
+  assert.match(build, /Only a verified reasoning-limit blocker may escalate one model tier/i);
+  assert.match(build, /Infrastructure or tooling failures must stop[^\r\n]+same-protocol[^\r\n]+without model escalation/i);
 });
