@@ -266,6 +266,47 @@ async function settlesWithin(promise, timeoutMs) {
   }
 }
 
+function interceptPendingRead(target, closeSettlement) {
+  const realOpen = fsPromises.open;
+  const readEntered = deferred();
+  const pendingRead = deferred();
+  let handle;
+  let originalClose;
+  let closeCalls = 0;
+  fsPromises.open = async function(file, ...args) {
+    const current = await realOpen(file, ...args);
+    if (file !== target) return current;
+    assert.equal(handle, undefined);
+    handle = current;
+    originalClose = current.close.bind(current);
+    current.read = function() {
+      readEntered.resolve();
+      return pendingRead.promise;
+    };
+    current.close = function(...closeArgs) {
+      closeCalls += 1;
+      const closing = originalClose(...closeArgs);
+      if (!closeSettlement) return closing;
+      void closing.catch(() => {});
+      return closeSettlement.promise;
+    };
+    return current;
+  };
+  syncBuiltinESMExports();
+  return {
+    readEntered,
+    pendingRead,
+    get closeCalls() { return closeCalls; },
+    async descriptorIsOpen() { return handle.stat().then(() => true, () => false); },
+    async restore() {
+      fsPromises.open = realOpen;
+      syncBuiltinESMExports();
+      pendingRead.resolve({ bytesRead: 0 });
+      if (originalClose) await originalClose().catch(() => {});
+    },
+  };
+}
+
 test('success uses exact isolated argv/cwd/env, receipt ordering, fixed acknowledgement, and validated report', async (t) => {
   const value = await scenario(t);
   const adapter = createArcStandaloneReviewAdapter(value.options);
@@ -911,6 +952,69 @@ test('one attempt budget bounds before-dispatch persistence and matching stop be
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(await access(value.recordPath).then(() => true, () => false), false);
   assert.equal(observer.calls.some((entry) => entry.kind === 'dispatch-receipt'), false);
+});
+
+test('interrupted owned reads initiate descriptor cleanup and observe late read settlement', async (t) => {
+  for (const [kind, settleRead] of [
+    ['abort', (pending) => pending.resolve({ bytesRead: 0 })],
+    ['deadline', (pending) => pending.reject(new Error('late read rejection'))],
+  ]) {
+    await t.test(kind, async (t) => {
+      const value = await scenario(t, 'success', { executionTimeoutMs: 150 });
+      const hook = interceptPendingRead(value.attempt.guardConfigPath);
+      t.after(() => hook.restore());
+      const controller = new AbortController();
+      const observer = createObserver();
+      const running = createArcStandaloneReviewAdapter(value.options).execute(value.attempt, controller.signal, observer);
+      await settlesWithin(hook.readEntered.promise, 1000);
+      if (kind === 'abort') controller.abort(new Error('external cancellation'));
+      const execution = await settlesWithin(running, 1000);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(execution.lifecycle, kind === 'abort' ? 'cancelled' : 'timed_out');
+      assert.equal(execution.termination.source, 'not_started');
+      assert.equal(observer.calls.length, 0);
+      assert.equal(hook.closeCalls, 1, 'cleanup must be initiated before test-owned cleanup');
+      assert.equal(await hook.descriptorIsOpen(), false, 'the owned descriptor must be closed before test-owned cleanup');
+      settleRead(hook.pendingRead);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(hook.closeCalls, 1);
+      assert.equal(await hook.descriptorIsOpen(), false);
+    });
+  }
+});
+
+test('descriptor cleanup is bounded and observes late close fulfillment or rejection', async (t) => {
+  for (const settlement of ['fulfill', 'reject']) {
+    await t.test(settlement, async (t) => {
+      const value = await scenario(t, 'success', { executionTimeoutMs: 1000 });
+      const pendingClose = deferred();
+      const hook = interceptPendingRead(value.attempt.guardConfigPath, pendingClose);
+      t.after(() => hook.restore());
+      const controller = new AbortController();
+      const observer = createObserver();
+      const unhandled = [];
+      const onUnhandled = (reason) => unhandled.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const running = createArcStandaloneReviewAdapter(value.options).execute(value.attempt, controller.signal, observer);
+        await settlesWithin(hook.readEntered.promise, 1000);
+        controller.abort(new Error('external cancellation'));
+        const execution = await settlesWithin(running, 1000);
+        assert.equal(execution.lifecycle, 'cancelled');
+        assert.equal(execution.termination.source, 'not_started');
+        assert.equal(observer.calls.length, 0);
+        assert.equal(hook.closeCalls, 1, 'cleanup must not await an expired work window');
+        assert.equal(await hook.descriptorIsOpen(), false);
+        hook.pendingRead.reject(new Error('late read rejection'));
+        if (settlement === 'fulfill') pendingClose.resolve();
+        else pendingClose.reject(new Error('late close rejection'));
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.deepEqual(unhandled, []);
+      } finally {
+        process.removeListener('unhandledRejection', onUnhandled);
+      }
+    });
+  }
 });
 
 test('deadline and external abort settle a pending before-dispatch barrier without late dispatch', async (t) => {

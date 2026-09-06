@@ -264,8 +264,14 @@ async function boundedRead(file: string, maxBytes: number, expectedMode?: number
     if (!final.isFile() || !sameFileMetadata(final, before)) throw new Error(`${file} changed after reading`);
     return bytes;
   } finally {
-    if (window) await window.wait(() => handle.close()).catch(() => { void handle.close().catch(() => {}); });
-    else await handle.close();
+    if (window) {
+      let closing: Promise<void>;
+      try { closing = handle.close(); }
+      catch (error) { closing = Promise.reject(error); }
+      void closing.catch(() => {});
+      try { await window.wait(() => closing); }
+      catch { /* Cleanup cannot replace the bounded read or interruption outcome. */ }
+    } else await handle.close();
   }
 }
 
