@@ -14,7 +14,7 @@ Available updates:
 
 Examples:
 ```bash
-arc update <id> --take                 # Claim work (sets session ID + in_progress)
+arc update <id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}" # Claim work (sets session ID + in_progress)
 arc update <id> --priority 1           # Raise priority
 ```
 
