@@ -1342,7 +1342,21 @@ subagent({
 })
 ```
 
-Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate. Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
+Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate.
+
+After native completion and before accepting or triaging evaluator findings, locate the actual returned path ending in `handoffs/<run-id>.json` in the completed evaluator child result's string-array `artifactPaths`. Set `HANDOFF_MANIFEST` to that exact returned path; never fabricate or infer base identity from current `HEAD`. Fail closed if the path or manifest is missing, unreadable, malformed, empty, or mismatched:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$PARALLEL_BASE" \\
+    '.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)' \\
+    "$HANDOFF_MANIFEST"
+```
+
+The command must succeed before the evaluator report is interpreted. Any failure or base mismatch blocks evaluator finding acceptance and requires explicit native inspection/recovery; it is not permission to apply, retry or switch modes.
+
+Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
 """)
 
 replace_section("skills/arc-build/SKILL.md", "### P4. Dispatch with `pi-subagents`\n\n", "\n### P5. Apply and Verify Patches One at a Time", """### P4. Dispatch with `pi-subagents`
@@ -1372,7 +1386,21 @@ subagent({
 })
 ```
 
-`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths` before inspecting/applying its handoff. A filename mentioned only in prose is not an output binding. There is no implicit merge or cleanup: follow the native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
+`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths`. A filename mentioned only in prose is not an output binding.
+
+After native completion and before inspecting or applying any parallel patch, locate the actual returned path ending in `handoffs/<run-id>.json` in every relevant child result's string-array `artifactPaths`. Every relevant result must supply that path; validate every distinct returned manifest. Set `HANDOFF_MANIFEST` only from those exact returned paths, never fabricate or infer base identity from current `HEAD`. For each path, fail closed if the path or manifest is missing, unreadable, malformed, empty, or mismatched:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$PARALLEL_BASE" \\
+    '.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)' \\
+    "$HANDOFF_MANIFEST"
+```
+
+Every distinct manifest check must succeed, proving `version: 1`, nonempty `groups`, and that every relevant `groups[].baseCommit` equals `$PARALLEL_BASE`. Any failure or base mismatch blocks patch acceptance and requires explicit native inspection/recovery; it is not permission to apply, retry or switch modes.
+
+There is no implicit merge or cleanup: follow the validated native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
 """)
 
 patch_file("skills/arc-build/SKILL.md", [
@@ -1403,6 +1431,22 @@ patch_file("skills/arc-build/SKILL.md", [
     (
         "- When re-dispatching after `BLOCKED`, escalate one model tier per the Model Selection table — never retry the same dispatch unchanged",
         "- Classify every `BLOCKED` report before choosing a response. Only a verified reasoning-limit blocker may escalate one model tier. Infrastructure or tooling failures must stop for same-protocol diagnosis or recovery without model escalation; context, scope, or plan blockers follow their specific handling above.",
+    ),
+    (
+        "- For `BLOCKED`: assess the blocker per the Handle Implementer Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.",
+        "- For `BLOCKED`: classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths.",
+    ),
+    (
+        "| `BLOCKED` | Evaluator itself is blocked. Escalate per the Model Selection rules or involve the human. |",
+        "| `BLOCKED` | Classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths. |",
+    ),
+    (
+        "| `BLOCKED` | Assess the blocker: (1) context problem → provide missing context, re-dispatch same tier; (2) reasoning limit → re-dispatch one tier up per the Model Selection escalation rule; (3) task too large → split and re-plan; (4) plan is wrong → escalate to human. Never retry the same dispatch unchanged. |",
+        "| `BLOCKED` | Classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths. Never retry an eligible dispatch unchanged. |",
+    ),
+    (
+        "fetch it per step 3's design-context block",
+        "retrieve it directly with `arc show <parent-epic-id>` and use \"none\" when no parent design context exists",
     ),
 ])
 insert_before_if_missing("skills/arc-build/SKILL.md", "\n## When to Invoke Debug", """## Targeted Fix and Recovery

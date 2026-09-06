@@ -154,7 +154,7 @@ After native completion confirms successful terminal runtime state and final art
 **On `BLOCKED` or `NEEDS_CONTEXT`:**
 - Do NOT proceed to review. Do NOT close the task.
 - For `NEEDS_CONTEXT`: gather the requested information, re-dispatch with it.
-- For `BLOCKED`: assess the blocker per the Handle Implementer Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.
+- For `BLOCKED`: classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths.
 - After 3 re-dispatches on the same task without clean `DONE`, invoke the `debug` skill.
 
 **If the subagent did not include a Status field** (malformed report):
@@ -203,7 +203,7 @@ Only dispatched after spec compliance passes. Use the `review` skill or dispatch
 HEAD_SHA=$(git rev-parse HEAD)
 ```
 
-Use the template at `../arc-review/code-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or "none" — fetch it per step 3's design-context block, `{EVALUATOR_STATUS}` = "active" if evaluator was dispatched, else "not dispatched"). Follow Model Selection above for the dispatch `model:` — the configured `codeReviewer` profile is authoritative and `large` frontmatter is the fallback.
+Use the template at `../arc-review/code-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or "none" — retrieve it directly with `arc show <parent-epic-id>` and use "none" when no parent design context exists, `{EVALUATOR_STATUS}` = "active" if evaluator was dispatched, else "not dispatched"). Follow Model Selection above for the dispatch `model:` — the configured `codeReviewer` profile is authoritative and `large` frontmatter is the fallback.
 
 **On `{EVALUATOR_STATUS}`:** Decide whether to dispatch the evaluator (step 6.5) BEFORE filling this placeholder. If you plan to run step 6.5 in parallel with step 6, set `{EVALUATOR_STATUS}="active"`. Otherwise set `"not dispatched"`. Step 6.5 has the decision criteria for when to dispatch the evaluator.
 
@@ -244,7 +244,21 @@ subagent({
 })
 ```
 
-Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate. Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
+Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate.
+
+After native completion and before accepting or triaging evaluator findings, locate the actual returned path ending in `handoffs/<run-id>.json` in the completed evaluator child result's string-array `artifactPaths`. Set `HANDOFF_MANIFEST` to that exact returned path; never fabricate or infer base identity from current `HEAD`. Fail closed if the path or manifest is missing, unreadable, malformed, empty, or mismatched:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$PARALLEL_BASE" \
+    '.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)' \
+    "$HANDOFF_MANIFEST"
+```
+
+The command must succeed before the evaluator report is interpreted. Any failure or base mismatch blocks evaluator finding acceptance and requires explicit native inspection/recovery; it is not permission to apply, retry or switch modes.
+
+Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
 
 Triage evaluator findings:
 
@@ -256,7 +270,7 @@ Triage evaluator findings:
 | `FAIL — Missing Behavior` | Re-dispatch `builder` — the spec requires behavior that wasn't built. |
 | `FAIL — Edge Case` | Lower-severity. Re-dispatch if the spec clearly implies the edge case; otherwise record as a known limitation. |
 | `ERROR — Cannot Test` | The public API is insufficient. Re-dispatch with a request to expose the needed surface. |
-| `BLOCKED` | Evaluator itself is blocked. Escalate per the Model Selection rules or involve the human. |
+| `BLOCKED` | Classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths. |
 
 ### 7. Close Task
 
@@ -303,7 +317,7 @@ After native completion/runtime success is established, interpret each completed
 |---|---|
 | `DONE` | Proceed to spec review, then code review. |
 | `DONE_WITH_CONCERNS` | Read the concerns. If they're about correctness or scope, address before review (re-dispatch or tighten review prompt). If they're observations (file getting large, naming doubt), note them as arc comments on the task and proceed to review — close only after a later dispatch yields a clean `DONE`. |
-| `BLOCKED` | Assess the blocker: (1) context problem → provide missing context, re-dispatch same tier; (2) reasoning limit → re-dispatch one tier up per the Model Selection escalation rule; (3) task too large → split and re-plan; (4) plan is wrong → escalate to human. Never retry the same dispatch unchanged. |
+| `BLOCKED` | Classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths. Never retry an eligible dispatch unchanged. |
 | `NEEDS_CONTEXT` | Gather the specific missing information. Re-dispatch with it in the prompt. |
 
 **Never close a task** whose last report was `BLOCKED`, `NEEDS_CONTEXT`, or `DONE_WITH_CONCERNS` unresolved. Re-dispatch until you have a clean `DONE` — then close.
@@ -377,7 +391,21 @@ subagent({
 })
 ```
 
-`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths` before inspecting/applying its handoff. A filename mentioned only in prose is not an output binding. There is no implicit merge or cleanup: follow the native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
+`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths`. A filename mentioned only in prose is not an output binding.
+
+After native completion and before inspecting or applying any parallel patch, locate the actual returned path ending in `handoffs/<run-id>.json` in every relevant child result's string-array `artifactPaths`. Every relevant result must supply that path; validate every distinct returned manifest. Set `HANDOFF_MANIFEST` only from those exact returned paths, never fabricate or infer base identity from current `HEAD`. For each path, fail closed if the path or manifest is missing, unreadable, malformed, empty, or mismatched:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$PARALLEL_BASE" \
+    '.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)' \
+    "$HANDOFF_MANIFEST"
+```
+
+Every distinct manifest check must succeed, proving `version: 1`, nonempty `groups`, and that every relevant `groups[].baseCommit` equals `$PARALLEL_BASE`. Any failure or base mismatch blocks patch acceptance and requires explicit native inspection/recovery; it is not permission to apply, retry or switch modes.
+
+There is no implicit merge or cleanup: follow the validated native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
 
 ### P5. Apply and Verify Patches One at a Time
 

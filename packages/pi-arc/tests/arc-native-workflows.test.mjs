@@ -41,8 +41,26 @@ function nativeResult(key) {
     key,
     ok: true,
     outputReference: `/native/${key}.md`,
-    artifactPaths: [`/native/${key}.json`],
+    artifactPaths: [`/native/${key}.json`, `/native/handoffs/${key}.json`],
   };
+}
+
+function handoffManifestMatchesBase(manifest, baseCommit) {
+  return Boolean(
+    manifest
+      && typeof manifest === 'object'
+      && !Array.isArray(manifest)
+      && manifest.version === 1
+      && Array.isArray(manifest.groups)
+      && manifest.groups.length > 0
+      && manifest.groups.every((group) => (
+        group
+        && typeof group === 'object'
+        && typeof group.baseCommit === 'string'
+        && group.baseCommit.length > 0
+        && group.baseCommit === baseCommit
+      )),
+  );
 }
 
 function section(source, start, end) {
@@ -132,7 +150,7 @@ test('documented workflowScript bodies execute and retain realistic native hando
       assert.equal(seen[0][1].output, 'evaluator.md');
       assert.equal(result.ok, true);
       assert.equal(result.outputReference, '/native/evaluate.md');
-      assert.deepEqual(result.artifactPaths, ['/native/evaluate.json']);
+      assert.deepEqual(result.artifactPaths, ['/native/evaluate.json', '/native/handoffs/evaluate.json']);
     }
   }
 });
@@ -157,6 +175,56 @@ test('outer workflow calls retain a full-SHA evidence anchor but launch from sym
     assert.doesNotMatch(outerSection, /baseRef:\s*["'][a-f0-9]{40,64}["']/i);
   }
   assert.equal((build.match(/baseRef: "HEAD"/g) ?? []).length, 2);
+});
+
+test('handoff manifest base predicate rejects missing, empty, and mismatched baseCommit evidence', () => {
+  const baseCommit = 'a'.repeat(40);
+  const valid = {
+    version: 1,
+    groups: [{ baseCommit }, { baseCommit }],
+  };
+
+  assert.equal(handoffManifestMatchesBase(valid, baseCommit), true);
+  assert.equal(handoffManifestMatchesBase(undefined, baseCommit), false, 'missing manifest');
+  assert.equal(handoffManifestMatchesBase({ version: 1, groups: 'malformed' }, baseCommit), false, 'malformed groups');
+  assert.equal(handoffManifestMatchesBase({ version: 1, groups: [] }, baseCommit), false, 'empty groups');
+  assert.equal(handoffManifestMatchesBase({ version: 1, groups: [{}] }, baseCommit), false, 'missing baseCommit');
+  assert.equal(handoffManifestMatchesBase({ version: 1, groups: [{ baseCommit: '' }] }, baseCommit), false, 'empty baseCommit');
+  assert.equal(
+    handoffManifestMatchesBase({ version: 1, groups: [{ baseCommit }, { baseCommit: 'b'.repeat(40) }] }, baseCommit),
+    false,
+    'any mismatched group must fail',
+  );
+});
+
+test('returned handoff manifests gate evaluator findings and parallel patch application', () => {
+  const build = read('skills/arc-build/SKILL.md');
+  const flows = [
+    {
+      text: section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
+      acceptance: /before accepting or triaging evaluator findings/i,
+      relevantResults: /completed evaluator child result's string-array `artifactPaths`/i,
+    },
+    {
+      text: section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
+      acceptance: /before inspecting or applying any parallel patch/i,
+      relevantResults: /every relevant child result's string-array `artifactPaths`/i,
+    },
+  ];
+  const jqPredicate = '\'.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)\'';
+
+  for (const flow of flows) {
+    assertOrdered(flow.text, ['subagent({', 'HANDOFF_MANIFEST', 'jq -e --arg base "$PARALLEL_BASE"']);
+    assert.match(flow.text, flow.acceptance);
+    assert.match(flow.text, flow.relevantResults);
+    assert.match(flow.text, /actual returned path ending in `handoffs\/<run-id>\.json`/i);
+    assert.match(flow.text, /test -n "\$HANDOFF_MANIFEST" && test -r "\$HANDOFF_MANIFEST"/);
+    assert.ok(flow.text.includes(jqPredicate), 'must validate version, nonempty groups, and every baseCommit');
+    assert.match(flow.text, /missing, unreadable, malformed, empty, or mismatched/i);
+    assert.match(flow.text, /blocks (?:evaluator finding|patch) acceptance[\s\S]*explicit native inspection\/recovery/i);
+    assert.match(flow.text, /not permission to apply, retry or switch modes/i);
+    assert.match(flow.text, /never fabricate or infer base identity from current `HEAD`/i);
+  }
 });
 
 test('ordered-handoff contract rejects dropped and reordered results', () => {
@@ -221,9 +289,28 @@ test('repair guidance uses native resumability or steering while keeping reviews
   assert.match(build, /explicit same-protocol fresh attempt/i);
 });
 
-test('blocked work is classified before any reasoning-only model escalation', () => {
+test('every BLOCKED escalation site applies the complete classification-first rule', () => {
   const build = read('skills/arc-build/SKILL.md');
-  assert.doesNotMatch(build, /When re-dispatching after `BLOCKED`, escalate one model tier/);
-  assert.match(build, /Only a verified reasoning-limit blocker may escalate one model tier/i);
-  assert.match(build, /Infrastructure or tooling failures must stop[^\r\n]+same-protocol[^\r\n]+without model escalation/i);
+  const blockedEscalationLines = build.split('\n').filter((line) => (
+    /BLOCKED/i.test(line) && /escalat|model(?: selection)?|tier/i.test(line)
+  ));
+
+  assert.ok(blockedEscalationLines.length >= 4, 'expected implementer, evaluator, status-table, and final-rule sites');
+  for (const line of blockedEscalationLines) {
+    assert.match(line, /classif(?:y|ication)[^\r\n]*verified reasoning-limit/i);
+    assert.match(line, /Infrastructure(?: or |\/)tooling[^\r\n]*same-protocol[^\r\n]*without model escalation/i);
+    assert.match(line, /context[^\r\n]*scope[^\r\n]*plan/i);
+  }
+
+  const implementer = section(build, '**On `BLOCKED` or `NEEDS_CONTEXT`:**', '**If the subagent did not include a Status field**');
+  assert.match(implementer, /For `BLOCKED`:[^\r\n]*classif(?:y|ication)[^\r\n]*verified reasoning-limit/i);
+  const evaluator = section(build, 'Triage evaluator findings:', '### 7. Close Task');
+  assert.match(evaluator, /\| `BLOCKED` \|[^\r\n]*classif(?:y|ication)[^\r\n]*verified reasoning-limit/i);
+});
+
+test('code review retrieves design context directly without a stale step cross-reference', () => {
+  const build = read('skills/arc-build/SKILL.md');
+  const codeReview = section(build, '### 6. Code Quality Review', '### 6.5. High-Risk Evaluation (Optional)');
+  assert.doesNotMatch(build, /per step 3's design-context block/i);
+  assert.match(codeReview, /`\{DESIGN_EXCERPT\}`[^\r\n]*`arc show <parent-epic-id>`[^\r\n]*"none"/i);
 });
