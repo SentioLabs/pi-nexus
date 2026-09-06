@@ -19,6 +19,7 @@ import {
   type ArcReviewDispatchReceipt,
   type ArcReviewLaunchIdentity,
   type ArcReviewPreflightInput,
+  type ArcReviewPreparationReferences,
   type ArcSubagentsPing,
   type ArcTerminationEvidence,
 } from "./reports.ts";
@@ -192,8 +193,29 @@ async function validatePreparationPaths(input: ArcReviewPreflightInput, trustedE
   }
 }
 
+function preparationProjection(preparation: ArcReviewPreparationReferences): ArcReviewPreparationReferences {
+  return {
+    stateDir: preparation.stateDir,
+    inputRoot: preparation.inputRoot,
+    runtimeRoot: preparation.runtimeRoot,
+    reportRoot: preparation.reportRoot,
+    manifestPath: preparation.manifestPath,
+    diffPath: preparation.diffPath,
+    guardExtensionPath: preparation.guardExtensionPath,
+    guardConfigPath: preparation.guardConfigPath,
+    reportSchemaPath: preparation.reportSchemaPath,
+    guardAcknowledgementPath: preparation.guardAcknowledgementPath,
+    reviewInputDigest: preparation.reviewInputDigest,
+    baselineDigest: preparation.baselineDigest,
+    baselinePath: preparation.baselinePath,
+    baselineArtifactDigest: preparation.baselineArtifactDigest,
+    inputDescriptorPath: preparation.inputDescriptorPath,
+    inputDescriptorArtifactDigest: preparation.inputDescriptorArtifactDigest,
+  };
+}
+
 function preparationFingerprint(input: ArcReviewPreflightInput): string {
-  return canonicalizeArcJson({ request: input.request, preparation: input.preparation });
+  return canonicalizeArcJson({ request: input.request, preparation: preparationProjection(input.preparation) });
 }
 
 function requiredCapabilityFailure(ping: ArcSubagentsPing): string | undefined {
@@ -225,12 +247,18 @@ function validatePrompt(attempt: ArcPreparedReviewAttempt, buildPrompt: ArcNativ
     throw new Error("buildPrompt must return nonempty systemPrompt and task strings without NUL");
   }
   if (Buffer.byteLength(prompt.systemPrompt, "utf8") > MAX_PROMPT_BYTES || Buffer.byteLength(prompt.task, "utf8") > MAX_PROMPT_BYTES) throw new Error("review prompt exceeds the byte limit");
+  const requiredSystemPrompt = "You are a fresh read-only Arc reviewer. Use only supplied absolute paths and return the required structured report.";
+  if (prompt.systemPrompt !== requiredSystemPrompt) throw new Error("review system prompt does not match the fixed read-only contract");
+  const requiredLines = [
+    `Review committed ${attempt.request.baseSha}..${attempt.request.headSha}.`,
+    `Source root (absolute; pass unchanged to tools): ${path.join(attempt.inputRoot, "source")}`,
+    `Materials manifest: ${attempt.manifestPath}`,
+    "Dirty and ignored primary bytes are intentionally excluded.",
+    `Return schema version 1 with reviewInputDigest ${attempt.reviewInputDigest}.`,
+    "Relative paths are invalid.",
+  ];
   const lines = prompt.task.split("\n");
-  const sourceLine = `Source root (absolute; pass unchanged to tools): ${path.join(attempt.inputRoot, "source")}`;
-  const manifestLine = `Materials manifest: ${attempt.manifestPath}`;
-  if (!lines.includes(sourceLine) || !lines.includes(manifestLine) || !lines.some((line) => /^Relative paths? (?:are|is) invalid\.$/i.test(line))) {
-    throw new Error("review task must identify canonical absolute source/material paths as data and reject relative paths");
-  }
+  if (requiredLines.some((line) => !lines.includes(line))) throw new Error("review task does not contain every required committed-range, canonical-path, exclusion, digest, and relative-path line");
   return { systemPrompt: prompt.systemPrompt, task: prompt.task };
 }
 
@@ -313,11 +341,68 @@ function registerPrivateAgent(options: ArcNativeReviewOptions, attempt: ArcPrepa
   return result.registration as unknown as RegistrationHandle;
 }
 
+class ReturnedArtifactSet {
+  readonly #references = new Set<string>();
+  #observations = 0;
+
+  constructor(initial: readonly string[] = []) {
+    for (const value of initial) this.add(value);
+  }
+
+  add(value: string): void {
+    if (this.#observations >= MAX_RETURNED_ARTIFACTS) throw new Error(`provider returned more than ${MAX_RETURNED_ARTIFACTS} aggregate artifact references`);
+    this.#observations += 1;
+    this.#references.add(value);
+  }
+
+  values(): string[] {
+    return [...this.#references];
+  }
+}
+
+function validateReturnedPathLexical(value: unknown, name: string): string {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAX_PATH_BYTES || !path.isAbsolute(value) || value !== path.resolve(value) || /[\0\r\n]/.test(value)) {
+    throw new Error(`${name} must be an absolute canonical path within the byte limit`);
+  }
+  return value;
+}
+
 async function canonicalReturnedDirectory(value: unknown, name: string, attempt: ArcPreparedReviewAttempt): Promise<string> {
-  if (typeof value !== "string") throw new Error(`${name} is missing`);
-  const candidate = await canonicalDirectory(value, name);
+  const lexical = validateReturnedPathLexical(value, name);
+  const candidate = await canonicalDirectory(lexical, name);
   if (below(attempt.inputRoot, candidate) || below(attempt.request.repositoryRoot, candidate)) throw new Error(`${name} cannot be inside review input or checkout`);
   return candidate;
+}
+
+async function canonicalReturnedPath(value: unknown, attempt: ArcPreparedReviewAttempt): Promise<string> {
+  const candidate = validateReturnedPathLexical(value, "provider returned session/artifact/output path");
+  const info = await lstat(candidate);
+  if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new Error("provider returned path must be a non-symlink regular file or directory");
+  const canonical = await realpath(candidate);
+  if (canonical !== candidate) throw new Error("provider returned a non-canonical symlink or filesystem alias path");
+  if (below(attempt.inputRoot, canonical) || below(attempt.request.repositoryRoot, canonical)) throw new Error("provider returned a session/artifact/output path inside review input or checkout");
+  return canonical;
+}
+
+function* collectReturnedPaths(value: Record<string, unknown>, includeAsyncDir = true): Generator<unknown> {
+  for (const key of ["asyncDir", "artifactsDir", "sessionFile", "sessionPath", "outputFile", "outputPath", "artifactPath", "reportPath", "transcriptPath", "structuredOutputPath", "structuredOutputSchemaPath"]) {
+    if ((!includeAsyncDir && key === "asyncDir") || !Object.hasOwn(value, key)) continue;
+    yield value[key];
+  }
+  if (isRecord(value.artifactPaths)) {
+    for (const key of Object.keys(value.artifactPaths)) yield value.artifactPaths[key];
+  }
+}
+
+async function addReturnedPaths(
+  records: readonly Record<string, unknown>[],
+  attempt: ArcPreparedReviewAttempt,
+  artifacts: ReturnedArtifactSet,
+  includeAsyncDir = true,
+): Promise<void> {
+  for (const record of records) {
+    for (const candidate of collectReturnedPaths(record, includeAsyncDir)) artifacts.add(await canonicalReturnedPath(candidate, attempt));
+  }
 }
 
 async function validateSpawnReceipt(
@@ -334,18 +419,15 @@ async function validateSpawnReceipt(
   if (details.mode !== "single" || typeof details.runId !== "string" || !details.runId || details.runId.length > 256 || /[\0\r\n]/.test(details.runId) || details.runId !== details.asyncId || !Array.isArray(details.results)) {
     throw new Error("native spawn receipt has an invalid exact run identity or mode");
   }
+  identity.runId = details.runId;
   const asyncDir = await canonicalReturnedDirectory(details.asyncDir, "spawn asyncDir", attempt);
-  const artifactReferences = [asyncDir];
-  for (const candidate of [...collectReturnedPaths(value), ...collectReturnedPaths(details)]) {
-    if (candidate === details.asyncDir) continue;
-    artifactReferences.push(validateReturnedPath(candidate, attempt));
-  }
-  for (const result of details.results) {
-    if (!isRecord(result)) continue;
-    for (const candidate of collectReturnedPaths(result)) artifactReferences.push(validateReturnedPath(candidate, attempt));
-  }
-  const boundIdentity: ArcReviewLaunchIdentity = { ...identity, runId: details.runId, asyncDir };
-  const receipt: ArcReviewDispatchReceipt = { identity: boundIdentity, dispatchedAt, receivedAt, artifactReferences: [...new Set(artifactReferences)] };
+  identity.asyncDir = asyncDir;
+  const artifacts = new ReturnedArtifactSet();
+  artifacts.add(asyncDir);
+  await addReturnedPaths([value, details], attempt, artifacts, false);
+  await addReturnedPaths(details.results.filter(isRecord), attempt, artifacts);
+  const boundIdentity: ArcReviewLaunchIdentity = { ...identity };
+  const receipt: ArcReviewDispatchReceipt = { identity: boundIdentity, dispatchedAt, receivedAt, artifactReferences: artifacts.values() };
   return { receipt, data: value as unknown as ArcNativeSpawnData };
 }
 
@@ -391,39 +473,26 @@ function normalizeObservedProof(proof: ArcNativeObservedTerminal): ArcTerminatio
   };
 }
 
-function collectReturnedPaths(value: Record<string, unknown>): unknown[] {
-  const paths: unknown[] = [];
-  for (const key of ["asyncDir", "artifactsDir", "sessionFile", "sessionPath", "outputFile", "outputPath", "artifactPath", "reportPath", "transcriptPath", "structuredOutputPath", "structuredOutputSchemaPath"]) {
-    if (Object.hasOwn(value, key)) paths.push(value[key]);
-  }
-  if (isRecord(value.artifactPaths)) {
-    const artifactPaths = Object.values(value.artifactPaths);
-    if (artifactPaths.length > MAX_RETURNED_ARTIFACTS) throw new Error("provider returned too many artifact paths");
-    paths.push(...artifactPaths);
-  }
-  if (paths.length > MAX_RETURNED_ARTIFACTS) throw new Error("provider returned too many session/artifact/output paths");
-  return paths;
-}
-
-function validateReturnedPath(value: unknown, attempt: ArcPreparedReviewAttempt): string {
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAX_PATH_BYTES || !path.isAbsolute(value) || value !== path.resolve(value) || /[\0\r\n]/.test(value)) throw new Error("provider returned a non-canonical session/artifact/output path");
-  if (below(attempt.inputRoot, value) || below(attempt.request.repositoryRoot, value)) throw new Error("provider returned a session/artifact/output path inside review input or checkout");
-  return value;
-}
-
-function parseCompletion(value: unknown, attempt: ArcPreparedReviewAttempt, identity: ArcReviewLaunchIdentity): ValidatedCompletion | undefined {
+async function parseCompletion(
+  value: unknown,
+  attempt: ArcPreparedReviewAttempt,
+  identity: ArcReviewLaunchIdentity,
+  existingArtifactReferences: readonly string[],
+): Promise<ValidatedCompletion | undefined> {
   if (!isRecord(value) || value.runId !== identity.runId || value.toolCallId !== `rpc-spawn-${identity.requestId}`) return undefined;
   for (const key of ["sessionId", "ownerSessionId", "parentSessionId"]) {
     if (Object.hasOwn(value, key) && value[key] !== identity.ownerSessionId) {
       return { lifecycle: "provider_lost", guardAcknowledgements: [], diagnostics: [`completion ${key} does not match the bound owner session`], artifactReferences: [] };
     }
   }
-  const artifactReferences: string[] = [];
+  const existingArtifacts = new Set(existingArtifactReferences);
+  const artifacts = new ReturnedArtifactSet(existingArtifactReferences);
   try {
-    for (const candidate of collectReturnedPaths(value)) artifactReferences.push(validateReturnedPath(candidate, attempt));
+    await addReturnedPaths([value], attempt, artifacts);
   } catch (error) {
     return { lifecycle: "guard_failed", guardAcknowledgements: [], diagnostics: [boundedMessage(error)], artifactReferences: [] };
   }
+  let artifactReferences = artifacts.values().filter((reference) => !existingArtifacts.has(reference));
   if (value.mode !== "single" || value.state !== "complete" || value.success !== true || value.stopped === true || value.timedOut === true || value.interrupted === true || value.processSignal) {
     return { lifecycle: "provider_lost", guardAcknowledgements: [], diagnostics: ["native completion was not a successful single terminal result"], artifactReferences };
   }
@@ -432,7 +501,8 @@ function parseCompletion(value: unknown, attempt: ArcPreparedReviewAttempt, iden
   }
   const result = value.results[0];
   try {
-    for (const candidate of collectReturnedPaths(result)) artifactReferences.push(validateReturnedPath(candidate, attempt));
+    await addReturnedPaths([result], attempt, artifacts);
+    artifactReferences = artifacts.values().filter((reference) => !existingArtifacts.has(reference));
   } catch (error) {
     return { lifecycle: "guard_failed", guardAcknowledgements: [], diagnostics: [boundedMessage(error)], artifactReferences: [] };
   }
@@ -444,7 +514,7 @@ function parseCompletion(value: unknown, attempt: ArcPreparedReviewAttempt, iden
   const acknowledgement = value.runtimeAcknowledgedExtensions ?? result.runtimeAcknowledgedExtensions;
   const expected = ARC_REVIEW_GUARD_ACK_PREFIX + attempt.attemptId;
   if (!isRecord(acknowledgement) || acknowledgement.version !== 1 || acknowledgement.source !== "child-runtime" || !Array.isArray(acknowledgement.ids) ||
-    acknowledgement.ids.length > 32 || acknowledgement.ids.some((id) => typeof id !== "string" || !id) || !acknowledgement.ids.includes(expected) ||
+    acknowledgement.ids.some((id) => typeof id !== "string" || !id) || !acknowledgement.ids.includes(expected) ||
     !Number.isSafeInteger(acknowledgement.omitted) || (acknowledgement.omitted as number) < 0) {
     return { lifecycle: "guard_failed", guardAcknowledgements: [], diagnostics: ["native completion omitted the exact review guard acknowledgement"], artifactReferences };
   }
@@ -458,15 +528,32 @@ class BoundedEventBuffer {
   #wake: (() => void) | undefined;
 
   add(kind: "completion" | "terminal", value: unknown): void {
+    if (this.#overflow) return;
     let digest: string;
     try {
       digest = `${kind}:${canonicalizeArcJson(value)}`;
-      if (Buffer.byteLength(digest, "utf8") > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) this.#overflow = true;
-    } catch { digest = `${kind}:uncanonicalizable:${this.#events.length}`; }
+    } catch {
+      this.#overflow = true;
+      this.#notify();
+      return;
+    }
+    if (Buffer.byteLength(digest, "utf8") > ARC_REVIEW_MAX_PROCESS_OUTPUT_BYTES) {
+      this.#overflow = true;
+      this.#notify();
+      return;
+    }
     if (this.#digests.has(digest)) return;
+    if (this.#events.length >= ARC_REVIEW_MAX_EVENT_BUFFER) {
+      this.#overflow = true;
+      this.#notify();
+      return;
+    }
     this.#digests.add(digest);
-    if (this.#events.length >= ARC_REVIEW_MAX_EVENT_BUFFER) this.#overflow = true;
-    else this.#events.push({ kind, value });
+    this.#events.push({ kind, value });
+    this.#notify();
+  }
+
+  #notify(): void {
     this.#wake?.();
     this.#wake = undefined;
   }
@@ -529,6 +616,7 @@ async function awaitExactRootProofAndCompletion(input: {
   buffer: BoundedEventBuffer;
   attempt: ArcPreparedReviewAttempt;
   identity: ArcReviewLaunchIdentity;
+  artifactReferences: readonly string[];
   signal: AbortSignal;
   deadline: number;
 }): Promise<ExactSettlement> {
@@ -549,7 +637,7 @@ async function awaitExactRootProofAndCompletion(input: {
           proof = candidate;
         }
       } else {
-        const candidate = parseCompletion(event.value, input.attempt, input.identity);
+        const candidate = await parseCompletion(event.value, input.attempt, input.identity, input.artifactReferences);
         if (candidate) {
           if (completion && canonicalizeArcJson(completion) !== canonicalizeArcJson(candidate)) return { completion, proof, error: new Error("conflicting exact-run completion events") };
           completion = candidate;
@@ -559,6 +647,38 @@ async function awaitExactRootProofAndCompletion(input: {
     if (proof && completion) return { proof, completion };
     await input.buffer.wait(input.signal, input.deadline);
   }
+}
+
+async function recheckBufferedSettlement(input: {
+  buffer: BoundedEventBuffer;
+  attempt: ArcPreparedReviewAttempt;
+  identity: ArcReviewLaunchIdentity;
+  artifactReferences: readonly string[];
+  expectedProof: ArcNativeObservedTerminal;
+  expectedCompletion: ValidatedCompletion;
+}): Promise<Error | undefined> {
+  const snapshot = input.buffer.snapshot();
+  if (snapshot.overflow) return new Error(`native event buffer exceeded ${ARC_REVIEW_MAX_EVENT_BUFFER} unique events`);
+  let proof: ArcNativeObservedTerminal | undefined;
+  let completion: ValidatedCompletion | undefined;
+  for (const event of snapshot.events) {
+    if (event.kind === "terminal") {
+      let candidate: ArcNativeObservedTerminal | undefined;
+      try { candidate = parseExactTerminal(event.value, input.identity.runId!); }
+      catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+      if (!candidate) continue;
+      if (proof && canonicalizeArcJson(proof) !== canonicalizeArcJson(candidate)) return new Error("conflicting exact-run process-terminal refinements");
+      proof = candidate;
+      continue;
+    }
+    const candidate = await parseCompletion(event.value, input.attempt, input.identity, input.artifactReferences);
+    if (!candidate) continue;
+    if (completion && canonicalizeArcJson(completion) !== canonicalizeArcJson(candidate)) return new Error("conflicting exact-run completion events");
+    completion = candidate;
+  }
+  if (!proof || canonicalizeArcJson(proof) !== canonicalizeArcJson(input.expectedProof)) return new Error("exact-run process-terminal proof changed during persistence");
+  if (!completion || canonicalizeArcJson(completion) !== canonicalizeArcJson(input.expectedCompletion)) return new Error("exact-run completion changed during persistence");
+  return undefined;
 }
 
 function settleValidatedCompletion(input: {
@@ -580,6 +700,7 @@ function settleValidatedCompletion(input: {
     bytes += size;
   }
   const artifacts = [...new Set([...input.receipt.artifactReferences, ...input.completion.artifactReferences])];
+  if (artifacts.length > MAX_RETURNED_ARTIFACTS) throw new Error(`provider returned more than ${MAX_RETURNED_ARTIFACTS} final artifact references`);
   const runner = input.proof.instances.find((entry) => entry.kind === "runner")!;
   const lifecycle = runner.exitCode === 0 && runner.signal === null ? input.completion.lifecycle : "provider_lost";
   if (lifecycle === "provider_lost" && input.completion.lifecycle === "succeeded") diagnostics.push("runner process termination contradicts successful completion");
@@ -700,15 +821,13 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
         try { firstPing = await rpc.ping(); }
         catch (error) { return { ok: false, classification: "ambiguous", reason: boundedMessage(error) }; }
         if (firstPing.events.ready && firstPing.events.ready !== DEFAULT_READY_EVENT) readyHandlers.push(options.events.on(firstPing.events.ready, onReady));
-        const firstFailure = requiredCapabilityFailure(firstPing);
-        if (firstFailure) return { ok: false, classification: "incompatible", reason: firstFailure };
         phase = "second";
         await Promise.resolve();
         try { secondPing = await rpc.ping(); }
         catch (error) { return { ok: false, classification: "ambiguous", reason: boundedMessage(error) }; }
-        const secondFailure = requiredCapabilityFailure(secondPing);
-        if (secondFailure) return { ok: false, classification: "incompatible", reason: secondFailure };
         if (!matchingPingFacts(firstPing, secondPing)) return { ok: false, classification: "ambiguous", reason: "two native readiness pings returned changed or non-matching facts" };
+        const capabilityFailure = requiredCapabilityFailure(firstPing);
+        if (capabilityFailure) return { ok: false, classification: "incompatible", reason: capabilityFailure };
         const probe = { firstReadyObserved, firstPing, secondReadyObserved, secondPing };
         try { ownerSessionId(probe); }
         catch (error) { return { ok: false, classification: "ambiguous", reason: boundedMessage(error) }; }
@@ -794,7 +913,15 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
           receipt = bound.receipt;
           Object.assign(identity, receipt.identity);
         } catch (error) {
-          return finishFailure("provider_lost", error, { status: "unknown", source: "provider_process_terminal", detail: "native spawn reply was ambiguous and exact termination cannot be correlated" });
+          if (identity.runId) await requestStop(identity);
+          return finishFailure("provider_lost", error, {
+            status: "unknown",
+            source: "provider_process_terminal",
+            ...(identity.runId ? { runId: identity.runId } : {}),
+            detail: identity.runId
+              ? "native spawn bound an exact run but later receipt path validation failed"
+              : "native spawn was emitted but its malformed reply did not establish an exact run identity",
+          });
         }
 
         try { await boundedWait(() => observer.persistDispatchReceipt(receipt!), signal, workDeadline); }
@@ -805,7 +932,7 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
         observer.progress(`native review run ${identity.runId} dispatched`);
 
         let settlement: ExactSettlement;
-        try { settlement = await awaitExactRootProofAndCompletion({ buffer, attempt, identity, signal, deadline: workDeadline }); }
+        try { settlement = await awaitExactRootProofAndCompletion({ buffer, attempt, identity, artifactReferences: receipt.artifactReferences, signal, deadline: workDeadline }); }
         catch (error) {
           const lifecycle = signal.aborted ? "cancelled" : "timed_out";
           const stopDeadline = Math.min(hardDeadline, Date.now() + ARC_REVIEW_STOP_GRACE_MS);
@@ -846,6 +973,24 @@ export function createArcNativeReviewAdapter(options: ArcNativeReviewOptions): A
         } catch (error) {
           await requestStop(identity);
           return finishFailure("guard_failed", `terminal identity persistence failed: ${boundedMessage(error)}`, termination);
+        }
+        let persistenceConflict: Error | undefined;
+        try {
+          persistenceConflict = await boundedWait(() => recheckBufferedSettlement({
+            buffer,
+            attempt,
+            identity,
+            artifactReferences: refined.artifactReferences,
+            expectedProof: proof,
+            expectedCompletion: settlement.completion,
+          }), signal, terminalDeadline);
+        } catch (error) {
+          await requestStop(identity);
+          return finishFailure("guard_failed", `post-persistence settlement barrier failed: ${boundedMessage(error)}`, termination);
+        }
+        if (persistenceConflict) {
+          await requestStop(identity);
+          return finishFailure("provider_lost", persistenceConflict, termination);
         }
         receipt = refined;
         terminalObserved = true;

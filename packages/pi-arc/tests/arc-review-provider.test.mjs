@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -215,6 +215,17 @@ function observer(overrides = {}) {
     async persistObservedTermination(value) { calls.push({ kind: 'observed-termination', value: structuredClone(value) }); return overrides.termination?.(value); },
     progress(message) { calls.push({ kind: 'progress', value: message }); },
   };
+}
+
+const PREPARATION_REFERENCE_KEYS = [
+  'stateDir', 'inputRoot', 'runtimeRoot', 'reportRoot', 'manifestPath', 'diffPath',
+  'guardExtensionPath', 'guardConfigPath', 'reportSchemaPath', 'guardAcknowledgementPath',
+  'reviewInputDigest', 'baselineDigest', 'baselinePath', 'baselineArtifactDigest',
+  'inputDescriptorPath', 'inputDescriptorArtifactDigest',
+];
+
+function exactPreparationReferences(attempt) {
+  return Object.fromEntries(PREPARATION_REFERENCE_KEYS.map((key) => [key, attempt[key]]));
 }
 
 async function preflight(adapter, value) {
@@ -599,6 +610,10 @@ test('unsafe trusted extensions, unsafe returned async paths, and invalid prompt
     assert.deepEqual(await preflight(adapter, value), { ok: true });
     const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
     assert.equal(execution.lifecycle, 'provider_lost');
+    assert.equal(execution.identity.runId, 'unsafe');
+    assert.equal(provider.calls.stops.length, 1);
+    assert.equal(provider.calls.stops[0].params.id, 'unsafe');
+    assert.notEqual(provider.calls.stops[0].requestId, provider.calls.spawns[0].requestId);
     assert.match(execution.boundedDiagnostics.join('\n'), /checkout|input|path|async/i);
     provider.dispose();
   });
@@ -636,13 +651,18 @@ test('unsafe trusted extensions, unsafe returned async paths, and invalid prompt
   });
 });
 
-test('bounded early-event overflow fails closed and retains unresolved registration', async (t) => {
+test('bounded early-event overflow stops canonicalizing or retaining unique events after the cap', async (t) => {
   const value = await scenario(t);
+  let canonicalReads = 0;
   const provider = installProvider(value, { onSpawn(request) {
     const runId = `run-${value.attempt.attemptId}`;
     const asyncDir = path.join(value.asyncRoot, runId);
     return mkdir(asyncDir).then(() => {
-      for (let index = 0; index < 129; index += 1) value.options.events.emit(ASYNC_COMPLETE, { runId: `noise-${index}`, index });
+      for (let index = 0; index < 10_000; index += 1) {
+        const event = { runId: `noise-${index}`, index };
+        Object.defineProperty(event, 'marker', { enumerable: true, get() { canonicalReads += 1; return index; } });
+        value.options.events.emit(ASYNC_COMPLETE, event);
+      }
       rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
     });
   } });
@@ -652,7 +672,247 @@ test('bounded early-event overflow fails closed and retains unresolved registrat
   assert.equal(execution.lifecycle, 'provider_lost');
   assert.equal(execution.termination.status, 'unknown');
   assert.match(execution.boundedDiagnostics.join('\n'), /128|buffer/i);
+  assert.ok(canonicalReads <= 129, `canonicalized ${canonicalReads} events after overflow`);
   assert.equal(provider.calls.spawns.length, 1);
   assert.equal(provider.calls.disposed, 0);
+  provider.dispose();
+});
+
+test('oversize or uncanonicalizable events overflow once without processing continued unique events', async (t) => {
+  for (const mode of ['oversize', 'uncanonicalizable']) {
+    await t.test(mode, async (t) => {
+      const value = await scenario(t);
+      let canonicalReads = 0;
+      const provider = installProvider(value, { onSpawn(request) {
+        const runId = `run-${value.attempt.attemptId}`;
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => {
+          const invalid = mode === 'oversize' ? { payload: 'x'.repeat(1024 * 1024 + 1) } : {};
+          if (mode === 'uncanonicalizable') invalid.self = invalid;
+          value.options.events.emit(ASYNC_COMPLETE, invalid);
+          for (let index = 0; index < 1_000; index += 1) {
+            const event = { runId: `noise-${index}` };
+            Object.defineProperty(event, 'marker', { enumerable: true, get() { canonicalReads += 1; return index; } });
+            value.options.events.emit(ASYNC_COMPLETE, event);
+          }
+          rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+        });
+      } });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.notEqual(execution.lifecycle, 'succeeded');
+      assert.match(execution.boundedDiagnostics.join('\n'), /128|buffer/i);
+      assert.equal(canonicalReads, 0);
+      provider.dispose();
+    });
+  }
+});
+
+test('prompt contract rejects each altered required line before registration or spawn', async (t) => {
+  const cases = [
+    ['system prompt', (value) => ({ ...value.prompt, systemPrompt: `${value.prompt.systemPrompt} Extra.` })],
+    ['committed range', (value) => ({ ...value.prompt, task: value.prompt.task.replace(`Review committed ${value.request.baseSha}..${value.request.headSha}.`, 'Review the changes.') })],
+    ['source root', (value) => ({ ...value.prompt, task: value.prompt.task.replace(`Source root (absolute; pass unchanged to tools): ${value.attempt.inputRoot}/source`, `Source root: ${value.attempt.inputRoot}/source`) })],
+    ['manifest', (value) => ({ ...value.prompt, task: value.prompt.task.replace(`Materials manifest: ${value.attempt.manifestPath}`, 'Materials manifest: omitted') })],
+    ['relative paths', (value) => ({ ...value.prompt, task: value.prompt.task.replace('Relative paths are invalid.', 'Prefer absolute paths.') })],
+    ['dirty exclusion', (value) => ({ ...value.prompt, task: value.prompt.task.replace('Dirty and ignored primary bytes are intentionally excluded.', 'Review dirty bytes too.') })],
+    ['review digest', (value) => ({ ...value.prompt, task: value.prompt.task.replace(`Return schema version 1 with reviewInputDigest ${value.attempt.reviewInputDigest}.`, 'Return schema version 1.') })],
+  ];
+  for (const [name, mutate] of cases) {
+    await t.test(name, async (t) => {
+      const value = await scenario(t);
+      value.options.buildPrompt = () => mutate(value);
+      const provider = installProvider(value);
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.notEqual(execution.lifecycle, 'succeeded');
+      assert.match(execution.boundedDiagnostics.join('\n'), /prompt|task|system|committed|digest|dirty|relative|source|manifest/i);
+      assert.equal(provider.calls.registrations.length, 0);
+      assert.equal(provider.calls.spawns.length, 0);
+      provider.dispose();
+    });
+  }
+});
+
+test('preflight classifies capability appearance or disappearance between well-formed pings as ambiguous', async (t) => {
+  const missing = ping('owner-session', { capabilities: { ...ping().capabilities, asyncSpawn: false } });
+  for (const [name, pings] of [['appears', [missing, ping()]], ['disappears', [ping(), missing]]]) {
+    await t.test(name, async (t) => {
+      const value = await scenario(t);
+      const provider = installProvider(value, { pings });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      const result = await preflight(adapter, value);
+      assert.equal(result.ok, false);
+      assert.equal(result.classification, 'ambiguous');
+      assert.match(result.reason, /changed|matching|inconsistent/i);
+      assert.equal(provider.calls.pings.length, 2);
+      assert.equal(provider.calls.registrations.length, 0);
+      assert.equal(provider.calls.spawns.length, 0);
+      provider.dispose();
+    });
+  }
+});
+
+test('silent provider ping times out as ambiguous and cleans every preflight listener', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const value = await scenario(t);
+  const provider = installProvider(value, { pings: ['silence'] });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  const pending = preflight(adapter, value);
+  const replyEvent = `${RPC_REPLY_PREFIX}00000000-0000-4000-8000-000000000001`;
+  while (value.options.events.listenerCount(replyEvent) === 0) await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(10_000);
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.equal(result.classification, 'ambiguous');
+  assert.match(result.reason, /timed out/i);
+  assert.equal(provider.calls.registrations.length, 0);
+  assert.equal(provider.calls.spawns.length, 0);
+  assert.equal(value.options.events.listenerCount('subagents:rpc:v1:ready'), 0);
+  assert.equal(value.options.events.listenerCount(replyEvent), 0);
+  provider.dispose();
+});
+
+test('exact preparation-reference projection preflight authorizes the complete attempt execution', async (t) => {
+  const value = await scenario(t);
+  const provider = installProvider(value, { onSpawn(request) {
+    const runId = `run-${value.attempt.attemptId}`;
+    const asyncDir = path.join(value.asyncRoot, runId);
+    return mkdir(asyncDir).then(() => {
+      value.options.events.emit(ASYNC_COMPLETE, completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` }));
+      value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+      rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+    });
+  } });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  assert.deepEqual(await adapter.preflight({ request: value.request, preparation: exactPreparationReferences(value.attempt) }), { ok: true });
+  const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+  assert.equal(execution.lifecycle, 'succeeded');
+  provider.dispose();
+});
+
+test('conflicts emitted during terminal persistence prevent success and request one exact stop', async (t) => {
+  for (const stage of ['refinement', 'termination']) {
+    await t.test(stage, async (t) => {
+      const value = await scenario(t);
+      let spawnRequest;
+      const runId = `run-${value.attempt.attemptId}`;
+      const provider = installProvider(value, { onSpawn(request) {
+        spawnRequest = request;
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => {
+          value.options.events.emit(ASYNC_COMPLETE, completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` }));
+          value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-original'));
+          rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+        });
+      } });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const observed = observer({
+        receipt(_receipt, count) {
+          if (stage === 'refinement' && count === 2) value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-conflict'));
+        },
+        termination() {
+          if (stage === 'termination') {
+            value.options.events.emit(ASYNC_COMPLETE, completion(value, runId, {
+              expectedToolCallId: `rpc-spawn-${spawnRequest.requestId}`,
+              results: [{ success: true, structuredOutput: reviewerReport(value.attempt.reviewInputDigest, { summary: 'Contradictory completion.' }) }],
+            }));
+          }
+        },
+      });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observed);
+      assert.notEqual(execution.lifecycle, 'succeeded');
+      assert.equal(provider.calls.stops.length, 1);
+      assert.equal(provider.calls.stops[0].params.id, runId);
+      assert.notEqual(provider.calls.stops[0].requestId, spawnRequest.requestId);
+      assert.match(execution.boundedDiagnostics.join('\n'), /conflict/i);
+      provider.dispose();
+    });
+  }
+});
+
+test('guard acknowledgement accepts many unrelated IDs only when the exact required ID is present', async (t) => {
+  for (const includeExpected of [true, false]) {
+    await t.test(includeExpected ? 'exact ID present' : 'exact ID absent', async (t) => {
+      const value = await scenario(t);
+      const unrelated = Array.from({ length: 64 }, (_, index) => `unrelated-${index}`);
+      const provider = installProvider(value, { onSpawn(request) {
+        const runId = `run-${value.attempt.attemptId}`;
+        const asyncDir = path.join(value.asyncRoot, runId);
+        return mkdir(asyncDir).then(() => {
+          const payload = completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` });
+          payload.runtimeAcknowledgedExtensions.ids = includeExpected
+            ? [...unrelated, `${ARC_REVIEW_GUARD_ACK_PREFIX}${value.attempt.attemptId}`]
+            : unrelated;
+          value.options.events.emit(ASYNC_COMPLETE, payload);
+          value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+          rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+        });
+      } });
+      const adapter = createArcNativeReviewAdapter(value.options);
+      assert.deepEqual(await preflight(adapter, value), { ok: true });
+      const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+      assert.equal(execution.lifecycle, includeExpected ? 'succeeded' : 'guard_failed');
+      provider.dispose();
+    });
+  }
+});
+
+test('artifact references share one aggregate bound across spawn and completion projections', async (t) => {
+  const value = await scenario(t);
+  const artifactRoot = path.join(value.root, 'artifacts');
+  await mkdir(artifactRoot);
+  const paths = Array.from({ length: 129 }, (_, index) => path.join(artifactRoot, `artifact-${index}.json`));
+  await Promise.all(paths.map((file) => writeFile(file, '{}')));
+  const map = (slice, prefix) => Object.fromEntries(slice.map((file, index) => [`${prefix}${index}`, file]));
+  const provider = installProvider(value, { onSpawn(request) {
+    const runId = `run-${value.attempt.attemptId}`;
+    const asyncDir = path.join(value.asyncRoot, runId);
+    return mkdir(asyncDir).then(() => {
+      const payload = completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}`, artifactPaths: map(paths.slice(80, 105), 'completion') });
+      payload.results[0].artifactPaths = map(paths.slice(105), 'result');
+      value.options.events.emit(ASYNC_COMPLETE, payload);
+      value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+      rpcReply(value.options.events, request, {
+        text: '', artifactPaths: map(paths.slice(0, 25), 'spawn'),
+        details: {
+          mode: 'single', runId, asyncId: runId, asyncDir,
+          artifactPaths: map(paths.slice(25, 50), 'details'),
+          results: [{ artifactPaths: map(paths.slice(50, 80), 'spawnResult') }],
+        },
+      });
+    });
+  } });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  assert.deepEqual(await preflight(adapter, value), { ok: true });
+  const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+  assert.notEqual(execution.lifecycle, 'succeeded');
+  assert.match(execution.boundedDiagnostics.join('\n'), /artifact|path|128|too many/i);
+  provider.dispose();
+});
+
+test('filesystem aliases outside immutable roots cannot return paths resolving into review input', async (t) => {
+  const value = await scenario(t);
+  const aliasRoot = path.join(value.root, 'input-alias');
+  await symlink(value.attempt.inputRoot, aliasRoot, 'dir');
+  const provider = installProvider(value, { onSpawn(request) {
+    const runId = `run-${value.attempt.attemptId}`;
+    const asyncDir = path.join(value.asyncRoot, runId);
+    return mkdir(asyncDir).then(() => {
+      const payload = completion(value, runId, { expectedToolCallId: `rpc-spawn-${request.requestId}` });
+      payload.results[0].structuredOutputPath = path.join(aliasRoot, 'manifest.json');
+      value.options.events.emit(ASYNC_COMPLETE, payload);
+      value.options.events.emit(PROCESS_TERMINAL, proof(runId));
+      rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+    });
+  } });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  assert.deepEqual(await preflight(adapter, value), { ok: true });
+  const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+  assert.equal(execution.lifecycle, 'guard_failed');
+  assert.match(execution.boundedDiagnostics.join('\n'), /canonical|symlink|alias|input|checkout/i);
   provider.dispose();
 });
