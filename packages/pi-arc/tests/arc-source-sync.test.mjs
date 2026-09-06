@@ -132,6 +132,27 @@ test('migration script rewrites renamed skill path references', () => {
 test('migration preserves Pi-native guarded session arguments in operational resources', () => {
   const migration = read('scripts/migrate-arc-plugin.py');
   assert.match(migration, /ARC_SESSION_ID", "PI_SESSION_ID/);
+  const commandLoopStart = migration.indexOf('for f in sorted((SRC / "commands").glob("*.md")):');
+  const commandLoopEnd = migration.indexOf('\nskill_map = {', commandLoopStart);
+  assert.notEqual(commandLoopStart, -1, 'command migration loop must remain present');
+  assert.notEqual(commandLoopEnd, -1, 'command migration loop must end before skill transforms');
+  const commandFixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-command-transform-'));
+  const commandSource = path.join(commandFixture, 'source');
+  const commandOutput = path.join(commandFixture, 'output');
+  const commandScript = path.join(commandFixture, 'commands.py');
+  try {
+    mkdirSync(path.join(commandSource, 'commands'), { recursive: true });
+    mkdirSync(path.join(commandOutput, 'prompts'), { recursive: true });
+    writeFileSync(path.join(commandSource, 'commands', 'claim.md'), 'arc update <id> --take --session-id "${ARC_SESSION_ID:?ARC_SESSION_ID is required}"');
+    writeFileSync(commandScript, `import re\nfrom pathlib import Path\nSRC = Path(${JSON.stringify(commandSource)})\nARC_ROOT = Path(${JSON.stringify(commandOutput)})\n${migration.slice(commandLoopStart, commandLoopEnd)}\n`);
+    execFileSync('python3', [commandScript], { stdio: 'pipe' });
+    const commandPrompt = readFileSync(path.join(commandOutput, 'prompts', 'arc-claim.md'), 'utf8');
+    assert.doesNotMatch(commandPrompt, /ARC_SESSION_ID/);
+    assert.match(commandPrompt, /\$\{PI_SESSION_ID:\?PI_SESSION_ID is required\}/);
+  } finally {
+    rmSync(commandFixture, { recursive: true, force: true });
+  }
+
   const transformStart = migration.indexOf('skill_map = {');
   const transformEnd = migration.indexOf('\nfor src_dir in sorted', transformStart);
   const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-session-transform-'));
@@ -159,6 +180,15 @@ test('migration preserves Pi-native guarded session arguments in operational res
       }
     }
   }
+});
+
+test('README documents explicit Pi shell and extension session binding', () => {
+  const source = read('README.md');
+  assert.match(source, /Shell claim and manual prime commands pass guarded `PI_SESSION_ID` through `--session-id`/);
+  assert.match(source, /Extension-owned prime passes the current session-manager ID explicitly/);
+  assert.match(source, /Other extension commands receive that ID through invocation-scoped `ARC_SESSION_ID`/);
+  assert.doesNotMatch(source, /older Arc versions can use `--session-id "\$PI_SESSION_ID"/);
+  assert.doesNotMatch(source, /set `ARC_SESSION_ID` to the intended current session/);
 });
 
 test('packaged Pi claim and prime commands preserve a guarded session ID as one argv value', () => {

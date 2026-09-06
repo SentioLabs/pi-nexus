@@ -40,7 +40,8 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
 - **Session context injection**:
   - On session start, the extension runs `arc prime` and injects its output into the system prompt as `<arc-context>`.
   - It registers Pi's exact session ID, cwd, and available session file with Arc. Extension commands bind to the current Pi session per invocation, including after a session switch.
-  - Shell commands use `PI_SESSION_ID` with an Arc CLI that supports it; older Arc versions can use `--session-id "$PI_SESSION_ID"` with `--take`. For nested runtimes with conflicting native IDs, set `ARC_SESSION_ID` to the intended current session.
+  - Shell claim and manual prime commands pass guarded `PI_SESSION_ID` through `--session-id`, so a missing native identity stops before Arc runs.
+  - Extension-owned prime passes the current session-manager ID explicitly. Other extension commands receive that ID through invocation-scoped `ARC_SESSION_ID`. Explicit shell flags take precedence over inherited environment values.
   - Before compaction, the extension refreshes `arc prime`.
 - **Bundled `@juicesharp/rpiv-todo` integration** (auto-installed + auto-loaded):
   - `todo` tool for managing in-session checklist items.
