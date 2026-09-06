@@ -556,9 +556,20 @@ test('stop is identity-bound, idempotent, and does not act on a mismatched proce
 });
 
 test('ambiguous pre-spawn termination remains unknown and retains identity ownership', { timeout: 15_000 }, async (t) => {
-  const value = await scenario(t, 'success', { executionTimeoutMs: 5 });
+  const value = await scenario(t, 'success', { executionTimeoutMs: 250 });
+  const realLstat = fsPromises.lstat;
   const realSpawn = childProcess.spawn;
+  let controlledPreparationEntered = false;
+  let mockedSpawnEntered = false;
+  fsPromises.lstat = async (file, ...args) => {
+    if (!controlledPreparationEntered && file === value.repositoryRoot) {
+      controlledPreparationEntered = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return realLstat(file, ...args);
+  };
   childProcess.spawn = () => {
+    mockedSpawnEntered = true;
     const child = new EventEmitter();
     child.stdin = new PassThrough();
     child.stdout = new PassThrough();
@@ -573,6 +584,8 @@ test('ambiguous pre-spawn termination remains unknown and retains identity owner
   try {
     const observer = createObserver({ before: (next) => { identity = next; } });
     const execution = await adapter.execute(value.attempt, new AbortController().signal, observer);
+    assert.equal(controlledPreparationEntered, true);
+    assert.equal(mockedSpawnEntered, true);
     assert.equal(execution.termination.status, 'unknown');
     assert.equal(execution.termination.source, 'standalone_child_close');
     await assert.rejects(() => adapter.execute(value.attempt, new AbortController().signal, createObserver()), /already owns/i);
@@ -580,6 +593,7 @@ test('ambiguous pre-spawn termination remains unknown and retains identity owner
     await adapter.stop(value.attempt, identity);
     await assert.rejects(() => adapter.execute(value.attempt, new AbortController().signal, createObserver()), /already owns/i);
   } finally {
+    fsPromises.lstat = realLstat;
     childProcess.spawn = realSpawn;
     syncBuiltinESMExports();
   }
