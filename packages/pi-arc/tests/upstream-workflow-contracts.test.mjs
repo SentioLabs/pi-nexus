@@ -162,10 +162,65 @@ test('review and evaluator profiles remain authoritative with large fallbacks', 
   assert.doesNotMatch(build, /agent: "arc-spec-reviewer"[^\n]*model:/);
   assert.doesNotMatch(build, /agent: "arc-evaluator"[^\n]*model:/);
   assert.doesNotMatch(build, /arc_agent\(agent="evaluator"[^\n]*model=/);
-  assert.match(build, /git status --short.*pre-evaluation baseline/s);
+  assert.match(build, /selected VCS status.*pre-evaluation baseline/s);
 
   const evaluator = read('agents/evaluator.md');
-  assert.match(evaluator, /If it is not clean, report `BLOCKED`/);
+  assert.match(evaluator, /If the selected VCS status is not clean, report `BLOCKED`/);
+  assert.match(evaluator, /git status --short.*jj st/s);
   assert.match(evaluator, /restore modified tracked files and remove only the temporary files/i);
   assert.doesNotMatch(evaluator, /Do NOT worry about cleanup/);
+});
+
+test('Jujutsu sync stays VCS-aware and preserves Pi patch-handoff safety', () => {
+  const vcs = read('skills/arc/_vcs.md');
+  const branchCheck = read('skills/arc/_branch-check.md');
+  const build = read('skills/arc-build/SKILL.md');
+  const finish = read('skills/arc-finish/SKILL.md');
+  const arc = read('skills/arc/SKILL.md');
+  const migration = read('scripts/migrate-arc-plugin.py');
+  const readme = read('README.md');
+
+  assert.equal(existsSync('skills/arc/_vcs.md'), true);
+  assert.match(vcs, /contains `"jj"` → use jj/);
+  assert.match(vcs, /colocated `\["git","jj"\]` case/);
+  assert.match(vcs, /jj root/);
+  assert.match(vcs, /jj bookmark move feat\/x --to @-/);
+  assert.doesNotMatch(vcs, /jj git push -c @/);
+
+  assert.match(branchCheck, /jj st/);
+  assert.match(branchCheck, /jj bookmark create <name> -r @/);
+  assert.match(branchCheck, /Do \*\*not\*\* use `jj new <trunk>` as a blanket switch remedy/);
+  assert.match(branchCheck, /@juicesharp\/rpiv-ask-user-question/);
+
+  for (const path of ['agents/builder.md', 'agents/devops-builder.md']) {
+    const agent = read(path);
+    assert.match(agent, /skills\/arc\/_vcs\.md/);
+    assert.match(agent, /jj commit -m/);
+    assert.match(agent, /never raw `git add`\/`git commit`/);
+  }
+
+  const docWriter = read('agents/doc-writer.md');
+  assert.match(docWriter, /skills\/arc\/_vcs\.md/);
+  assert.match(docWriter, /jj commit -m/);
+  assert.match(docWriter, /stage only the documentation files/);
+  const devopsBuilder = read('agents/devops-builder.md');
+  assert.match(devopsBuilder, /Never assume a specific VCS context/);
+  assert.doesNotMatch(devopsBuilder, /Never assume you are on a specific git branch/);
+
+  assert.match(build, /managed `pi-subagents` patch isolation currently requires Git worktrees/);
+  assert.match(build, /if VCS detection selects jj, use the sequential path/);
+  assert.match(build, /do not invoke `worktree: true`/);
+  assert.match(build, /selected VCS push succeeds/);
+  assert.match(finish, /selected VCS push succeeds/);
+  assert.match(finish, /jj bookmark move <feature-bookmark> --to @-/);
+  assert.match(finish, /Do not use `jj git push -c @` here/);
+  assert.doesNotMatch(finish, /or `jj git push -c @` to auto-create/);
+
+  assert.doesNotMatch(arc, /STACKING\.md/);
+  assert.match(arc, /compatible Pi-native stacking workflow/);
+  assert.match(arc, /selected VCS push succeeds/);
+  assert.match(migration, /patch_file\("skills\/arc\/_vcs\.md"/);
+  assert.match(migration, /replace_section\("skills\/arc\/_branch-check\.md"/);
+  assert.match(readme, /Managed `pi-subagents` patch isolation remains Git-worktree-only/);
+  assert.match(readme, /Parallel Arc batch \(Git only\)/);
 });

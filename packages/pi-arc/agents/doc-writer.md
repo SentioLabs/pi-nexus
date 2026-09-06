@@ -22,7 +22,7 @@ You have a fresh context window — no prior conversation history. Everything yo
 2. **Read** any existing files referenced in the task
 3. **Write or update** the documentation per the task spec
 4. **Verify** formatting quality (see checklist below)
-5. **Commit** with a conventional commit message (e.g., `docs(module): update README`)
+5. **Commit** using the VCS detection from `skills/arc/_vcs.md`. If jj is detected, use `jj commit -m "docs(module): update README"`; in a colocated repo never use raw Git mutations. Otherwise stage only the documentation files from the task scope with `git add <files>` and run `git commit -m "docs(module): update README"`.
 6. **Report** back: what was written, files changed, verification results
 
 ## Supervisor Escalation

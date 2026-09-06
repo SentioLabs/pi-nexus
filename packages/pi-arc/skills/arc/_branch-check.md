@@ -18,7 +18,9 @@ Run it **every time the skill runs** — don't assume a previous answer carries 
 
 ## How to run the check
 
-1. Get the current branch:
+1. First, determine the VCS per `skills/arc/_vcs.md`. If the repo uses jj, follow the **## jj repos** subsection below; otherwise proceed with the git steps.
+
+   For git repos:
 
    ```bash
    git branch --show-current
@@ -40,6 +42,32 @@ Run it **every time the skill runs** — don't assume a previous answer carries 
    - **Switch** → create the branch, then continue the skill on it
    - **Stay** → continue on trunk
    - **Cancel** → stop the skill; do not commit, do not dispatch tasks, do not write design docs
+
+## jj repos
+
+If `skills/arc/_vcs.md` selects **jj**, inspect the working-copy change and bookmark placement before deciding whether the protected condition applies:
+
+```bash
+jj st
+jj log -r 'trunk() | @ | @-' --no-graph
+jj bookmark list
+```
+
+The protected condition applies when the session's intended change is based on trunk but is not named by a non-protected feature bookmark. If a non-protected bookmark already names the intended change, proceed. If the protected trunk bookmark itself points at a change containing session edits, do not move it automatically; choose Cancel and ask the user to recover the bookmark explicitly.
+
+For the **Switch to a feature branch** choice, preserve existing work instead of blindly starting a new change:
+
+- If the intended edits are in the current working-copy change `@`, run `jj bookmark create <name> -r @`.
+- If `@` is the fresh empty change created by `jj commit` and the completed session work is `@-`, run `jj bookmark create <name> -r @-` (or `jj bookmark move <name> --to @-` when that feature bookmark already exists).
+- If `jj st` shows unrelated changes or the correct target is ambiguous, stop and ask the user rather than guessing.
+
+Do **not** use `jj new <trunk>` as a blanket switch remedy after work exists: that creates a new child but leaves the existing edited change where it was. Do **not** move a protected bookmark backward automatically.
+
+The `ask_user_question` choice shape remains Switch / Stay / Cancel. Update its wording to say "your work is based on the `<trunk>` bookmark without a feature bookmark" rather than "you're on `<branch>`":
+
+- **Switch** → create or move only the feature bookmark as described above, then continue.
+- **Stay** → continue knowingly without a feature bookmark.
+- **Cancel** → stop the skill without committing, dispatching, or writing additional files.
 
 ## Why no env-var or CLI flag opt-out
 
