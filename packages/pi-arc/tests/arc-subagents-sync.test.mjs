@@ -56,39 +56,40 @@ test('arc extension sync guidance distinguishes agent discovery from status moni
   assert.doesNotMatch(source, /\/subagents-status.*confirm availability/);
 });
 
-test('arc-build skill references arc-subagents-sync and async pi-subagents workers', () => {
+test('arc-build requires native completion and documents coordinated workflows', () => {
   const source = read('skills/arc-build/SKILL.md');
   assert.match(source, /\/arc-subagents-sync/);
   assert.match(source, /arc-builder/);
   assert.match(source, /arc-devops-builder/);
   assert.match(source, /devopsBuilder/);
-  assert.match(source, /async: true/);
-  assert.match(source, /clarify: false/);
-  assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
-  assert.match(source, /until terminal/);
-  assert.match(source, /read the final output/);
-  assert.match(source, /\/subagents-status/);
+  assert.match(source, /workflowScript/);
+  assert.match(source, /runs\.all/);
+  assert.match(source, /native completion/i);
+  assert.match(source, /outputReference|outputPathMapping|artifactPaths/);
+  assert.match(source, /subagent\(\{ action: "resume"/);
+  assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
 });
 
-test('arc-plan prefers arc-issue-manager via pi-subagents before arc_agent fallback', () => {
+test('arc-plan delegates issue-manager through the required provider', () => {
   const source = read('skills/arc-plan/SKILL.md');
   assert.match(source, /arc-issue-manager/);
   assert.match(source, /subagent\(\{ agent: "arc-issue-manager"/);
-  assert.match(source, /async: true/);
-  assert.match(source, /clarify: false/);
-  assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
-  assert.match(source, /do \*\*not\*\* use the slower `arc_agent\(agent="issue-manager"\)` fallback/);
+  assert.match(source, /requires loaded, enabled `pi-subagents`/i);
+  assert.match(source, /native completion/i);
   assert.match(source, /arc_agent\(agent="issue-manager"/);
+  assert.match(source, /same provider/i);
+  assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
 });
 
-test('arc-review prefers arc-code-reviewer via pi-subagents before arc_agent fallback', () => {
+test('arc-review uses a fresh native completion-gated reviewer', () => {
   const source = read('skills/arc-review/SKILL.md');
   assert.match(source, /arc-code-reviewer/);
   assert.match(source, /subagent\(\{ agent: "arc-code-reviewer"/);
-  assert.match(source, /async: true/);
-  assert.match(source, /clarify: false/);
-  assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
+  assert.match(source, /native completion/i);
+  assert.match(source, /successful terminal runtime state/i);
+  assert.match(source, /Reviews after fixes are fresh independent/);
   assert.match(source, /arc_agent\(agent="code-reviewer"/);
+  assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
 });
 
 test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents completion guard', () => {
@@ -101,7 +102,7 @@ test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents compl
   assert.doesNotMatch(source, /\bmake\s+(?:the\s+)?code\s+changes\b/i);
 });
 
-test('README documents auto-materialized specialists and status semantics', () => {
+test('README documents auto-materialized specialists and native completion semantics', () => {
   const source = read('README.md');
   assert.match(source, /auto-materialized/i);
   assert.match(source, /Users do not need to run `\/arc-subagents-sync`/);
@@ -110,8 +111,9 @@ test('README documents auto-materialized specialists and status semantics', () =
   assert.match(source, /generic `worker`/i);
   assert.match(source, /subagent\(\{ action: "list" \}\)/);
   assert.match(source, /\/agents/);
-  assert.match(source, /Use `\/subagents-status` to monitor active\/recent async Arc specialist runs/);
-  assert.match(source, /It does not list idle installed agents/);
+  assert.match(source, /separately installed, loaded, enabled provider is required/i);
+  assert.match(source, /dispatch receipt never advances an Arc stage/i);
+  assert.match(source, /same provider and is not an independent execution fallback/i);
   assert.doesNotMatch(source, /\/subagents-status.*confirm availability/);
 });
 

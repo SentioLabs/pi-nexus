@@ -1257,6 +1257,157 @@ patch_file("agents/issue-manager.md", [
 ])
 
 
+# Native pi-subagents workflow refresh. Keep these overlays after the older
+# compatibility transforms so the pinned source deterministically produces the
+# current public execution contract.
+NATIVE_PROVIDER_REQUIREMENT = """Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
+
+A single handoff can use `subagent({ agent: "arc-builder", task: "<filled prompt>", context: "fresh", async: true });`; `arc_agent` remains a one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
+
+On notification, inspect native terminal state and final artifacts before interpreting the Arc specialist's report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+
+Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+"""
+
+replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dispatch Modes", """## Model Selection
+
+Arc model selection resolves in this order: explicit dispatch override → configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` → legacy `arc.modelTiers` / frontmatter → package defaults. Removing an execution fallback does not remove model fallback. Users should run `/arc-models`; omit `model:` when the configured role profile should remain authoritative.
+
+| Tier | Default concrete model | Use for |
+|---|---|---|
+| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
+| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
+| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
+| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+
+Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The dedicated `devopsBuilder` profile uses `large`; `issueManager` normally uses `nano`.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+| Task signal | Dispatch `model:` |
+|---|---|
+| Bulk issue creation or other low-reasoning Arc CLI operations | `nano` |
+| Mechanical: 1-2 files, unambiguous | `small` |
+| Standard contained implementation | omit `model:` or use `standard` |
+| Cross-layer, architectural, security-sensitive | `large` |
+| `NEEDS_CONTEXT` | same model, richer context |
+
+Do not escalate a model merely because execution infrastructure failed. For a genuine reasoning limit, follow the existing bounded tier escalation and stop at `large`.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "### 3. Dispatch Agent\n\n", "\n### 4. Evaluate Result", """### 3. Dispatch Agent
+
+Record `PRE_TASK_SHA=$(git rev-parse HEAD)`, fetch the parent design excerpt, and inspect labels. Route with exact precedence `docs-only` → `devops` → normal builder:
+
+- `docs-only`: fill `./doc-writer-prompt.md`; use `arc-doc-writer` (profile `docWriter`).
+- `devops`: fill `./devops-builder-prompt.md`; use `arc-devops-builder` (profile `devopsBuilder`). It follows PLAN → SAFEGUARD → APPLY → VERIFY → GATE. Never put live-system work in a parallel patch batch.
+- otherwise: fill `./builder-prompt.md`; use `arc-builder` (profile `builder`).
+
+For one handoff, call `subagent({ agent: "<required-arc-agent>", task: "<filled prompt>", context: "fresh", async: true });`. The Arc-facing `arc_agent(agent="<role>", task="<filled prompt>")` alternative is also asynchronous and uses the same provider; for the DevOps route that is `arc_agent(agent="devops-builder", task="<filled prompt>")`. Omit `model:` to preserve the configured profile; use an explicit override only for deliberate model selection.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+Do not evaluate the specialist report until native completion identifies a terminal successful run and the final result/artifacts are present.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "Dispatch `spec-reviewer`:\n\n", "\nHandle results:", """Dispatch `spec-reviewer`:
+
+Fill `./spec-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, and `{HEAD_SHA}`. Preserve review-only behavior. Use `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="spec-reviewer", task="<filled prompt>")`. Omit `model:` so the configured `specReviewer` profile wins; `large` frontmatter/model fallback remains available.
+
+The call returns a dispatch receipt, not review success. Return control for native completion, then require successful terminal runtime state and a complete final review artifact. Failure, pause, stop, incomplete or malformed output blocks the stage regardless of compliance prose. Do not substitute generic `worker` or `reviewer` agents.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run.", "\nTriage evaluator findings:", """Evaluations use explicitly requested native worktree isolation. Record `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint, fill `./evaluator-prompt.md`, and dispatch:
+
+```typescript
+subagent({
+  workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md" });`,
+  context: "fresh", async: true, globalConcurrencyLimit: 1,
+  baseRef: PARALLEL_BASE,
+})
+```
+
+Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate. Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "### P4. Dispatch with `pi-subagents`\n\n", "\n### P5. Apply and Verify Patches One at a Time", """### P4. Dispatch with `pi-subagents`
+
+Define `PARALLEL_BASE` from the recorded clean Git HEAD. Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
+
+```typescript
+subagent({
+  workflowScript: `
+    const results = await runs.all([
+      { key: "build-a", agent: "arc-builder", task: "<filled builder prompt A>", worktree: true, output: "builder-a.md" },
+      { key: "build-b", agent: "arc-builder", task: "<filled builder prompt B>", worktree: true, output: "builder-b.md" },
+      { key: "docs", agent: "arc-doc-writer", task: "<filled doc prompt>", worktree: true, output: "docs.md" }
+    ]);
+    return results;
+  `,
+  context: "fresh", async: true, globalConcurrencyLimit: 3,
+  baseRef: PARALLEL_BASE,
+})
+```
+
+`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths` before inspecting/applying its handoff. A filename mentioned only in prose is not an output binding. There is no implicit merge or cleanup: follow the native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
+""")
+
+patch_file("skills/arc-build/SKILL.md", [
+    (
+        "- Re-dispatch that task sequentially with the failure details.",
+        "- Use the native targeted-fix protocol below; do not silently switch execution mode.",
+    ),
+])
+insert_before_if_missing("skills/arc-build/SKILL.md", "\n## When to Invoke Debug", """## Targeted Fix and Recovery
+
+For a requested repair, consult native retained-child/resumability information. If the appropriate latest writer is resumable, use `subagent({ action: "resume", id: "<native-run-id>", message: "<specific verified fixes>" });`; for a live child use native steering. Capture the returned native identity. Do not fabricate continuity or implement Arc session validation. If native recovery is unavailable, stop for an explicit same-protocol fresh attempt with current scope and prior findings. Reviews remain fresh independent Arc specialist runs. Keep existing fix-cycle limits.
+
+A recovery result must pass the same native terminal-state, artifact, parent-test, spec-review, and code-review gates. Provider failure is not a reasoning failure and does not justify model escalation.
+
+""", "## Targeted Fix and Recovery")
+
+replace_section("skills/arc-plan/SKILL.md", "Then dispatch the manifest — titles, metadata, and file paths only, no description bodies.", "\nUse this task payload for whichever dispatcher you choose:", """Then dispatch the manifest — titles, metadata, and canonical file paths only, never description bodies.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+Use the `arc-issue-manager` as one direct child and omit `model:` so its configured profile remains authoritative:
+
+`subagent({ agent: "arc-issue-manager", task: "<filled manifest metadata and paths>", context: "fresh", async: true });`
+
+The Arc-facing `arc_agent(agent="issue-manager", task="<filled manifest metadata and paths>")` alternative uses the same provider and is also only a dispatch receipt. Return control for native completion. Only after a successful terminal run may the parent verify canonical description hashes, phase ordering, IDs, dependencies, labels, and timing. Unknown or malformed completion blocks issue acceptance; never issue a duplicate launch automatically.
+
+Use this task payload for whichever dispatcher you choose:
+""")
+
+replace_section("skills/arc-review/SKILL.md", "### 3. Dispatch Reviewer\n\n", "\n### 4. Triage Feedback", """### 3. Dispatch Reviewer
+
+Fill `./code-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, and `{EVALUATOR_STATUS}`. Preserve `Review only; return findings only. Do not edit files.`
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+Dispatch one fresh review with `subagent({ agent: "arc-code-reviewer", task: "<filled prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="code-reviewer", task="<filled prompt>")`. Omit `model:` so `codeReviewer` profile precedence and its model fallback remain authoritative.
+
+Return control for native completion. On notification, require successful terminal runtime state and a complete final review artifact before triage. Never infer a clean review from a launch receipt, missing findings, or successful prose attached to a failed/paused/stopped/incomplete/malformed run. Reviews after fixes are fresh independent `arc-code-reviewer` runs.
+""")
+
+replace_section("skills/arc/SKILL.md", "## Agent Mode\n\n", "\n## Dependency Types", """## Agent Mode
+
+For bulk operations, use the `arc-issue-manager` specialist. Non-delegating Arc commands continue without `pi-subagents`; every delegated specialist requires loaded, enabled `pi-subagents`.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+Issue-manager dispatch is a direct single-child handoff. Coordinated build waves use one `workflowScript`; Arc does not implement scheduling, session, worktree, lifecycle, cancellation, completion-notification, or cleanup machinery already owned by `pi-subagents`.
+""")
+
+replace_section("agents/evaluator.md", "## Sandbox Model\n\n", "\n## Information Asymmetry", """## Sandbox Model
+
+Evaluations use explicitly requested native worktree isolation. Ephemeral acceptance tests, dependency edits, and build-file changes remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion.
+
+If explicitly authorized to evaluate in the shared cwd, first require a clean baseline with `git status --short`; if it is not clean, report `BLOCKED`. Track every evaluator-owned change, restore only those changes, and verify the final status exactly matches that baseline. Never remove or reset unrelated work. Never commit evaluation artifacts.
+""")
+patch_file("agents/evaluator.md", [
+    (
+        "Report your findings to the dispatching agent. Do not commit. In a disposable worktree, runtime cleanup handles artifacts; in the `arc_agent` fallback, complete the tracked-file restoration and temporary-file cleanup from the Sandbox Model before reporting.",
+        "Report your findings to the dispatching agent. Do not commit. Keep ephemeral artifacts isolated; for an explicitly authorized shared-cwd evaluation, complete the evaluator-owned restoration from the Sandbox Model before reporting.",
+    ),
+])
+
+
 def install_generated_resources() -> None:
     backup_root = Path(tempfile.mkdtemp(prefix=".pi-arc-backup-", dir=REPO_ROOT.parent))
     moved_old: list[str] = []

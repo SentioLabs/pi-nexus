@@ -45,16 +45,19 @@ Extract the design excerpt relevant to this task — typically the sections cove
 
 ### 3. Dispatch Reviewer
 
-Fill the template at `./code-reviewer-prompt.md` with the gathered placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, `{EVALUATOR_STATUS}`). Preserve the template's review-only instruction (`Review only; return findings only. Do not edit files.`) and avoid adding wording that asks the reviewer to apply fixes directly. Prefer true `pi-subagents` so longer reviews are visible in `/subagents-status`:
+Fill `./code-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, and `{EVALUATOR_STATUS}`. Preserve `Review only; return findings only. Do not edit files.`
 
-Dispatch preference (use **async** so longer reviews appear in `/subagents-status`):
-- Primary: `subagent({ agent: "arc-code-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- After launching async, **wait for terminal status** by polling `subagent({ action: "status", id: "<run-id>" })` until status is `completed` or `failed`
-- Users can monitor review progress via `/subagents-status` during the async run
-- Arc code-reviewer should be auto-materialized; if it is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`
-- Fallback only if `pi-subagents` is not installed or cannot load after deprecated repair: `arc_agent(agent="code-reviewer", task="<filled prompt>")`
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
 
-**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. Reviews use the `codeReviewer` profile when configured via `/arc-models`; otherwise the agent's `large` frontmatter is the fallback. Omit `model:` so the configured profile remains authoritative. Use an explicit override only for deliberate escalation beyond the configured profile.
+A single handoff can use `subagent({ agent: "arc-builder", task: "<filled prompt>", context: "fresh", async: true });`; `arc_agent` remains a one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
+
+On notification, inspect native terminal state and final artifacts before interpreting the Arc specialist's report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+
+Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+
+Dispatch one fresh review with `subagent({ agent: "arc-code-reviewer", task: "<filled prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="code-reviewer", task="<filled prompt>")`. Omit `model:` so `codeReviewer` profile precedence and its model fallback remain authoritative.
+
+Return control for native completion. On notification, require successful terminal runtime state and a complete final review artifact before triage. Never infer a clean review from a launch receipt, missing findings, or successful prose attached to a failed/paused/stopped/incomplete/malformed run. Reviews after fixes are fresh independent `arc-code-reviewer` runs.
 
 ### 4. Triage Feedback
 

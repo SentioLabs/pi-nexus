@@ -55,8 +55,26 @@ test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
   assert.match(source, /Review-only code-reviewer dispatch prompt/);
   assert.match(source, /Parallel readiness contract/);
   assert.match(source, /auto-materialized Arc `pi-subagents` specialists/);
+  assert.match(source, /thin asynchronous one-specialist semantics over the same required `pi-subagents` provider/);
+  assert.match(source, /not an independent execution fallback/);
+  assert.match(source, /extract that exact tree with `git archive` into a temporary directory/);
+  assert.match(source, /Preserve model fallback precedence separately from execution-provider requirements/);
   assert.match(source, /git push/);
   assert.match(source, /Do not tell the user "ready to push"/);
+});
+
+test('migration generator owns native workflow and completion transforms', () => {
+  const source = read('scripts/migrate-arc-plugin.py');
+  assert.match(source, /NATIVE_PROVIDER_REQUIREMENT/);
+  assert.match(source, /workflowScript/);
+  assert.match(source, /runs\.all/);
+  assert.match(source, /outputReference/);
+  assert.match(source, /Targeted Fix and Recovery/);
+  assert.match(source, /same provider and is not an independent fallback/);
+  const nativeTransforms = source.slice(source.indexOf('NATIVE_PROVIDER_REQUIREMENT'));
+  assert.doesNotMatch(nativeTransforms, /clarify\s*:\s*false/);
+  assert.doesNotMatch(nativeTransforms, /arc_agent`? is self-contained|self-contained fallback/i);
+  assert.doesNotMatch(nativeTransforms, /poll(?:ing)? (?:it )?with `subagent|wait for terminal status.*polling/i);
 });
 
 test('failed regeneration leaves installed resources untouched', () => {

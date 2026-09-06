@@ -45,13 +45,17 @@ test('arc-build consumes the parallel batch manifest safely', () => {
   assert.match(source, /worktree: true/);
   assert.match(source, /PARALLEL_BASE/);
   assert.match(source, /one (returned )?patch|one patch/i);
+  assert.match(source, /workflowScript/);
+  assert.match(source, /complete ordered array/);
+  assert.match(source, /outputReference|outputPathMapping|artifactPaths/);
 });
 
-test('README documents optional subagents and execution lanes', () => {
+test('README separates optional non-delegating features from required delegated runtime', () => {
   const source = read('README.md');
   assert.match(source, new RegExp(PI_SUBAGENTS_PACKAGE));
   assert.match(source, new RegExp(PI_SUBAGENTS_INSTALL_COMMAND.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(source, /does not bundle or load `pi-subagents`/);
+  assert.match(source, /does not bundle or load (?:the provider|`pi-subagents`)/);
+  assert.match(source, /Optional for non-delegating.*required for every delegated Arc specialist/is);
   assert.match(source, /should not conflict with a global `subagent` tool/);
   assert.match(source, /Parallel Arc batch/);
   assert.match(source, /Ant Colony/);

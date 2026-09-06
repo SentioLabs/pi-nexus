@@ -19,7 +19,7 @@ function resourcePaths(pkg) {
   ];
 }
 
-test('package metadata treats pi-subagents as an optional external integration', () => {
+test('package stays independent of pi-subagents packaging while delegated runtime requires it', () => {
   const pkg = readJson('package.json');
   const lock = readJson('../../package-lock.json');
   const packageLockEntry = lock.packages['packages/pi-arc'];

@@ -19,7 +19,7 @@ This catches the case where build was invoked without going through `brainstorm`
 
 ## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. GPT-5.6 maps naturally onto Arc's roles: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning. The dedicated `devopsBuilder` profile uses Sol because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
+Arc model selection resolves in this order: explicit dispatch override → configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` → legacy `arc.modelTiers` / frontmatter → package defaults. Removing an execution fallback does not remove model fallback. Users should run `/arc-models`; omit `model:` when the configured role profile should remain authoritative.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
@@ -28,64 +28,25 @@ Every Arc subagent dispatch can override the subagent's frontmatter model via th
 | `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
 | `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
 
-```markdown
-Arc model selection resolves in this order:
+Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The dedicated `devopsBuilder` profile uses `large`; `issueManager` normally uses `nano`.
 
-1. explicit dispatch `model:` override;
-2. configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json`;
-3. legacy `arc.modelTiers` from Pi settings;
-4. package defaults.
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
 
-Users should run `/arc-models` to configure role-specific models. Keep `arc.modelTiers` documented only as a compatibility fallback for older setups.
-```
+A single handoff can use `subagent({ agent: "arc-builder", task: "<filled prompt>", context: "fresh", async: true });`; `arc_agent` remains a one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
 
-Legacy fallback settings can still override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
+On notification, inspect native terminal state and final artifacts before interpreting the Arc specialist's report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
 
-```json
-{
-  "arc": {
-    "modelTiers": {
-      "nano": "openai-codex/gpt-5.6-luna",
-      "small": "openai-codex/gpt-5.6-luna",
-      "standard": "openai-codex/gpt-5.6-terra",
-      "large": "openai-codex/gpt-5.6-sol"
-    }
-  }
-}
-```
-
-Legacy aliases still resolve for compatibility: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. Prefer the Pi-native tier names in new prompts, including `nano` for low-reasoning issue-manager work.
-
-Arc specialists should be auto-materialized by the Arc extension when `pi-subagents` is installed. If `subagent({ action: "list" })` does not show `arc-builder` or another required specialist, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command. Otherwise use the bundled `arc_agent` fallback. `arc_agent` is self-contained and sequential only; an external `pi-subagents` install adds chains, async runs, and worktree-isolated parallel patch generation.
-
-**Status visibility:** For long Arc workers after `/arc-plan`, prefer `pi-subagents` launches with `async: true, clarify: false`. The returned run appears in `/subagents-status`; you can also poll it with `subagent({ action: "status", id: "<run-id>" })`. Do not continue to validation, review, patch application, or arc closure until the async run is terminal and you have read its final output. The raw `arc_agent` fallback never appears in `/subagents-status`.
+Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
 
 | Task signal | Dispatch `model:` |
 |---|---|
 | Bulk issue creation or other low-reasoning Arc CLI operations | `nano` |
-| Mechanical: 1-2 files, spec unambiguous, no cross-cutting concerns | `small` |
-| Standard: integration work, multi-file but contained, unambiguous | omit `model:` (use agent default) or `standard` |
-| Complex: 3+ files, cross-layer, design judgment required, migrations, breaking changes | `large` |
-| Re-dispatch after `BLOCKED` | escalate one tier (`nano` → `small` → `standard` → `large`); stop at `large` |
-| Re-dispatch after `NEEDS_CONTEXT` | same tier, richer context |
+| Mechanical: 1-2 files, unambiguous | `small` |
+| Standard contained implementation | omit `model:` or use `standard` |
+| Cross-layer, architectural, security-sensitive | `large` |
+| `NEEDS_CONTEXT` | same model, richer context |
 
-Examples:
-
-```text
-# Self-contained fallback:
-arc_agent(agent="builder", model="small", task="...")       # mechanical
-arc_agent(agent="builder", task="...")                      # standard default
-arc_agent(agent="builder", model="large", task="...")       # complex
-
-# Preferred when pi-subagents Arc agents are installed:
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
-```
-
-**When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
-
-**Escalation rule:** If a subagent returns `BLOCKED` with a reasoning or capability complaint, re-dispatch with the next tier up before asking the human. Stop escalating at `large` — if `large` also returns `BLOCKED`, escalate to the human with the subagent's blocker summary.
+Do not escalate a model merely because execution infrastructure failed. For a genuine reasoning limit, follow the existing bounded tier escalation and stop at `large`.
 
 ## Dispatch Modes
 
@@ -154,45 +115,23 @@ arc update <task-id> --take
 
 ### 3. Dispatch Agent
 
-Record the current HEAD before dispatching — needed for review if escalated:
+Record `PRE_TASK_SHA=$(git rev-parse HEAD)`, fetch the parent design excerpt, and inspect labels. Route with exact precedence `docs-only` → `devops` → normal builder:
 
-```bash
-PRE_TASK_SHA=$(git rev-parse HEAD)
-```
+- `docs-only`: fill `./doc-writer-prompt.md`; use `arc-doc-writer` (profile `docWriter`).
+- `devops`: fill `./devops-builder-prompt.md`; use `arc-devops-builder` (profile `devopsBuilder`). It follows PLAN → SAFEGUARD → APPLY → VERIFY → GATE. Never put live-system work in a parallel patch batch.
+- otherwise: fill `./builder-prompt.md`; use `arc-builder` (profile `builder`).
 
-Fetch the design excerpt once for the implementer, evaluator, and code reviewer:
+For one handoff, call `subagent({ agent: "<required-arc-agent>", task: "<filled prompt>", context: "fresh", async: true });`. The Arc-facing `arc_agent(agent="<role>", task="<filled prompt>")` alternative is also asynchronous and uses the same provider; for the DevOps route that is `arc_agent(agent="devops-builder", task="<filled prompt>")`. Omit `model:` to preserve the configured profile; use an explicit override only for deliberate model selection.
 
-```bash
-PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
-[ -n "$PARENT" ] && arc show "$PARENT"
-```
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
 
-Extract the sections relevant to this task into `{DESIGN_EXCERPT}`. If the task has no parent epic, use `none`.
+A single handoff can use `subagent({ agent: "arc-builder", task: "<filled prompt>", context: "fresh", async: true });`; `arc_agent` remains a one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
 
-Check task labels with precedence `docs-only` → `devops` → `builder`:
+On notification, inspect native terminal state and final artifacts before interpreting the Arc specialist's report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
 
-```bash
-arc show <task-id> --json | jq -e '.labels[] | select(. == "docs-only")' > /dev/null 2>&1
-arc show <task-id> --json | jq -e '.labels[] | select(. == "devops")' > /dev/null 2>&1
-```
+Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
 
-**If `docs-only`** — use `./doc-writer-prompt.md` and dispatch:
-- Preferred: `subagent({ agent: "arc-doc-writer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- Fallback: `arc_agent(agent="doc-writer", task="<filled prompt>")`
-
-**Else if `devops`** — use `./devops-builder-prompt.md`, filling `{TASK_ID}`, `{PRE_TASK_SHA}`, `{DESIGN_EXCERPT}`, and `{MODEL_TIER_NOTE}`. The `devopsBuilder` model profile is recommended at the `large` tier because operations work has live blast radius and partial-failure modes. Dispatch:
-- Preferred: `subagent({ agent: "arc-devops-builder", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- Fallback: `arc_agent(agent="devops-builder", task="<filled prompt>")` (the configured `devopsBuilder` profile is authoritative; `large` frontmatter is the fallback)
-
-The devops builder follows PLAN → SAFEGUARD → APPLY → VERIFY → GATE. Never route `devops` tasks through the normal TDD builder, and never include live-system operations tasks in a parallel patch batch.
-
-**Otherwise** — use `./builder-prompt.md`, filling `{TASK_ID}`, `{PRE_TASK_SHA}`, and `{DESIGN_EXCERPT}`. Dispatch:
-- Preferred: `subagent({ agent: "arc-builder", task: "<filled prompt>", model: "<concrete-model-if-needed>", context: "fresh", async: true, clarify: false })`
-- Fallback: `arc_agent(agent="builder", task="<filled prompt>", model="<tier-if-needed>")`
-
-Arc specialists should already be auto-materialized. If a required specialist is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-
-For async `pi-subagents` dispatches, capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, and read the final output before validation.
+Do not evaluate the specialist report until native completion identifies a terminal successful run and the final result/artifacts are present.
 
 ### 4. Evaluate Result
 
@@ -238,16 +177,9 @@ BASE_SHA=$PRE_TASK_SHA
 
 Dispatch `spec-reviewer`:
 
-Use the template at `./spec-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`). The configured `specReviewer` profile is authoritative; the agent's `large` frontmatter is the fallback.
+Fill `./spec-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, and `{HEAD_SHA}`. Preserve review-only behavior. Use `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="spec-reviewer", task="<filled prompt>")`. Omit `model:` so the configured `specReviewer` profile wins; `large` frontmatter/model fallback remains available.
 
-Dispatch preference:
-- If `subagent` is available and `arc-spec-reviewer` is installed: `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- If `subagent` is available but Arc specialists are missing: Arc specialists should already be auto-materialized. First run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`.
-- Otherwise: `arc_agent(agent="spec-reviewer", task="<filled prompt>")`
-
-For async `pi-subagents` dispatches, immediately capture the returned run ID, poll with `subagent({ action: "status", id: "<run-id>" })` or watch `/subagents-status` until terminal, then read the final output before handling compliance results.
-
-Do **not** substitute the generic `worker` or `reviewer` agent for spec compliance gates. Generic `pi-subagents` agents are not Arc specialists, and manually passing an Anthropic model bypasses Arc's Pi-native model tier policy. If Arc `pi-subagents` definitions are unavailable, use the bundled sequential `arc_agent` fallback.
+The call returns a dispatch receipt, not review success. Return control for native completion, then require successful terminal runtime state and a complete final review artifact. Failure, pause, stop, incomplete or malformed output blocks the stage regardless of compliance prose. Do not substitute generic `worker` or `reviewer` agents.
 
 Handle results:
 - `COMPLIANT` → proceed to Step 6
@@ -293,30 +225,17 @@ The evaluator is **not dispatched by default**. Dispatch only when:
 - Task has a `high-risk` label
 - The orchestrator judges the task warrants independent verification (e.g., complex spec with multiple valid interpretations, security-sensitive code, tasks that modify shared contracts)
 
-When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run. This gives it a disposable repository copy so it can write acceptance tests and add temporary dependencies without dirtying the main worktree:
+Evaluations use explicitly requested native worktree isolation. Record `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint, fill `./evaluator-prompt.md`, and dispatch:
 
-```ts
+```typescript
 subagent({
-  tasks: [
-    { agent: "arc-evaluator", task: "<filled evaluator prompt>" }
-  ],
-  worktree: true,
-  concurrency: 1,
-  context: "fresh",
-  async: true,
-  clarify: false
+  workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md" });`,
+  context: "fresh", async: true, globalConcurrencyLimit: 1,
+  baseRef: PARALLEL_BASE,
 })
 ```
 
-If `pi-subagents` or `arc-evaluator` is not available, fall back to sequential `arc_agent(agent="evaluator", task="<filled evaluator prompt>")`. The configured `evaluator` profile remains authoritative and the agent's `large` frontmatter is the fallback. Because this runs in the main checkout, require the evaluator to remove every temporary test, dependency, and build-file edit and verify `git status --short` matches its pre-evaluation baseline before returning.
-
-```bash
-PARENT=$(arc show <task-id> --json | jq -r '.parent_id // empty')
-```
-
-Use the template at `./evaluator-prompt.md`. Fill `{TASK_ID}` and `{DESIGN_EXCERPT}` from the parent epic fetched above; use `none` only when there is no parent design. Because evaluation is adversarial verification on high-risk tasks, use the `evaluator` model profile when configured or the `large` tier fallback.
-
-When you plan to run the evaluator, set the code quality reviewer's `## Evaluator Status` to `active`; otherwise set it to `not dispatched`.
+Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate. Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
 
 Triage evaluator findings:
 
@@ -424,24 +343,24 @@ If any task fails these checks, remove it from the parallel batch and handle it 
 
 ### P4. Dispatch with `pi-subagents`
 
-Dispatch all parallel tasks in one `subagent` tool call so they branch from the same `PARALLEL_BASE`:
+Define `PARALLEL_BASE` from the recorded clean Git HEAD. Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
 
-```ts
+```typescript
 subagent({
-  tasks: [
-    { agent: "arc-builder", task: "<filled builder prompt for task 1>" },
-    { agent: "arc-builder", task: "<filled builder prompt for task 2>" },
-    { agent: "arc-doc-writer", task: "<filled doc-writer prompt for task 3>" }
-  ],
-  worktree: true,
-  concurrency: 3,
-  context: "fresh",
-  async: true,
-  clarify: false
+  workflowScript: `
+    const results = await runs.all([
+      { key: "build-a", agent: "arc-builder", task: "<filled builder prompt A>", worktree: true, output: "builder-a.md" },
+      { key: "build-b", agent: "arc-builder", task: "<filled builder prompt B>", worktree: true, output: "builder-b.md" },
+      { key: "docs", agent: "arc-doc-writer", task: "<filled doc prompt>", worktree: true, output: "docs.md" }
+    ]);
+    return results;
+  `,
+  context: "fresh", async: true, globalConcurrencyLimit: 3,
+  baseRef: PARALLEL_BASE,
 })
 ```
 
-When the async run completes, `pi-subagents` returns diff stats and a `Full patches: <dir>` path. Temporary worktrees are cleaned up; the patches are the handoff artifact.
+`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths` before inspecting/applying its handoff. A filename mentioned only in prose is not an output binding. There is no implicit merge or cleanup: follow the native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
 
 ### P5. Apply and Verify Patches One at a Time
 
@@ -464,7 +383,7 @@ Then run that task through the normal post-implementation gates:
 If a patch fails to apply cleanly or verification fails:
 - Do not close the task.
 - Revert the partial application (`git apply -R` if possible, or reset with user approval if needed).
-- Re-dispatch that task sequentially with the failure details.
+- Use the native targeted-fix protocol below; do not silently switch execution mode.
 
 ### P6. Batch-Level Verification
 
@@ -492,6 +411,12 @@ git log --oneline <reflog-ref>
 ### P7. Resume Sequential
 
 After successful verification, return to the normal orchestration loop (step 1) for any remaining tasks.
+## Targeted Fix and Recovery
+
+For a requested repair, consult native retained-child/resumability information. If the appropriate latest writer is resumable, use `subagent({ action: "resume", id: "<native-run-id>", message: "<specific verified fixes>" });`; for a live child use native steering. Capture the returned native identity. Do not fabricate continuity or implement Arc session validation. If native recovery is unavailable, stop for an explicit same-protocol fresh attempt with current scope and prior findings. Reviews remain fresh independent Arc specialist runs. Keep existing fix-cycle limits.
+
+A recovery result must pass the same native terminal-state, artifact, parent-test, spec-review, and code-review gates. Provider failure is not a reasoning failure and does not justify model escalation.
+
 
 ## When to Invoke Debug
 

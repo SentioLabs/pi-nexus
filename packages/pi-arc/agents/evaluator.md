@@ -19,17 +19,9 @@ You have a fresh context window — no prior conversation history. Everything yo
 
 ## Sandbox Model
 
-The preferred `pi-subagents` dispatch runs in a disposable git worktree. In that mode you may write acceptance tests, add temporary test dependencies, and modify build configuration; do not commit.
+Evaluations use explicitly requested native worktree isolation. Ephemeral acceptance tests, dependency edits, and build-file changes remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion.
 
-The bundled `arc_agent` fallback runs in the main checkout. In fallback mode:
-
-1. Record `git status --short` before touching files. If it is not clean, report `BLOCKED` instead of risking unrelated work.
-2. Track every file you create or modify.
-3. Run the evaluation.
-4. Restore modified tracked files and remove only the temporary files you created.
-5. Verify `git status --short` exactly matches the clean baseline before returning.
-
-Never claim cleanup is unnecessary unless runtime instructions explicitly confirm a disposable worktree. Never commit evaluation artifacts.
+If explicitly authorized to evaluate in the shared cwd, first require a clean baseline with `git status --short`; if it is not clean, report `BLOCKED`. Track every evaluator-owned change, restore only those changes, and verify the final status exactly matches that baseline. Never remove or reset unrelated work. Never commit evaluation artifacts.
 
 ## Information Asymmetry — Your Advantage
 
@@ -110,7 +102,7 @@ For each acceptance test:
 
 ### 6. Report
 
-Report your findings to the dispatching agent. Do not commit. In a disposable worktree, runtime cleanup handles artifacts; in the `arc_agent` fallback, complete the tracked-file restoration and temporary-file cleanup from the Sandbox Model before reporting.
+Report your findings to the dispatching agent. Do not commit. Keep ephemeral artifacts isolated; for an explicitly authorized shared-cwd evaluation, complete the evaluator-owned restoration from the Sandbox Model before reporting.
 
 ## Report Format
 
