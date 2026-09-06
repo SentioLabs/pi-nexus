@@ -312,6 +312,7 @@ test('completion-first and proof-first early events persist monotonic exact iden
       assert.equal(durableCalls[0].value.ownerSessionId, 'owner-session');
       assert.equal('childSessionId' in durableCalls[0].value, false);
       assert.equal(durableCalls[1].value.identity.runId, execution.identity.runId);
+      assert.equal(durableCalls[1].value.identity.asyncDir, path.join(value.asyncRoot, execution.identity.runId));
       assert.equal('runnerProcessInstanceId' in durableCalls[1].value.identity, false);
       assert.equal('childSessionId' in durableCalls[1].value.identity, false);
       assert.equal(durableCalls[2].value.dispatchedAt, durableCalls[1].value.dispatchedAt);
@@ -622,6 +623,28 @@ test('unsafe trusted extensions, unsafe returned async paths, and invalid prompt
     assert.match(execution.boundedDiagnostics.join('\n'), /checkout|input|path|async/i);
     provider.dispose();
   });
+  await t.test('mandatory async directory over the path byte limit', async (t) => {
+    const value = await scenario(t);
+    const runId = `run-${value.attempt.attemptId}`;
+    const overLimitAsyncDir = path.join(value.root, 'x'.repeat(4096));
+    const provider = installProvider(value, { onSpawn(request) {
+      rpcReply(value.options.events, request, {
+        text: '',
+        details: { mode: 'single', runId, asyncId: runId, asyncDir: overLimitAsyncDir, results: [] },
+      });
+    } });
+    const adapter = createArcNativeReviewAdapter(value.options);
+    assert.deepEqual(await preflight(adapter, value), { ok: true });
+    const execution = await adapter.execute(value.attempt, new AbortController().signal, observer());
+    assert.notEqual(execution.lifecycle, 'succeeded');
+    assert.equal(execution.identity.runId, runId);
+    assert.equal(execution.termination.runId, runId);
+    assert.equal(provider.calls.stops.length, 1);
+    assert.equal(provider.calls.stops[0].params.id, runId);
+    assert.notEqual(provider.calls.stops[0].requestId, provider.calls.spawns[0].requestId);
+    assert.match(execution.boundedDiagnostics.join('\n'), /byte limit/i);
+    provider.dispose();
+  });
   await t.test('top-level spawn asyncDir filesystem alias', async (t) => {
     const value = await scenario(t);
     const alias = path.join(value.root, 'provider-async-alias');
@@ -870,6 +893,49 @@ test('conflicts emitted during terminal persistence prevent success and request 
       provider.dispose();
     });
   }
+});
+
+test('final recheck drains conflicts emitted during asynchronous path validation', async (t) => {
+  const value = await scenario(t);
+  const artifactRoot = path.join(value.root, 'final-recheck-artifacts');
+  await mkdir(artifactRoot);
+  const repeatedPath = path.join(artifactRoot, 'repeated.json');
+  await writeFile(repeatedPath, '{}');
+  const runId = `run-${value.attempt.attemptId}`;
+  let spawnRequest;
+  const provider = installProvider(value, { onSpawn(request) {
+    spawnRequest = request;
+    const asyncDir = path.join(value.asyncRoot, runId);
+    return mkdir(asyncDir).then(() => {
+      value.options.events.emit(ASYNC_COMPLETE, completion(value, runId, {
+        expectedToolCallId: `rpc-spawn-${request.requestId}`,
+        outputPath: repeatedPath,
+      }));
+      value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-original'));
+      rpcReply(value.options.events, request, { text: '', details: { mode: 'single', runId, asyncId: runId, asyncDir, results: [] } });
+    });
+  } });
+  const adapter = createArcNativeReviewAdapter(value.options);
+  assert.deepEqual(await preflight(adapter, value), { ok: true });
+  const observed = observer({
+    termination() {
+      value.options.events.emit(ASYNC_COMPLETE, completion(value, runId, {
+        expectedToolCallId: `rpc-spawn-${spawnRequest.requestId}`,
+        outputPath: repeatedPath,
+        recheckProjection: 'forces a unique buffered event with the same validated completion',
+      }));
+      setImmediate(() => value.options.events.emit(PROCESS_TERMINAL, proof(runId, 'runner-conflict')));
+    },
+  });
+  const execution = await adapter.execute(value.attempt, new AbortController().signal, observed);
+  assert.notEqual(execution.lifecycle, 'succeeded');
+  assert.equal(execution.identity.runnerProcessInstanceId, 'runner-original');
+  assert.equal(execution.dispatchReceipt.identity.runnerProcessInstanceId, 'runner-original');
+  assert.equal(provider.calls.stops.length, 1);
+  assert.equal(provider.calls.stops[0].params.id, runId);
+  assert.notEqual(provider.calls.stops[0].requestId, spawnRequest.requestId);
+  assert.match(execution.boundedDiagnostics.join('\n'), /conflict/i);
+  provider.dispose();
 });
 
 test('guard acknowledgement accepts many unrelated IDs only when the exact required ID is present', async (t) => {

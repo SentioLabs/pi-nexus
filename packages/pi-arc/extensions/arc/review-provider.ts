@@ -660,28 +660,35 @@ async function recheckBufferedSettlement(input: {
   expectedProof: ArcNativeObservedTerminal;
   expectedCompletion: ValidatedCompletion;
 }): Promise<Error | undefined> {
-  const snapshot = input.buffer.snapshot();
-  if (snapshot.overflow) return new Error(`native event buffer exceeded ${ARC_REVIEW_MAX_EVENT_BUFFER} unique events`);
+  let processed = input.processedEvents;
   let proof = input.expectedProof;
   let completion = input.expectedCompletion;
-  for (const event of snapshot.events.slice(input.processedEvents)) {
-    if (event.kind === "terminal") {
-      let candidate: ArcNativeObservedTerminal | undefined;
-      try { candidate = parseExactTerminal(event.value, input.identity.runId!); }
-      catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+  for (;;) {
+    const snapshot = input.buffer.snapshot();
+    if (snapshot.overflow) return new Error(`native event buffer exceeded ${ARC_REVIEW_MAX_EVENT_BUFFER} unique events`);
+    while (processed < snapshot.events.length) {
+      const event = snapshot.events[processed++];
+      if (event.kind === "terminal") {
+        let candidate: ArcNativeObservedTerminal | undefined;
+        try { candidate = parseExactTerminal(event.value, input.identity.runId!); }
+        catch (error) { return error instanceof Error ? error : new Error(String(error)); }
+        if (!candidate) continue;
+        if (canonicalizeArcJson(proof) !== canonicalizeArcJson(candidate)) return new Error("conflicting exact-run process-terminal refinements");
+        proof = candidate;
+        continue;
+      }
+      const candidate = await parseCompletion(event.value, input.attempt, input.identity, input.artifacts);
       if (!candidate) continue;
-      if (canonicalizeArcJson(proof) !== canonicalizeArcJson(candidate)) return new Error("conflicting exact-run process-terminal refinements");
-      proof = candidate;
-      continue;
+      if (canonicalizeArcJson(completion) !== canonicalizeArcJson(candidate)) return new Error("conflicting exact-run completion events");
+      completion = candidate;
     }
-    const candidate = await parseCompletion(event.value, input.attempt, input.identity, input.artifacts);
-    if (!candidate) continue;
-    if (canonicalizeArcJson(completion) !== canonicalizeArcJson(candidate)) return new Error("conflicting exact-run completion events");
-    completion = candidate;
+    const afterProcessing = input.buffer.snapshot();
+    if (afterProcessing.overflow) return new Error(`native event buffer exceeded ${ARC_REVIEW_MAX_EVENT_BUFFER} unique events`);
+    if (afterProcessing.revision !== snapshot.revision) continue;
+    if (canonicalizeArcJson(proof) !== canonicalizeArcJson(input.expectedProof)) return new Error("exact-run process-terminal proof changed during persistence");
+    if (canonicalizeArcJson(completion) !== canonicalizeArcJson(input.expectedCompletion)) return new Error("exact-run completion changed during persistence");
+    return undefined;
   }
-  if (canonicalizeArcJson(proof) !== canonicalizeArcJson(input.expectedProof)) return new Error("exact-run process-terminal proof changed during persistence");
-  if (canonicalizeArcJson(completion) !== canonicalizeArcJson(input.expectedCompletion)) return new Error("exact-run completion changed during persistence");
-  return undefined;
 }
 
 function settleValidatedCompletion(input: {
