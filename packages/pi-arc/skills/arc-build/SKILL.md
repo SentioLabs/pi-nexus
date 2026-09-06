@@ -32,11 +32,13 @@ Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, 
 
 Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
 
-A single handoff can use `subagent({ agent: "arc-builder", task: "<filled prompt>", context: "fresh", async: true });`; `arc_agent` remains a one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
+A single implementation handoff can use `subagent({ agent: "arc-builder", task: "<filled builder prompt>", context: "fresh", async: true });`; `arc_agent(agent="builder", task="<filled builder prompt>")` is the one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
 
-On notification, inspect native terminal state and final artifacts before interpreting the Arc specialist's report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+
 
 Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+
 
 | Task signal | Dispatch `model:` |
 |---|---|
@@ -74,7 +76,7 @@ Parallel worktree dispatch is available **only** through an installed `pi-subage
 - No `blocks`/`blockedBy` dependencies between tasks in the batch
 - Each task's scope is clearly defined with no ambiguity
 
-`pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.
+Native worktree runs return handoff metadata such as `outputReference`, `outputPathMapping`, or `artifactPaths`. They do not implicitly apply or merge changes. Inspect each handoff and its native retention/cleanup facts, then explicitly apply, verify, commit, and close accepted work.
 
 **When NOT to use parallel**: missing `subagent` tool, missing Arc agent definitions, `devops` tasks that touch live systems, overlapping files, task dependencies, uncertainty about scope, or fewer than 3 implementation tasks. Default to sequential — the cost of serial execution is time; the cost of a bad parallel patch merge is data loss.
 
@@ -125,17 +127,18 @@ For one handoff, call `subagent({ agent: "<required-arc-agent>", task: "<filled 
 
 Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
 
-A single handoff can use `subagent({ agent: "arc-builder", task: "<filled prompt>", context: "fresh", async: true });`; `arc_agent` remains a one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
 
-On notification, inspect native terminal state and final artifacts before interpreting the Arc specialist's report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+
 
 Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+
 
 Do not evaluate the specialist report until native completion identifies a terminal successful run and the final result/artifacts are present.
 
 ### 4. Evaluate Result
 
-When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.
+After native completion confirms successful terminal runtime state and final artifacts, interpret the completed Arc specialist report's **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the specialist report alone.
 
 > **DevOps tasks** (from `devops-builder`): there may be no project test command — the artifact is the live system's state. Verify by re-running the task's `## Verification` commands yourself and confirming each asserts the desired state, then confirm the report's **Rollback path** names a backup/revision that actually exists. Treat a missing or unverifiable rollback path the same as a failing test: do not proceed to review until it's resolved.
 
@@ -288,7 +291,7 @@ For an epic, closing the last selected task is not the same as the epic being do
 
 ## Handle Implementer Status
 
-Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:
+After native completion/runtime success is established, interpret each completed `builder`, `devops-builder`, or `doc-writer` Arc specialist report as one of four statuses. Handle each explicitly:
 
 | Status | Orchestrator action |
 |---|---|
@@ -301,7 +304,7 @@ Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four
 
 ## Parallel Patch Protocol
 
-Use this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_agent(isolation="worktree")`; `arc_agent` intentionally remains sequential-only.
+Use this protocol only for a coordinated `pi-subagents` worktree wave. `arc_agent(isolation="worktree")` supports one child through the same provider, not a coordinated multi-child wave.
 
 ### P1. Commit Checkpoint
 
