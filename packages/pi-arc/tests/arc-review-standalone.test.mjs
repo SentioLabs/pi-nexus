@@ -75,7 +75,7 @@ function interceptSameSizeChange(target, changeBytes) {
 }
 
 async function scenario(t, mode = 'success', additions = {}) {
-  const root = await mkdtemp(path.join(tmpdir(), 'pi-arc-review-standalone-'));
+  const root = await mkdtemp(path.join(tmpdir(), additions.rootPrefix ?? 'pi-arc-review-standalone-'));
   t.after(async () => { await makeTreeWritable(root); await rm(root, { recursive: true, force: true }); });
   const repositoryRoot = path.join(root, 'checkout');
   const stateDir = path.join(root, 'state');
@@ -248,6 +248,12 @@ async function scenario(t, mode = 'success', additions = {}) {
 async function setFixtureControl(value, additions) {
   const control = JSON.parse(await readFile(value.controlPath, 'utf8'));
   await writeFile(value.controlPath, JSON.stringify({ ...control, ...additions }));
+}
+
+async function replacePreparedManifest(value, manifest) {
+  await chmod(value.attempt.manifestPath, 0o600);
+  await writeFile(value.attempt.manifestPath, canonicalizeArcJson(manifest));
+  await chmod(value.attempt.manifestPath, 0o400);
 }
 
 function deferred() {
@@ -903,6 +909,7 @@ test('invalid and oversized environment or launch vectors fail before persistenc
   for (const [label, mutate] of [
     ['non-string', (value) => { value.options.processEnv.OPENAI_API_KEY = 7; }],
     ['NUL', (value) => { value.options.processEnv.OPENAI_API_KEY = 'bad\0value'; }],
+    ['scalar code units', (value) => { value.options.processEnv.OPENAI_API_KEY = 'x'.repeat(16_385); }],
     ['scalar bytes', (value) => { value.options.processEnv.OPENAI_API_KEY = '界'.repeat(6000); }],
     ['total environment', (value) => { for (const name of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'GROQ_API_KEY', 'XAI_API_KEY', 'HF_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) value.options.processEnv[name] = 'x'.repeat(16_384); }],
     ['aggregate argv', (value) => { value.options.selectedModel = 'm'.repeat(190 * 1024); }],
@@ -933,10 +940,20 @@ test('copied guard publication faults leave artifacts but cannot become adapter 
       assert.notEqual(execution.lifecycle, 'succeeded');
       assert.equal(execution.structuredReport, undefined);
       assert.equal(execution.termination.status, 'observed');
+      assert.equal(execution.termination.source, 'standalone_child_close');
+      assert.match(execution.termination.detail, /exact child close observed/i);
       const evidence = path.join(value.reportRoot, 'guard-evidence.jsonl');
-      if (unavailable) {
-        assert.notEqual(execution.exitCode, 0);
-        assert.equal(await access(evidence).then(() => true, () => false), false);
+      if (fault === 'report-directory-sync') {
+        const leftover = JSON.parse(await readFile(value.reportPath, 'utf8'));
+        assert.equal(leftover.verdict, 'PASS');
+        assert.equal(leftover.reviewInputDigest, value.attempt.reviewInputDigest);
+        if (unavailable) {
+          assert.notEqual(execution.exitCode, 0);
+          assert.equal(await access(evidence).then(() => true, () => false), false);
+        } else {
+          assert.equal(execution.exitCode, 0);
+          assert.ok((await readFile(evidence)).length > 0);
+        }
       } else assert.equal(await access(evidence).then(() => true, () => false), true);
     });
   }
@@ -948,6 +965,158 @@ test('copied guard publication faults leave artifacts but cannot become adapter 
     assert.notEqual(execution.exitCode, 0);
     assert.equal(execution.termination.status, 'observed');
   });
+});
+
+test('read-only preflight times out at 30000ms without identity, writes, process launch, or late continuation', async (t) => {
+  const value = await scenario(t, 'success');
+  const runtimeEntries = (await fsPromises.readdir(value.runtimeRoot)).sort();
+  const realLstat = fsPromises.lstat;
+  const realMkdir = fsPromises.mkdir;
+  const realSpawn = childProcess.spawn;
+  const realDateNow = Date.now;
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const entered = deferred();
+  const pending = deferred();
+  const timers = new Map();
+  const settleUsingRealTimer = async (promise, message) => {
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => { timer = realSetTimeout(() => reject(new Error(message)), 1000); }),
+      ]);
+    } finally {
+      realClearTimeout(timer);
+    }
+  };
+  const timerDelays = [];
+  let fakeNow = realDateNow();
+  let targetCalls = 0;
+  let writeCalls = 0;
+  let spawnCalls = 0;
+  let identityCalls = 0;
+  Date.now = () => fakeNow;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    const token = {};
+    timerDelays.push(delay);
+    timers.set(token, { delay, run: () => callback(...args) });
+    return token;
+  };
+  globalThis.clearTimeout = (token) => { timers.delete(token); };
+  fsPromises.lstat = async (file, ...args) => {
+    if (file === value.repositoryRoot) {
+      targetCalls += 1;
+      entered.resolve();
+      return pending.promise;
+    }
+    return realLstat(file, ...args);
+  };
+  fsPromises.mkdir = (...args) => { writeCalls += 1; return realMkdir(...args); };
+  childProcess.spawn = (...args) => { spawnCalls += 1; return realSpawn(...args); };
+  syncBuiltinESMExports();
+  value.options.randomUUID = () => { identityCalls += 1; return `unexpected-identity-${identityCalls}`; };
+  try {
+    const running = createArcStandaloneReviewAdapter(value.options).preflight({ request: value.request, preparation: value.attempt });
+    await settleUsingRealTimer(entered.promise, 'preflight did not enter controlled I/O');
+    assert.equal(targetCalls, 1);
+    assert.ok(timerDelays.some((delay) => delay > 29_000 && delay <= 30_000), 'preflight must arm its fixed 30000ms bound');
+    fakeNow += 30_000;
+    const deadlineTimer = [...timers.values()].find(({ delay }) => delay > 29_000 && delay <= 30_000);
+    assert.equal(typeof deadlineTimer?.run, 'function');
+    deadlineTimer.run();
+    const result = await settleUsingRealTimer(running, 'preflight timeout did not settle');
+    assert.equal(result.ok, false);
+    assert.equal(result.classification, 'incompatible');
+    assert.match(result.reason, /deadline|timed out/i);
+    assert.equal(timers.size, 0, 'preflight timeout must clear its controlled timer');
+    assert.equal(identityCalls, 0);
+    assert.equal(writeCalls, 0);
+    assert.equal(spawnCalls, 0);
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+    assert.deepEqual((await fsPromises.readdir(value.runtimeRoot)).sort(), runtimeEntries);
+    const callsAtReturn = targetCalls;
+    pending.resolve(await realLstat(value.repositoryRoot));
+    await new Promise((resolve) => realSetTimeout(resolve, 20));
+    assert.equal(targetCalls, callsAtReturn);
+    assert.deepEqual((await fsPromises.readdir(value.runtimeRoot)).sort(), runtimeEntries);
+  } finally {
+    pending.resolve(await realLstat(value.repositoryRoot));
+    fsPromises.lstat = realLstat;
+    fsPromises.mkdir = realMkdir;
+    childProcess.spawn = realSpawn;
+    Date.now = realDateNow;
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+    syncBuiltinESMExports();
+  }
+});
+
+test('preparation consumes the original work allowance and shortens the process timeout', async (t) => {
+  const value = await scenario(t, 'success', { executionTimeoutMs: 2000 });
+  const realLstat = fsPromises.lstat;
+  const realSpawn = childProcess.spawn;
+  const realDateNow = Date.now;
+  const realSetTimeout = globalThis.setTimeout;
+  let fakeNow = realDateNow();
+  let preparationEntered = false;
+  let captureProcessTimer = false;
+  let processTimeoutMs;
+  const consumedMs = 400;
+  Date.now = () => fakeNow;
+  fsPromises.lstat = async (file, ...args) => {
+    const result = await realLstat(file, ...args);
+    if (!preparationEntered && file === value.repositoryRoot) {
+      preparationEntered = true;
+      fakeNow += consumedMs;
+    }
+    return result;
+  };
+  childProcess.spawn = (...args) => {
+    const child = realSpawn(...args);
+    captureProcessTimer = true;
+    return child;
+  };
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (captureProcessTimer) {
+      processTimeoutMs = delay;
+      captureProcessTimer = false;
+    }
+    return realSetTimeout(callback, delay, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+    assert.equal(preparationEntered, true);
+    assert.equal(execution.lifecycle, 'succeeded');
+    assert.equal(typeof processTimeoutMs, 'number');
+    assert.ok(processTimeoutMs < value.attempt.executionTimeoutMs, 'process timeout must not reset after preparation');
+    assert.ok(processTimeoutMs <= value.attempt.executionTimeoutMs - consumedMs);
+    assert.ok(processTimeoutMs > 1000, 'controlled allowance leaves a comfortable process window');
+  } finally {
+    fsPromises.lstat = realLstat;
+    childProcess.spawn = realSpawn;
+    Date.now = realDateNow;
+    globalThis.setTimeout = realSetTimeout;
+    syncBuiltinESMExports();
+  }
+});
+
+test('an already-aborted attempt is cancelled before observer persistence or process invocation', async (t) => {
+  const value = await scenario(t, 'success', { executionTimeoutMs: 1000 });
+  let identityValues = 0;
+  value.options.randomUUID = () => `already-aborted-${++identityValues}`;
+  const observer = createObserver();
+  const controller = new AbortController();
+  controller.abort(new Error('already cancelled'));
+  const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, controller.signal, observer);
+  assert.equal(identityValues, 2, 'identity is allocated synchronously before the first awaited operation');
+  assert.equal(execution.lifecycle, 'cancelled');
+  assert.equal(execution.termination.status, 'not_applicable');
+  assert.equal(execution.termination.source, 'not_started');
+  assert.equal(observer.calls.length, 0);
+  assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  assert.equal(await access(path.join(value.runtimeRoot, 'home')).then(() => true, () => false), false);
 });
 
 test('one attempt budget bounds before-dispatch persistence and matching stop before process invocation', async (t) => {
@@ -1077,20 +1246,65 @@ test('invalid or expired timing is rejected or returned not-started before obser
   }
 });
 
-test('observed close is not promoted when terminal persistence misses cancellation or deadline', async (t) => {
-  const value = await scenario(t, 'success', { executionTimeoutMs: 250 });
-  const entered = deferred();
-  const pending = deferred();
-  const controller = new AbortController();
-  const observer = createObserver({ termination: () => { entered.resolve(); return pending.promise; } });
-  const running = createArcStandaloneReviewAdapter(value.options).execute(value.attempt, controller.signal, observer);
-  await settlesWithin(entered.promise, 1000);
-  controller.abort(new Error('cancel terminal barrier'));
-  const execution = await settlesWithin(running, 1000);
-  assert.equal(execution.termination.status, 'observed');
-  assert.equal(execution.lifecycle, 'guard_failed');
-  assert.equal(execution.structuredReport, undefined);
-  pending.resolve();
+test('terminal persistence deadline and cancellation consume late fulfillment or rejection without promotion', async (t) => {
+  for (const interruption of ['deadline', 'cancellation']) {
+    for (const settlement of ['fulfillment', 'rejection']) {
+      await t.test(`${interruption}-${settlement}`, async (t) => {
+        const value = await scenario(t, 'success', { executionTimeoutMs: 1000 });
+        const entered = deferred();
+        const pending = deferred();
+        const controller = new AbortController();
+        const observer = createObserver({ termination: () => { entered.resolve(); return pending.promise; } });
+        const realSetTimeout = globalThis.setTimeout;
+        const realClearTimeout = globalThis.clearTimeout;
+        let terminalDeadline;
+        const fakeTerminalToken = {};
+        if (interruption === 'deadline') {
+          globalThis.setTimeout = (callback, delay, ...args) => {
+            if (delay > 5000 && terminalDeadline === undefined) {
+              terminalDeadline = () => callback(...args);
+              return fakeTerminalToken;
+            }
+            return realSetTimeout(callback, delay, ...args);
+          };
+          globalThis.clearTimeout = (token) => {
+            if (token !== fakeTerminalToken) realClearTimeout(token);
+          };
+        }
+        const unhandled = [];
+        const onUnhandled = (reason) => unhandled.push(reason);
+        process.on('unhandledRejection', onUnhandled);
+        try {
+          const running = createArcStandaloneReviewAdapter(value.options).execute(value.attempt, controller.signal, observer);
+          await settlesWithin(entered.promise, 2000);
+          if (interruption === 'deadline') {
+            assert.equal(typeof terminalDeadline, 'function', 'terminal observer wait must arm the hard deadline');
+            terminalDeadline();
+          } else controller.abort(new Error('cancel terminal barrier'));
+          const execution = await settlesWithin(running, 1000);
+          assert.equal(execution.termination.status, 'observed');
+          assert.equal(execution.termination.source, 'standalone_child_close');
+          assert.equal(execution.lifecycle, 'guard_failed');
+          assert.equal(execution.structuredReport, undefined);
+          assert.equal(observer.calls.filter((entry) => entry.kind === 'termination').length, 1);
+          const resultAtReturn = JSON.stringify(execution);
+          const callsAtReturn = observer.calls.length;
+          if (settlement === 'fulfillment') pending.resolve();
+          else pending.reject(new Error('late terminal persistence rejection'));
+          await new Promise((resolve) => realSetTimeout(resolve, 20));
+          assert.equal(JSON.stringify(execution), resultAtReturn);
+          assert.equal(observer.calls.length, callsAtReturn);
+          assert.equal(execution.structuredReport, undefined);
+          assert.deepEqual(unhandled, []);
+        } finally {
+          process.removeListener('unhandledRejection', onUnhandled);
+          pending.resolve();
+          globalThis.setTimeout = realSetTimeout;
+          globalThis.clearTimeout = realClearTimeout;
+        }
+      });
+    }
+  }
 });
 
 test('manifest source paths and duplicates remain bounded and canonical', async (t) => {
@@ -1110,6 +1324,65 @@ test('manifest source paths and duplicates remain bounded and canonical', async 
   }
 });
 
+test('instruction manifests reject noncanonical names, gaps, and duplicate instruction entries before dispatch', async (t) => {
+  for (const [label, instructionPath, expected] of [
+    ['zero', 'materials/instructions/0000.md', /invalid instruction index/i],
+    ['unpadded', 'materials/instructions/1.md', /invalid instruction index/i],
+    ['overpadded', 'materials/instructions/00001.md', /invalid instruction index/i],
+    ['six-digit padding', 'materials/instructions/010000.md', /invalid instruction name/i],
+    ['non-ASCII digits', 'materials/instructions/０００１.md', /invalid instruction name/i],
+  ]) {
+    await t.test(label, async (t) => {
+      const value = await scenario(t, 'no-artifacts');
+      const manifest = JSON.parse(await readFile(value.attempt.manifestPath));
+      const row = manifest.materials.find((entry) => entry.path === 'materials/instructions/0001.md');
+      row.path = instructionPath;
+      await replacePreparedManifest(value, manifest);
+      const observer = createObserver();
+      await assert.rejects(
+        () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+        expected,
+      );
+      assert.equal(observer.calls.length, 0);
+      assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+    });
+  }
+
+  await t.test('missing-number gap', async (t) => {
+    const value = await scenario(t, 'no-artifacts', { instructionCount: 2 });
+    const manifest = JSON.parse(await readFile(value.attempt.manifestPath));
+    const row = manifest.materials.find((entry) => entry.path === 'materials/instructions/0002.md');
+    row.path = 'materials/instructions/0003.md';
+    const instructionsRoot = path.join(value.inputRoot, 'materials/instructions');
+    await chmod(instructionsRoot, 0o700);
+    await fsPromises.rename(path.join(instructionsRoot, '0002.md'), path.join(instructionsRoot, '0003.md'));
+    await chmod(instructionsRoot, 0o500);
+    await replacePreparedManifest(value, manifest);
+    const observer = createObserver();
+    await assert.rejects(
+      () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+      /instruction gap/i,
+    );
+    assert.equal(observer.calls.length, 0);
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  });
+
+  await t.test('duplicate instruction entry', async (t) => {
+    const value = await scenario(t, 'no-artifacts');
+    const manifest = JSON.parse(await readFile(value.attempt.manifestPath));
+    const row = manifest.materials.find((entry) => entry.path === 'materials/instructions/0001.md');
+    manifest.materials.push({ ...row });
+    await replacePreparedManifest(value, manifest);
+    const observer = createObserver();
+    await assert.rejects(
+      () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+      /duplicate materials/i,
+    );
+    assert.equal(observer.calls.length, 0);
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  });
+});
+
 test('T1 padStart instruction names remain contiguous through five digits and the shared file maximum', { timeout: 180_000 }, async (t) => {
   const value = await scenario(t, 'no-artifacts', { instructionCount: 24_994, executionTimeoutMs: 120_000 });
   value.options.buildPrompt = () => ({
@@ -1121,9 +1394,95 @@ test('T1 padStart instruction names remain contiguous through five digits and th
   });
   assert.deepEqual(await createArcStandaloneReviewAdapter(value.options).preflight({ request: value.request, preparation: value.attempt }), { ok: true });
   const manifest = JSON.parse(await readFile(value.attempt.manifestPath));
+  const materialPaths = manifest.materials.map((row) => row.path);
   assert.equal(manifest.source.length + manifest.materials.length + 1, 25_000);
-  assert.ok(manifest.materials.some((row) => row.path === 'materials/instructions/10000.md'));
-  assert.ok(manifest.materials.some((row) => row.path === 'materials/instructions/24994.md'));
+  for (const name of ['0001.md', '9999.md', '10000.md', '24994.md']) {
+    assert.ok(materialPaths.includes(`materials/instructions/${name}`), `valid T1 sequence must include ${name}`);
+  }
+  assert.ok(materialPaths.indexOf('materials/instructions/10000.md') < materialPaths.indexOf('materials/instructions/9999.md'), 'Set contiguity must be independent of lexical row order');
+
+  const maximumInstruction = manifest.materials.find((row) => row.path === 'materials/instructions/24994.md');
+  manifest.materials.push({ ...maximumInstruction });
+  await replacePreparedManifest(value, manifest);
+  const observer = createObserver();
+  await assert.rejects(
+    () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+    /manifest file arrays are invalid/i,
+  );
+  assert.equal(observer.calls.length, 0);
+  assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+});
+
+test('compact prompts require roots, instruction directory, and fixed materials without explicit-list fallback', async (t) => {
+  for (const [label, omitted, expected] of [
+    ['input root', (value) => value.inputRoot, /canonical review path for instructions/i],
+    ['instruction directory', (value) => path.join(value.inputRoot, 'materials/instructions'), /canonical review path for instructions/i],
+    ['diff material', (value) => path.join(value.inputRoot, 'materials/diff.patch'), /prompt omitted canonical review path/i],
+    ['task material', (value) => path.join(value.inputRoot, 'materials/task.md'), /prompt omitted canonical review path/i],
+    ['design material', (value) => path.join(value.inputRoot, 'materials/design.md'), /prompt omitted canonical review path/i],
+    ['review material', (value) => path.join(value.inputRoot, 'materials/review.md'), /prompt omitted canonical review path/i],
+  ]) {
+    await t.test(label, async (t) => {
+      const value = await scenario(t, 'success');
+      const removed = omitted(value);
+      const compactPaths = value.absoluteReadPaths.filter((entry) => entry !== removed);
+      assert.equal(compactPaths.some((entry) => entry.endsWith('/instructions/0001.md')), false, 'negative must not fall back to an explicit instruction list');
+      value.options.buildPrompt = () => ({
+        systemPrompt: compactPaths.map((entry) => `\"${entry}\"`).join('\n'),
+        task: 'Read every manifest-indexed instruction.',
+      });
+      const observer = createObserver();
+      await assert.rejects(
+        () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+        expected,
+      );
+      assert.equal(observer.calls.length, 0);
+      assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+    });
+  }
+});
+
+test('compact path literals reject ambiguous quoting and accept whole quoted Unicode punctuation paths', async (t) => {
+  await t.test('ambiguous quoted suffix', async (t) => {
+    const value = await scenario(t, 'success');
+    value.options.buildPrompt = () => ({
+      systemPrompt: value.absoluteReadPaths.map((entry) => entry === value.sourceRoot ? `\"${entry}\"suffix` : `\"${entry}\"`).join('\n'),
+      task: 'Read every manifest-indexed instruction.',
+    });
+    const observer = createObserver();
+    await assert.rejects(
+      () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+      /ambiguous quoted value suffix/i,
+    );
+    assert.equal(observer.calls.length, 0);
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  });
+
+  await t.test('stray ambiguous quote', async (t) => {
+    const value = await scenario(t, 'success');
+    value.options.buildPrompt = () => ({
+      systemPrompt: `prefix\"token\n${value.absoluteReadPaths.map((entry) => `\"${entry}\"`).join('\n')}`,
+      task: 'Read every manifest-indexed instruction.',
+    });
+    const observer = createObserver();
+    await assert.rejects(
+      () => createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, observer),
+      /ambiguous quote/i,
+    );
+    assert.equal(observer.calls.length, 0);
+    assert.equal(await access(value.recordPath).then(() => true, () => false), false);
+  });
+
+  await t.test('whole quoted Unicode and punctuation paths', async (t) => {
+    const value = await scenario(t, 'success', { rootPrefix: 'pi-arc-审查,[punct]-' });
+    assert.ok(value.absoluteReadPaths.every((entry) => entry.includes('审查,[punct]')));
+    value.options.buildPrompt = () => ({
+      systemPrompt: value.absoluteReadPaths.map((entry) => `\"${entry}\"`).join('\n'),
+      task: 'Read every manifest-indexed instruction.',
+    });
+    const execution = await createArcStandaloneReviewAdapter(value.options).execute(value.attempt, new AbortController().signal, createObserver());
+    assert.equal(execution.lifecycle, 'succeeded');
+  });
 });
 
 test('compact manifest-indexed prompts execute in one bounded lexical scan and prompt limits fail before dispatch', { timeout: 120_000 }, async (t) => {
