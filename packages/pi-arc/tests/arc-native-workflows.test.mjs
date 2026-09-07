@@ -216,24 +216,29 @@ test('outer workflow calls retain a full-SHA evidence anchor but launch from sym
   const outerSections = [
     {
       source: section(build, '#### One native isolated reviewer', '#### Terminal evidence before prose'),
-      anchorSource: section(build, '#### Clean source preflight', '#### Terminal evidence before prose'),
       baseVariable: 'REVIEW_BASE',
     },
     {
       source: section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
-      anchorSource: section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
       baseVariable: 'PARALLEL_BASE',
     },
     {
       source: section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
-      anchorSource: section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
       baseVariable: 'PARALLEL_BASE',
     },
   ];
+  const cleanPreflight = section(build, '#### Clean source preflight', '#### Durable combined review budget');
 
-  for (const { source: outerSection, anchorSource, baseVariable } of outerSections) {
-    assert.match(anchorSource, new RegExp(`${baseVariable}=\\$\\(git rev-parse HEAD\\)`));
-    assert.match(anchorSource, /immutable(?: full-SHA)? verification (?:anchor|evidence)/i);
+  assert.deepEqual(
+    outerSections.map((descriptor) => Object.keys(descriptor).sort()),
+    Array.from(outerSections, () => ['baseVariable', 'source']),
+    'outer workflow descriptors must have the exact closed { source, baseVariable } shape',
+  );
+  assert.match(cleanPreflight, /REVIEW_BASE=\$\(git rev-parse HEAD\)/);
+  assert.match(cleanPreflight, /REVIEW_BASE` is the native worktree handoff base/i);
+  assert.match(outerSections[0].source, /`REVIEW_BASE` remains the immutable full-SHA verification anchor/i);
+
+  for (const { source: outerSection, baseVariable } of outerSections) {
     assert.match(
       outerSection,
       new RegExp(`test "\\$\\(git rev-parse HEAD\\)" = "\\$${baseVariable}"[\\s\\S]*?subagent\\(\\{`),
@@ -248,6 +253,11 @@ test('outer workflow calls retain a full-SHA evidence anchor but launch from sym
     assert.equal((outerSection.match(/\basync:\s*true/g) ?? []).length, 1, 'outer workflow must remain async');
     assert.match(outerSection, /context: "fresh", async: true/);
     assert.match(outerSection, /outer workflow remains asynchronous[\s\S]*awaited inner foreground child/i);
+  }
+
+  for (const { source: outerSection } of outerSections.filter(({ baseVariable }) => baseVariable === 'PARALLEL_BASE')) {
+    assert.match(outerSection, /PARALLEL_BASE=\$\(git rev-parse HEAD\)/);
+    assert.match(outerSection, /immutable verification evidence/i);
   }
   assert.equal(
     (build.match(/baseRef: "HEAD"/g) ?? []).length,
