@@ -275,16 +275,15 @@ For a non-inline diff, recheck its immutable bytes after completion and before a
 test "$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')" = "$DIFF_SHA256"
 ```
 
-Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact successful terminal outer completion and its complete foreground child result before reading spec review prose. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it. Preserve the native completion JSON as `RUNTIME_RESULT` without reconstructing fields. The outer result must be completed and successful without an error, and its returned workflow value is `CHILD_RESULT`:
+Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading spec review prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
 
 ```bash
-RUNTIME_RESULT='<exact JSON native outer completion returned by the provider>'
-printf '%s' "$RUNTIME_RESULT" | jq -e '
+NATIVE_STATUS_JSON='<exact JSON bytes read directly from persisted native async status.json>'
+printf '%s' "$NATIVE_STATUS_JSON" | jq -e '
   .state == "complete"
-  and .success == true
   and (.error == null)
 ' >/dev/null
-CHILD_RESULT=$(printf '%s' "$RUNTIME_RESULT" | jq -ce '.workflow.value')
+CHILD_RESULT=$(printf '%s' "$NATIVE_STATUS_JSON" | jq -ce '.workflow.value')
 printf '%s' "$CHILD_RESULT" |
   jq -e --arg key "spec-review" --arg agent "arc-spec-reviewer" --arg output "/spec-review.md" '
     .key == $key

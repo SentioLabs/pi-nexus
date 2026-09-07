@@ -85,7 +85,6 @@ function acceptsReview({ runtime, manifest, outputEvidence, baseline, workflowKe
     ? child.artifactPaths.filter((artifactPath) => typeof artifactPath === 'string' && artifactPath.endsWith(expectedHandoffSuffix))
     : [];
   return runtime?.state === 'complete'
-    && runtime?.success === true
     && runtime?.error == null
     && child?.key === workflowKey
     && child?.agent === agent
@@ -304,13 +303,53 @@ test('mandatory workflow examples execute as one isolated foreground reviewer in
   }
 });
 
-test('review acceptance combines successful runtime output with exact no-change handoff evidence', () => {
+test('persisted native workflow status accepts pi-subagents 0.66 completion without a top-level success field', () => {
+  const runtime = {
+    state: 'complete',
+    error: null,
+    workflow: {
+      value: {
+        key: 'spec-review',
+        agent: 'arc-spec-reviewer',
+        ok: true,
+        runId: 'spec-run',
+        output: '## Result: COMPLIANT',
+        outputReference: '/native/outputs/spec-review.md',
+        artifactPaths: [
+          '/native/outputs/spec-review.md',
+          '/native/handoffs/spec-run.json',
+        ],
+      },
+    },
+  };
+  const baseline = { branch: 'main', head: 'a'.repeat(40), porcelainV2: '' };
+  const manifest = {
+    version: 1,
+    groups: [{
+      baseCommit: baseline.head,
+      children: [{
+        workflowKey: 'spec-review',
+        agent: 'arc-spec-reviewer',
+        status: 'completed',
+        patch: { changed: false, filesChanged: 0, insertions: 0, deletions: 0, error: null },
+      }],
+    }],
+  };
+
+  assert.equal(acceptsReview({
+    runtime,
+    manifest,
+    outputEvidence: new Map([['/native/outputs/spec-review.md', '## Result: COMPLIANT']]),
+    baseline,
+  }), true);
+});
+
+test('review acceptance combines complete native status output with exact no-change handoff evidence', () => {
   const baseline = { branch: 'main', head: 'a'.repeat(40), porcelainV2: '' };
   const outputReference = '/native/outputs/spec-review.md';
   const handoffPath = '/native/handoffs/spec-run.json';
   const validRuntime = {
     state: 'complete',
-    success: true,
     error: null,
     workflow: {
       value: {
@@ -346,10 +385,12 @@ test('review acceptance combines successful runtime output with exact no-change 
   assert.equal(acceptsReview(valid), true);
   for (const runtime of [
     undefined,
+    { ...validRuntime, state: undefined },
     { ...validRuntime, state: 'failed' },
-    { ...validRuntime, success: false },
+    { ...validRuntime, state: 'running' },
     { ...validRuntime, error: 'workflow failed' },
     { ...validRuntime, workflow: undefined },
+    { ...validRuntime, workflow: {} },
     { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, key: 'wrong-review' } } },
     { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, ok: false } } },
     { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, error: 'child failed' } } },
@@ -404,10 +445,16 @@ test('review acceptance combines successful runtime output with exact no-change 
 test('documented acceptance predicates combine runtime output and handoff evidence', () => {
   for (const review of Object.values(REVIEWERS)) {
     const source = read(review.skillPath);
-    assert.match(source, /RUNTIME_RESULT/);
+    assert.match(source, /exact persisted native async `status\.json` after the completion notification or status observation/i);
+    assert.match(source, /notification.*prose, not JSON/i);
+    assert.match(source, /never merge or reconstruct evidence fields/i);
+    assert.match(source, /NATIVE_STATUS_JSON/);
     assert.match(source, /CHILD_RESULT/);
     assert.match(source, /\.state == "complete"/);
-    assert.match(source, /\.success == true/);
+    assert.match(source, /\.error == null/);
+    assert.match(source, /CHILD_RESULT=\$\(printf '%s' "\$NATIVE_STATUS_JSON" \| jq -ce '\.workflow\.value'\)/);
+    assert.doesNotMatch(source, /RUNTIME_RESULT/);
+    assert.doesNotMatch(source, /\.success/);
     assert.match(source, /\.key == \$key/);
     assert.match(source, /\.terminalOutcome == null/);
     assert.match(source, /\.output \| type == "string"/);
