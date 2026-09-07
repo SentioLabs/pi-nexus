@@ -115,8 +115,9 @@ function sha256(value) {
 }
 
 function canonicalBytes(description) {
-  const index = description.indexOf(LEDGER_SENTINEL);
-  return index === -1 ? description : description.slice(0, index);
+  const index = description.lastIndexOf(LEDGER_SENTINEL);
+  if (index === -1) throw new Error('initialized review ledger boundary is missing');
+  return description.slice(0, index);
 }
 
 function launchedRuns(entries) {
@@ -359,6 +360,42 @@ test('versioned ledger preserves canonical bytes and shares one four-run budget 
   recordNativeRun(ledger, 'spec', 'run-5');
   assert.equal(canLaunchReviewer(ledger), false);
   assert.throws(() => authorizedRuns({ ...ledger, additionalAuthorizations: [Number.POSITIVE_INFINITY] }), /finite positive/);
+});
+
+test('canonical extraction uses the final sentinel when task prose quotes earlier examples', () => {
+  const canonical = [
+    '# Canonical task',
+    '',
+    `The protocol documents ${LEDGER_SENTINEL} inline.`,
+    '',
+    'It also includes the exact example:',
+    LEDGER_SENTINEL,
+    '## Review Ledger',
+    'Authorized reviewer runs: 4',
+    '',
+    'The canonical task continues after both quoted examples.',
+  ].join('\n');
+  const canonicalHash = sha256(canonical);
+  const initializedDescription = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${canonicalHash}\`\nAuthorized reviewer runs: 4\n`;
+  const firstBoundary = initializedDescription.indexOf(LEDGER_SENTINEL);
+  const firstOccurrenceExtraction = initializedDescription.slice(0, firstBoundary);
+
+  assert.equal((canonical.match(new RegExp(LEDGER_SENTINEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? []).length, 2);
+  assert.notEqual(firstOccurrenceExtraction, canonical, 'first-occurrence extraction must truncate this fixture');
+  assert.notEqual(sha256(firstOccurrenceExtraction), canonicalHash, 'the truncated first-occurrence hash must be wrong');
+  assert.equal(canonicalBytes(initializedDescription), canonical);
+  assert.equal(sha256(canonicalBytes(initializedDescription)), canonicalHash);
+  assert.throws(() => canonicalBytes('# ledger initialization lost its boundary'), /ledger boundary/i);
+
+  for (const review of Object.values(REVIEWERS)) {
+    const source = read(review.skillPath);
+    assert.match(source, /actual ledger boundary is the last exact sentinel/i);
+    assert.match(source, /canonical task prose (?:or|and) code may quote earlier sentinel examples/i);
+    assert.match(source, /rpartition\(marker\)/);
+    assert.match(source, /assert found/);
+    assert.match(source, /no last boundary.*fail closed|fail closed.*no last boundary/i);
+    assert.doesNotMatch(source, /data\.partition\(marker\)|split (?:its description )?at the first exact (?:ledger )?sentinel/i);
+  }
 });
 
 test('guidance defines canonical ledger sentinel, launched-run accounting, and bounded owner authorization', () => {

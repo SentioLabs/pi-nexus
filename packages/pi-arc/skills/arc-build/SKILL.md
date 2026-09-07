@@ -194,7 +194,7 @@ Dirty source state blocks review. Never stash, reset, restore, clean, or fall ba
 
 #### Durable combined review budget
 
-The Arc issue description is both canonical task input and durable budget storage. On first review, preserve the complete canonical description bytes and byte-concatenate the sentinel directly after them without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the sentinel identical even when Arc has trimmed a trailing newline. Append exactly this versioned boundary and header:
+The Arc issue description is both canonical task input and durable budget storage. On first review, preserve the complete canonical description bytes and byte-concatenate the sentinel directly after them without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the sentinel identical even when Arc has trimmed a trailing newline. The actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
 
 ```markdown
 <!-- arc-review-ledger:v1 -->
@@ -210,7 +210,7 @@ Bytes above the sentinel are canonical and must never change. Compute and verify
 |---:|---|---|---|---|---:|---|
 ```
 
-Spec and code review share one combined four-run task budget across sessions and cycles. Before each launch, count all rows carrying a native run identity. Every returned native run identity consumes exactly one row, including a run that later fails; record its row as soon as the launch returns the identity, then update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. The allowed total is four plus the sum of those explicit finite grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the first exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing.
+Spec and code review share one combined four-run task budget across sessions and cycles. Before each launch, count all rows carrying a native run identity. Every returned native run identity consumes exactly one row, including a run that later fails; record its row as soon as the launch returns the identity, then update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. The allowed total is four plus the sum of those explicit finite grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the last exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing. After ledger initialization, no last boundary means the ledger is malformed: fail closed instead of treating the full description as canonical.
 
 #### Immutable parent-supplied input
 
@@ -263,10 +263,10 @@ test -z "$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')
 
 Any failure invalidates the review and stops for explicit inspection. Never reset, restore, clean, stash, commit, or switch execution mode automatically. This post-run invariant is required even when native launch, execution, output capture, or reviewer completion fails.
 
-Re-read the Arc issue after completion, split its description at the first exact ledger sentinel without normalizing bytes, and recompute the prefix hash. A parent may use this byte-preserving pipeline; the reviewer itself never receives Arc access:
+Re-read the Arc issue after completion, split its description at the last exact ledger sentinel without normalizing bytes, and recompute the prefix hash. The last occurrence is the actual boundary; earlier occurrences belong to quoted canonical task prose or code. A parent may use this byte-preserving pipeline; the reviewer itself never receives Arc access. `assert found` makes a missing boundary fail closed:
 
 ```bash
-CURRENT_CANONICAL_SHA256=$(arc show "$TASK_ID" --json | jq -j .description | python3 -c 'import hashlib, sys; data=sys.stdin.buffer.read(); marker=b"<!-- arc-review-ledger:v1 -->"; before, found, _=data.partition(marker); assert found; print(hashlib.sha256(before).hexdigest())')
+CURRENT_CANONICAL_SHA256=$(arc show "$TASK_ID" --json | jq -j .description | python3 -c 'import hashlib, sys; data=sys.stdin.buffer.read(); marker=b"<!-- arc-review-ledger:v1 -->"; before, found, _=data.rpartition(marker); assert found; print(hashlib.sha256(before).hexdigest())')
 test "$CURRENT_CANONICAL_SHA256" = "$CANONICAL_SHA256"
 ```
 
