@@ -358,13 +358,35 @@ test "$POST_REVIEW_SHA256" = "$DIFF_SHA256"
 Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading spec review prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: its top-level `.runId` must equal the current `$OUTER_RUN_ID`, `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
 
 ```bash
-NATIVE_STATUS_JSON=$(cat "$NATIVE_STATUS_PATH")
+set -o pipefail
+test -r "$NATIVE_STATUS_PATH" || {
+  echo 'native status evidence is unreadable' >&2
+  exit 1
+}
+NATIVE_STATUS_JSON=$(cat "$NATIVE_STATUS_PATH") || {
+  echo 'unable to read native status evidence' >&2
+  exit 1
+}
+test -n "$NATIVE_STATUS_JSON" || {
+  echo 'native status evidence is empty' >&2
+  exit 1
+}
 printf '%s' "$NATIVE_STATUS_JSON" | jq -e --arg outerRunId "$OUTER_RUN_ID" '
   .runId == $outerRunId
   and .state == "complete"
   and (.error == null)
-' >/dev/null
-CHILD_RESULT=$(printf '%s' "$NATIVE_STATUS_JSON" | jq -ce '.workflow.value')
+' >/dev/null || {
+  echo 'native runtime acceptance predicate failed' >&2
+  exit 1
+}
+CHILD_RESULT=$(printf '%s' "$NATIVE_STATUS_JSON" | jq -ce '.workflow.value') || {
+  echo 'unable to extract native child result' >&2
+  exit 1
+}
+test -n "$CHILD_RESULT" || {
+  echo 'native child result is empty' >&2
+  exit 1
+}
 printf '%s' "$CHILD_RESULT" |
   jq -e --arg key "spec-review" --arg agent "arc-spec-reviewer" --arg output "/spec-review.md" '
     .key == $key
@@ -379,34 +401,87 @@ printf '%s' "$CHILD_RESULT" |
     and (.output | type == "string" and test("\\S"))
     and (.outputReference | type == "string" and endswith($output))
     and (.outputReference as $reference | .artifactPaths | type == "array" and index($reference) != null)
-  ' >/dev/null
-OUTPUT_REFERENCE=$(printf '%s' "$CHILD_RESULT" | jq -er '.outputReference')
-test -r "$OUTPUT_REFERENCE" && test -s "$OUTPUT_REFERENCE"
-RUNTIME_OUTPUT_SHA256=$(printf '%s' "$CHILD_RESULT" | jq -j '.output' | sha256sum | awk '{print $1}')
-SAVED_OUTPUT_SHA256=$(sha256sum "$OUTPUT_REFERENCE" | awk '{print $1}')
-test "$SAVED_OUTPUT_SHA256" = "$RUNTIME_OUTPUT_SHA256"
-HANDOFF_COUNT=$(printf '%s' "$CHILD_RESULT" | jq -r --arg run "$(printf '%s' "$CHILD_RESULT" | jq -r '.runId')" '[.artifactPaths[] | select(endswith("/handoffs/" + $run + ".json"))] | length')
-test "$HANDOFF_COUNT" -eq 1
-HANDOFF_MANIFEST=$(printf '%s' "$CHILD_RESULT" | jq -r --arg run "$(printf '%s' "$CHILD_RESULT" | jq -r '.runId')" '.artifactPaths[] | select(endswith("/handoffs/" + $run + ".json"))')
-test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
-  jq -e --arg base "$REVIEW_BASE" --arg key "spec-review" --arg agent "arc-spec-reviewer" '
-    .version == 1
-    and (.groups | type == "array" and length > 0)
-    and all(.groups[];
-      .baseCommit == $base
-      and (.children | type == "array" and length == 1)
-      and all(.children[];
-        .workflowKey == $key
-        and .agent == $agent
-        and .status == "completed"
-        and .patch.changed == false
-        and .patch.filesChanged == 0
-        and .patch.insertions == 0
-        and .patch.deletions == 0
-        and (.patch.error == null)
-      )
+  ' >/dev/null || {
+  echo 'native child acceptance predicate failed' >&2
+  exit 1
+}
+OUTPUT_REFERENCE=$(printf '%s' "$CHILD_RESULT" | jq -er '.outputReference') || {
+  echo 'unable to extract native output reference' >&2
+  exit 1
+}
+test -n "$OUTPUT_REFERENCE" && test -r "$OUTPUT_REFERENCE" && test -s "$OUTPUT_REFERENCE" || {
+  echo 'native output evidence is missing, unreadable, or empty' >&2
+  exit 1
+}
+RUNTIME_OUTPUT_SHA256_OUTPUT=$(printf '%s' "$CHILD_RESULT" | jq -j '.output' | sha256sum) || {
+  echo 'unable to hash runtime output evidence' >&2
+  exit 1
+}
+RUNTIME_OUTPUT_SHA256=${RUNTIME_OUTPUT_SHA256_OUTPUT%%[[:space:]]*}
+case "$RUNTIME_OUTPUT_SHA256" in
+  ''|*[!0-9a-f]*) echo 'runtime output hash is malformed' >&2; exit 1 ;;
+esac
+test "${#RUNTIME_OUTPUT_SHA256}" -eq 64 || {
+  echo 'runtime output hash is malformed' >&2
+  exit 1
+}
+SAVED_OUTPUT_SHA256_OUTPUT=$(sha256sum "$OUTPUT_REFERENCE") || {
+  echo 'unable to hash saved output evidence' >&2
+  exit 1
+}
+SAVED_OUTPUT_SHA256=${SAVED_OUTPUT_SHA256_OUTPUT%%[[:space:]]*}
+case "$SAVED_OUTPUT_SHA256" in
+  ''|*[!0-9a-f]*) echo 'saved output hash is malformed' >&2; exit 1 ;;
+esac
+test "${#SAVED_OUTPUT_SHA256}" -eq 64 || {
+  echo 'saved output hash is malformed' >&2
+  exit 1
+}
+test "$SAVED_OUTPUT_SHA256" = "$RUNTIME_OUTPUT_SHA256" || {
+  echo 'runtime and saved output hashes differ' >&2
+  exit 1
+}
+HANDOFF_RUN_ID=$(printf '%s' "$CHILD_RESULT" | jq -er '.runId | strings | select(length > 0)') || {
+  echo 'unable to extract native child run ID' >&2
+  exit 1
+}
+HANDOFF_COUNT=$(printf '%s' "$CHILD_RESULT" | jq -er --arg run "$HANDOFF_RUN_ID" '[.artifactPaths[] | select((type == "string") and endswith("/handoffs/" + $run + ".json"))] | length') || {
+  echo 'unable to count returned handoff manifests' >&2
+  exit 1
+}
+test "$HANDOFF_COUNT" -eq 1 || {
+  echo 'expected exactly one returned handoff manifest' >&2
+  exit 1
+}
+HANDOFF_MANIFEST=$(printf '%s' "$CHILD_RESULT" | jq -er --arg run "$HANDOFF_RUN_ID" '.artifactPaths[] | select((type == "string") and endswith("/handoffs/" + $run + ".json"))') || {
+  echo 'unable to extract returned handoff manifest path' >&2
+  exit 1
+}
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" && test -s "$HANDOFF_MANIFEST" || {
+  echo 'returned handoff manifest is missing, unreadable, or empty' >&2
+  exit 1
+}
+jq -e --arg base "$REVIEW_BASE" --arg key "spec-review" --arg agent "arc-spec-reviewer" '
+  .version == 1
+  and (.groups | type == "array" and length > 0)
+  and all(.groups[];
+    .baseCommit == $base
+    and (.children | type == "array" and length == 1)
+    and all(.children[];
+      .workflowKey == $key
+      and .agent == $agent
+      and .status == "completed"
+      and .patch.changed == false
+      and .patch.filesChanged == 0
+      and .patch.insertions == 0
+      and .patch.deletions == 0
+      and (.patch.error == null)
     )
-  ' "$HANDOFF_MANIFEST"
+  )
+' "$HANDOFF_MANIFEST" >/dev/null || {
+  echo 'native handoff manifest acceptance predicate failed' >&2
+  exit 1
+}
 ```
 
 Missing or malformed runtime or reviewer output, missing or empty handoff groups, missing output evidence, runtime failure, wrong workflow/agent identity, wrong base, more or fewer than one child, any patch/error evidence, a changed canonical/diff input hash, or a changed primary branch/HEAD/status blocks acceptance. Arc never applies reviewer patches. Only after all runtime and output evidence, native handoff evidence, immutable-input evidence, and post-run evidence passes may Arc interpret the report and apply its finding-disposition policy.

@@ -409,6 +409,110 @@ function runDocumentedPostReviewVerifier({ source, cwd, reviewInputDir, diffSha2
   );
 }
 
+function documentedTerminalAcceptanceVerifier(source) {
+  const marker = 'NATIVE_STATUS_JSON=$(cat "$NATIVE_STATUS_PATH")';
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(markerIndex, -1, 'mandatory review guidance must verify terminal native evidence');
+  const fenceStart = source.lastIndexOf('```bash\n', markerIndex);
+  const fenceEnd = source.indexOf('\n```', markerIndex);
+  assert.notEqual(fenceStart, -1, 'terminal acceptance verifier must be in a Bash fence');
+  assert.notEqual(fenceEnd, -1, 'terminal acceptance verifier Bash fence must terminate');
+  return source.slice(fenceStart + '```bash\n'.length, fenceEnd);
+}
+
+function runDocumentedTerminalAcceptanceVerifier({ source, cwd, nativeStatusPath, outerRunId, reviewBase, commandPath, extraEnv = {} }) {
+  return execFileSync(
+    'bash',
+    ['-c', documentedTerminalAcceptanceVerifier(source)],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        ...extraEnv,
+        NATIVE_STATUS_PATH: nativeStatusPath,
+        OUTER_RUN_ID: outerRunId,
+        REVIEW_BASE: reviewBase,
+        PATH: commandPath ? `${commandPath}${path.delimiter}${process.env.PATH}` : process.env.PATH,
+      },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+}
+
+function terminalAcceptanceFixture(root, review, mutate = () => {}) {
+  const fixtureRoot = mkdtempSync(path.join(root, `${review.workflowKey}-`));
+  const outputReference = path.join(fixtureRoot, 'outputs', review.output);
+  const handoffPath = path.join(fixtureRoot, 'handoffs', 'review-run.json');
+  const reviewBase = 'a'.repeat(40);
+  const outerRunId = 'outer-review-run';
+  const manifest = {
+    version: 1,
+    groups: [{
+      baseCommit: reviewBase,
+      children: [{
+        workflowKey: review.workflowKey,
+        agent: review.agent,
+        status: 'completed',
+        patch: { changed: false, filesChanged: 0, insertions: 0, deletions: 0, error: null },
+      }],
+    }],
+  };
+  const fixture = {
+    outerRunId,
+    reviewBase,
+    outputReference,
+    outputText: '## Result: COMPLIANT\n',
+    writeOutput: true,
+    handoffPaths: [handoffPath],
+    writeHandoffs: true,
+    manifest,
+    runtime: {
+      runId: outerRunId,
+      state: 'complete',
+      error: null,
+      workflow: {
+        value: {
+          key: review.workflowKey,
+          agent: review.agent,
+          ok: true,
+          runId: 'review-run',
+          output: '## Result: COMPLIANT\n',
+          outputReference,
+          artifactPaths: [outputReference, handoffPath],
+        },
+      },
+    },
+  };
+  mutate(fixture);
+  const child = fixture.runtime.workflow.value;
+  child.artifactPaths = [fixture.outputReference, ...fixture.handoffPaths];
+  mkdirSync(path.dirname(outputReference), { recursive: true });
+  if (fixture.writeOutput) writeFileSync(outputReference, fixture.outputText);
+  if (fixture.writeHandoffs) {
+    for (const handoffFile of fixture.handoffPaths) {
+      mkdirSync(path.dirname(handoffFile), { recursive: true });
+      writeFileSync(handoffFile, JSON.stringify(fixture.manifest));
+    }
+  }
+  const nativeStatusPath = path.join(fixtureRoot, 'status.json');
+  writeFileSync(nativeStatusPath, JSON.stringify(fixture.runtime));
+  return { ...fixture, nativeStatusPath };
+}
+
+function stagedSha256sum(commandDir) {
+  fakeCommand(commandDir, 'sha256sum', `#!/bin/sh
+count=$(cat "$FAKE_SHA256_COUNT" 2>/dev/null || printf 0)
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_SHA256_COUNT"
+case "$FAKE_SHA256_MODE:$count" in
+  fail-runtime:1|fail-saved:2) exit 72 ;;
+  malformed-runtime:1|malformed-saved:2) printf '%s\\n' 'not-a-valid-digest  input'; exit 0 ;;
+esac
+exec /usr/bin/sha256sum "$@"
+`);
+}
+
 function fakeCommand(commandDir, name, script) {
   const commandPath = path.join(commandDir, name);
   writeFileSync(commandPath, script);
@@ -969,7 +1073,7 @@ test('documented Git diff materialization defines the spec range, physically con
     const artifact = path.join(reviewInputDir, 'diff.patch');
     const fakeCommands = mkdtempSync(path.join(externalRoot, 'fake-review-commands-'));
     const failedChmod = () => fakeCommand(fakeCommands, 'chmod', '#!/bin/sh\nexit 71\n');
-    const unchangedMode = () => fakeCommand(fakeCommands, 'chmod', '#!/bin/sh\nexit 0\n');
+    const incorrectMode = () => fakeCommand(fakeCommands, 'chmod', '#!/bin/sh\n/bin/chmod 0644 "$2"\nexit 0\n');
     const failedSha256sum = () => fakeCommand(fakeCommands, 'sha256sum', '#!/bin/sh\nexit 72\n');
     const malformedSha256sum = () => fakeCommand(fakeCommands, 'sha256sum', '#!/bin/sh\nprintf "%s\\n" "not-a-valid-digest  $1"\n');
     const materializeWithFakeCommands = () => runDocumentedMaterializer({
@@ -983,8 +1087,8 @@ test('documented Git diff materialization defines the spec range, physically con
 
     failedChmod();
     assertExitsNonzero(materializeWithFakeCommands, 'a failing chmod must stop materialization');
-    unchangedMode();
-    assertExitsNonzero(materializeWithFakeCommands, 'a successful chmod that leaves the artifact writable must stop materialization');
+    incorrectMode();
+    assertExitsNonzero(materializeWithFakeCommands, 'a successful chmod that sets the artifact mode to 0644 must stop materialization');
     rmSync(path.join(fakeCommands, 'chmod'));
     failedSha256sum();
     assertExitsNonzero(materializeWithFakeCommands, 'a failing initial sha256sum must stop materialization');
@@ -1077,6 +1181,70 @@ test('documented Git diff materialization defines the spec range, physically con
   } finally {
     rmSync(repository, { recursive: true, force: true });
     rmSync(externalRoot, { recursive: true, force: true });
+  }
+});
+
+test('complete documented terminal acceptance verifier fails closed for invalid runtime, child, output, handoff, and manifest evidence', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'arc-terminal-acceptance-'));
+  try {
+    for (const review of Object.values(REVIEWERS)) {
+      const source = read(review.skillPath);
+      const run = (mutate = () => {}) => {
+        const fixture = terminalAcceptanceFixture(root, review, mutate);
+        return () => runDocumentedTerminalAcceptanceVerifier({
+          source,
+          cwd: root,
+          nativeStatusPath: fixture.nativeStatusPath,
+          outerRunId: fixture.outerRunId,
+          reviewBase: fixture.reviewBase,
+        });
+      };
+
+      assert.doesNotThrow(run(), `${review.workflowKey} valid terminal evidence must pass`);
+      assertExitsNonzero(run((fixture) => { fixture.runtime.state = 'failed'; }), 'a failed runtime state must not be masked by valid later handoff evidence');
+      assertExitsNonzero(run((fixture) => { fixture.runtime.workflow.value.ok = false; }), 'a failed child result must not be masked by valid later handoff evidence');
+      assertExitsNonzero(run((fixture) => { fixture.writeOutput = false; }), 'a missing output artifact must stop acceptance');
+      assertExitsNonzero(run((fixture) => { fixture.outputText = ''; }), 'an empty output artifact must stop acceptance');
+      assertExitsNonzero(run((fixture) => { fixture.outputText = 'different persisted output\n'; }), 'output digest mismatch must stop acceptance');
+      assertExitsNonzero(run((fixture) => { fixture.handoffPaths = []; }), 'a missing handoff count must stop acceptance');
+      assertExitsNonzero(run((fixture) => {
+        fixture.handoffPaths = [path.join(path.dirname(fixture.handoffPaths[0]), 'missing.json')];
+        fixture.writeHandoffs = false;
+      }), 'an unreadable returned handoff path must stop acceptance');
+      assertExitsNonzero(run((fixture) => { fixture.manifest.groups[0].baseCommit = 'b'.repeat(40); }), 'an invalid handoff manifest must stop acceptance');
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('complete documented terminal acceptance verifier guards runtime and saved output hashing', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'arc-terminal-hashing-'));
+  const commands = mkdtempSync(path.join(root, 'commands-'));
+  const countPath = path.join(root, 'sha256-count');
+  stagedSha256sum(commands);
+  try {
+    for (const review of Object.values(REVIEWERS)) {
+      const source = read(review.skillPath);
+      for (const mode of ['fail-runtime', 'malformed-runtime', 'fail-saved', 'malformed-saved']) {
+        const fixture = terminalAcceptanceFixture(root, review);
+        rmSync(countPath, { force: true });
+        assertExitsNonzero(
+          () => runDocumentedTerminalAcceptanceVerifier({
+            source,
+            cwd: root,
+            nativeStatusPath: fixture.nativeStatusPath,
+            outerRunId: fixture.outerRunId,
+            reviewBase: fixture.reviewBase,
+            commandPath: commands,
+            extraEnv: { FAKE_SHA256_COUNT: countPath, FAKE_SHA256_MODE: mode },
+          }),
+          `${review.workflowKey} ${mode} hashing failure must stop acceptance`,
+        );
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
