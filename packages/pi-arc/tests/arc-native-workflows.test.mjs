@@ -126,11 +126,7 @@ test('native worktree guidance never promises automatic cleanup', () => {
 
 test('single-child flow sections use their exact Arc specialist and prompt', () => {
   const review = section(read('skills/arc-review/SKILL.md'), '### 3. Dispatch Reviewer', '### 4. Triage Feedback');
-  assert.match(
-    review,
-    /workflowScript: `return await runs.run\("code-review", \{\s*agent: "arc-code-reviewer",\s*task: "<filled immutable review prompt>",\s*worktree: true,\s*async: false,\s*output: "code-review\.md"\s*\}\);`/,
-  );
-  assert.match(review, /context: "fresh",\s*async: true,\s*globalConcurrencyLimit: 1,\s*baseRef: "HEAD"/);
+  assert.match(review, /subagent\(\{ agent: "arc-code-reviewer", task: "<filled reviewer prompt>", context: "fresh", async: true \}\);/);
   assert.doesNotMatch(review, /agent: "arc-builder"/);
 
   const plan = section(read('skills/arc-plan/SKILL.md'), 'Then dispatch the manifest', '```markdown');
@@ -211,19 +207,24 @@ test('outer workflow calls retain a full-SHA evidence anchor but launch from sym
   const outerSections = [
     {
       source: section(build, '#### One native isolated reviewer', '#### Terminal evidence before prose'),
+      anchorSource: section(build, '#### Clean source preflight', '#### Terminal evidence before prose'),
       baseVariable: 'REVIEW_BASE',
     },
     {
       source: section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
+      anchorSource: section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
       baseVariable: 'PARALLEL_BASE',
     },
     {
       source: section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
+      anchorSource: section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
       baseVariable: 'PARALLEL_BASE',
     },
   ];
 
-  for (const { source: outerSection, baseVariable } of outerSections) {
+  for (const { source: outerSection, anchorSource, baseVariable } of outerSections) {
+    assert.match(anchorSource, new RegExp(`${baseVariable}=\\$\\(git rev-parse HEAD\\)`));
+    assert.match(anchorSource, /immutable(?: full-SHA)? verification (?:anchor|evidence)/i);
     assert.match(
       outerSection,
       new RegExp(`test "\\$\\(git rev-parse HEAD\\)" = "\\$${baseVariable}"[\\s\\S]*?subagent\\(\\{`),
