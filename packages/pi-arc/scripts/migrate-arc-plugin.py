@@ -1844,6 +1844,13 @@ spec_review_protocol = mandatory_review_protocol(
     "spec-review.md",
     "specReviewer",
 )
+spec_review_protocol = spec_review_protocol.replace(
+    "  context: \"fresh\",\n  async: true,",
+    "  context: \"fresh\", async: true,",
+).replace(
+    "The outer workflow stays `async: true` and returns control for native completion.",
+    "The literal outer base ref uses symbolic `HEAD`, resolved at worktree allocation by `pi-subagents`; `REVIEW_BASE` remains the immutable full-SHA verification anchor. The outer workflow remains asynchronous while its exactly one awaited inner foreground child completes.",
+)
 replace_section(
     "skills/arc-build/SKILL.md",
     "### 5. Spec Compliance Review\n\n",

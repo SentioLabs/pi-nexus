@@ -242,14 +242,13 @@ subagent({
     async: false,
     output: "spec-review.md"
   });`,
-  context: "fresh",
-  async: true,
+  context: "fresh", async: true,
   globalConcurrencyLimit: 1,
   baseRef: "HEAD"
 })
 ```
 
-The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The outer workflow stays `async: true` and returns control for native completion. Omit `model:` so the configured specReviewer profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
+The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The literal outer base ref uses symbolic `HEAD`, resolved at worktree allocation by `pi-subagents`; `REVIEW_BASE` remains the immutable full-SHA verification anchor. The outer workflow remains asynchronous while its exactly one awaited inner foreground child completes. Omit `model:` so the configured specReviewer profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
 
 #### Terminal evidence before prose
 
