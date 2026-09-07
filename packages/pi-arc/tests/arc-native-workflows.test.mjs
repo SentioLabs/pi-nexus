@@ -126,7 +126,16 @@ test('native worktree guidance never promises automatic cleanup', () => {
 
 test('single-child flow sections use their exact Arc specialist and prompt', () => {
   const review = section(read('skills/arc-review/SKILL.md'), '### 3. Dispatch Reviewer', '### 4. Triage Feedback');
-  assert.match(review, /subagent\(\{ agent: "arc-code-reviewer", task: "<filled reviewer prompt>", context: "fresh", async: true \}\);/);
+  assert.match(
+    review,
+    /workflowScript: `return await runs.run\("code-review", \{\s*agent: "arc-code-reviewer",\s*task: "<filled immutable review prompt>",\s*worktree: true,\s*async: false,\s*output: "code-review\.md"\s*\}\);`/,
+  );
+  assert.match(
+    review,
+    /context: "fresh",\s*async: true,\s*globalConcurrencyLimit: 1,\s*baseRef: "HEAD"/,
+  );
+  assert.doesNotMatch(review, /subagent\(\{\s*agent: "arc-code-reviewer"/);
+  assert.doesNotMatch(review, /arc_agent\s*\(/);
   assert.doesNotMatch(review, /agent: "arc-builder"/);
 
   const plan = section(read('skills/arc-plan/SKILL.md'), 'Then dispatch the manifest', '```markdown');
