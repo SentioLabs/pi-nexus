@@ -126,7 +126,11 @@ test('native worktree guidance never promises automatic cleanup', () => {
 
 test('single-child flow sections use their exact Arc specialist and prompt', () => {
   const review = section(read('skills/arc-review/SKILL.md'), '### 3. Dispatch Reviewer', '### 4. Triage Feedback');
-  assert.match(review, /subagent\(\{ agent: "arc-code-reviewer", task: "<filled reviewer prompt>", context: "fresh", async: true \}\);/);
+  assert.match(
+    review,
+    /workflowScript: `return await runs.run\("code-review", \{\s*agent: "arc-code-reviewer",\s*task: "<filled immutable review prompt>",\s*worktree: true,\s*async: false,\s*output: "code-review\.md"\s*\}\);`/,
+  );
+  assert.match(review, /context: "fresh",\s*async: true,\s*globalConcurrencyLimit: 1,\s*baseRef: "HEAD"/);
   assert.doesNotMatch(review, /agent: "arc-builder"/);
 
   const plan = section(read('skills/arc-plan/SKILL.md'), 'Then dispatch the manifest', '```markdown');
@@ -140,7 +144,18 @@ test('single-child flow sections use their exact Arc specialist and prompt', () 
 test('documented workflowScript bodies execute and retain realistic native handoffs', async () => {
   const build = read('skills/arc-build/SKILL.md');
   const scripts = workflowScripts(build);
-  assert.ok(scripts.length >= 2, 'expected evaluator and coordinated-wave workflowScript examples');
+  const expectedSingle = {
+    'spec-review': {
+      agent: 'arc-spec-reviewer',
+      output: 'spec-review.md',
+    },
+    evaluate: {
+      agent: 'arc-evaluator',
+      output: 'evaluator.md',
+    },
+  };
+  const seenSingleKeys = [];
+  assert.ok(scripts.length >= 3, 'expected spec-review, evaluator, and coordinated-wave workflowScript examples');
 
   for (const script of scripts) {
     const seen = [];
@@ -167,29 +182,52 @@ test('documented workflowScript bodies execute and retain realistic native hando
       assert.ok(Array.isArray(result), 'parallel workflow must return the complete runs.all array');
       assertCompleteOrderedHandoffs(requests, result);
     } else {
-      assert.equal(seen[0][1].output, 'evaluator.md');
+      const [key, request] = seen[0];
+      const expected = expectedSingle[key];
+      seenSingleKeys.push(key);
+      assert.ok(expected, `unexpected single-child workflow ${key}`);
+      assert.equal(request.agent, expected.agent);
+      assert.equal(request.output, expected.output);
+      assert.equal(typeof request.task, 'string');
+      assert.ok(request.task.length > 0);
       assert.equal(result.ok, true);
-      assert.equal(result.outputReference, '/native/outputs/evaluate.md');
+      assert.equal(result.outputReference, `/native/outputs/${key}.md`);
       assert.deepEqual(result.artifactPaths, [
-        '/native/outputs/evaluate.md',
-        '/native/sessions/evaluate-run.jsonl',
-        '/native/handoffs/evaluate-run.json',
+        `/native/outputs/${key}.md`,
+        `/native/sessions/${key}-run.jsonl`,
+        `/native/handoffs/${key}-run.json`,
       ]);
     }
   }
+
+  assert.deepEqual(
+    seenSingleKeys.sort(),
+    ['evaluate', 'spec-review'],
+  );
 });
 
 test('outer workflow calls retain a full-SHA evidence anchor but launch from symbolic HEAD', () => {
   const build = read('skills/arc-build/SKILL.md');
   const outerSections = [
-    section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
-    section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
+    {
+      source: section(build, '#### One native isolated reviewer', '#### Terminal evidence before prose'),
+      baseVariable: 'REVIEW_BASE',
+    },
+    {
+      source: section(build, '### 6.5. High-Risk Evaluation (Optional)', 'Triage evaluator findings:'),
+      baseVariable: 'PARALLEL_BASE',
+    },
+    {
+      source: section(build, '### P4. Dispatch with `pi-subagents`', '### P5. Apply and Verify Patches One at a Time'),
+      baseVariable: 'PARALLEL_BASE',
+    },
   ];
 
-  for (const outerSection of outerSections) {
-    assert.match(outerSection, /PARALLEL_BASE=\$\(git rev-parse HEAD\)/);
-    assert.match(outerSection, /immutable verification (?:anchor|evidence)/i);
-    assert.match(outerSection, /test "\$\(git rev-parse HEAD\)" = "\$PARALLEL_BASE"[\s\S]*?subagent\(\{/);
+  for (const { source: outerSection, baseVariable } of outerSections) {
+    assert.match(
+      outerSection,
+      new RegExp(`test "\\$\\(git rev-parse HEAD\\)" = "\\$${baseVariable}"[\\s\\S]*?subagent\\(\\{`),
+    );
     assert.deepEqual(
       [...outerSection.matchAll(/baseRef:\s*([^,\r\n]+)/g)].map((match) => match[1].trim()),
       ['"HEAD"'],
@@ -201,7 +239,11 @@ test('outer workflow calls retain a full-SHA evidence anchor but launch from sym
     assert.match(outerSection, /context: "fresh", async: true/);
     assert.match(outerSection, /outer workflow remains asynchronous[\s\S]*awaited inner foreground child/i);
   }
-  assert.equal((build.match(/baseRef: "HEAD"/g) ?? []).length, 2);
+  assert.equal(
+    (build.match(/baseRef: "HEAD"/g) ?? []).length,
+    outerSections.length,
+    'every and only expected outer workflow must use literal symbolic HEAD',
+  );
 });
 
 test('explicit inner foreground mode exposes the exact native handoff path while default async does not', () => {
