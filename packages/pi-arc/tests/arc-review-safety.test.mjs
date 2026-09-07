@@ -207,6 +207,7 @@ function hasTerminalLedgerSignature(trailer) {
   return /(?:^|\n)## Review Ledger(?:\n|$)/.test(trailer)
     || /(?:^|\n)Canonical description SHA-256:/.test(trailer)
     || /(?:^|\n)Authorized reviewer runs: 4(?:\n|$)/.test(trailer)
+    || /(?:^|\n)Owner-authorized additional reviewer runs:/.test(trailer)
     || /(?:^|\n)\| sequence \| reviewer \| run_id \| base \| head \| elapsed_ms \| disposition \|(?:\n|$)/.test(trailer)
     || /(?:^|\n)\|---:\|---\|---\|---\|---\|---:\|---\|(?:\n|$)/.test(trailer)
     || /(?:^|\n)\|\s*\d+\s*\|\s*(?:spec|code)\s*\|/.test(trailer);
@@ -777,7 +778,25 @@ test('ledger bootstrap preserves quoted sentinel/header task content and fails c
   const invalidHashTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`not-a-sha\`\nAuthorized reviewer runs: 4\n${ledgerTable}\n`;
   const mismatchedHashTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${'0'.repeat(64)}\`\nAuthorized reviewer runs: 4\n${ledgerTable}\n`;
   const rowOnlyTrailer = `${canonical}${LEDGER_SENTINEL}\n| 1 | spec | prior-run | base | head | 0 | launched |\n`;
-  for (const malformed of [missingHashTrailer, invalidHashTrailer, mismatchedHashTrailer, rowOnlyTrailer]) {
+  const validOwnerAuthorizationTrailer = 'Owner-authorized additional reviewer runs: 3\n';
+  const malformedOwnerAuthorizationTrailers = [
+    'Owner-authorized additional reviewer runs: 0\n',
+    'Owner-authorized additional reviewer runs: -1\n',
+    'Owner-authorized additional reviewer runs: many\n',
+    'Owner-authorized additional reviewer runs:\n',
+  ];
+  assert.equal(hasTerminalLedgerSignature(validOwnerAuthorizationTrailer), true);
+  for (const trailer of malformedOwnerAuthorizationTrailers) {
+    assert.equal(hasTerminalLedgerSignature(trailer), true, 'owner-authorization-shaped state is ledger state');
+  }
+  for (const malformed of [
+    missingHashTrailer,
+    invalidHashTrailer,
+    mismatchedHashTrailer,
+    rowOnlyTrailer,
+    `${canonical}${LEDGER_SENTINEL}\n${validOwnerAuthorizationTrailer}`,
+    ...malformedOwnerAuthorizationTrailers.map((trailer) => `${canonical}${LEDGER_SENTINEL}\n${trailer}`),
+  ]) {
     assert.throws(() => initializeReviewDescription(malformed), /malformed terminal review ledger trailer|canonical description hash mismatch/);
     assert.throws(() => loadReviewDescription(malformed), /malformed terminal review ledger trailer|canonical description hash mismatch/);
   }
@@ -788,6 +807,7 @@ test('ledger bootstrap preserves quoted sentinel/header task content and fails c
     assert.match(source, /actual ledger boundary is the last exact sentinel/i);
     assert.match(source, /ordinary quoted\/task prose|quoted\/task prose.*uninitialized/i);
     assert.match(source, /structurally valid terminal review-ledger trailer/i);
+    assert.match(source, /review-ledger signature.*Owner-authorized additional reviewer runs: <finite-positive-integer>.*ledger table syntax/is);
     assert.match(source, /recorded hash matches the exact prefix/i);
     assert.match(source, /missing.*invalid.*malformed|malformed.*missing.*invalid/i);
     assert.match(source, /ledger table (?:header, separator, or row|syntax)/i);
