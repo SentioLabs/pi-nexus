@@ -357,17 +357,73 @@ function documentedMaterializer(source) {
   return source.slice(fenceStart + '```bash\n'.length, fenceEnd);
 }
 
-function runDocumentedMaterializer({ source, cwd, tmpDir, baseSha, headSha }) {
+function documentedPostReviewVerifier(source) {
+  const marker = 'For a non-inline diff, recheck its immutable bytes after completion and before acceptance:';
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(markerIndex, -1, 'mandatory review guidance must verify the immutable diff after review');
+  const fenceStart = source.indexOf('```bash\n', markerIndex);
+  const fenceEnd = source.indexOf('\n```', fenceStart);
+  assert.notEqual(fenceStart, -1, 'post-review verifier must be in a Bash fence');
+  assert.notEqual(fenceEnd, -1, 'post-review verifier Bash fence must terminate');
+  return source.slice(fenceStart + '```bash\n'.length, fenceEnd);
+}
+
+function materializerEnvironment({ tmpDir, baseSha, headSha, commandPath }) {
+  return {
+    ...process.env,
+    TMPDIR: tmpDir,
+    BASE_SHA: baseSha,
+    HEAD_SHA: headSha,
+    PATH: commandPath ? `${commandPath}${path.delimiter}${process.env.PATH}` : process.env.PATH,
+  };
+}
+
+function runDocumentedMaterializer({ source, cwd, tmpDir, baseSha, headSha, commandPath }) {
   return execFileSync(
     'bash',
     ['-c', `${documentedMaterializer(source)}\nprintf '%s\\n' "$REVIEW_INPUT_DIR"`],
     {
       cwd,
-      env: { ...process.env, TMPDIR: tmpDir, BASE_SHA: baseSha, HEAD_SHA: headSha },
+      env: materializerEnvironment({ tmpDir, baseSha, headSha, commandPath }),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   ).trim();
+}
+
+function runDocumentedPostReviewVerifier({ source, cwd, reviewInputDir, diffSha256, commandPath }) {
+  return execFileSync(
+    'bash',
+    ['-c', documentedPostReviewVerifier(source)],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        REVIEW_INPUT_DIR: reviewInputDir,
+        DIFF_SHA256: diffSha256,
+        PATH: commandPath ? `${commandPath}${path.delimiter}${process.env.PATH}` : process.env.PATH,
+      },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+}
+
+function fakeCommand(commandDir, name, script) {
+  const commandPath = path.join(commandDir, name);
+  writeFileSync(commandPath, script);
+  chmodSync(commandPath, 0o755);
+}
+
+function assertExitsNonzero(operation, message) {
+  let error;
+  try {
+    operation();
+  } catch (caught) {
+    error = caught;
+  }
+  assert.ok(error, message);
+  assert.notEqual(error.status, 0, message);
 }
 
 test('reviewer agents expose only read, find, and grep', () => {
@@ -863,7 +919,7 @@ test('re-review permits outside-delta expansion only for a critical latent issue
   }
 });
 
-test('documented Git diff materialization defines the spec range, physically contains artifacts, and fails before chmod/hash', () => {
+test('documented Git diff materialization defines the spec range, physically contains artifacts, and fails closed on immutable-artifact materialization or verification errors', () => {
   const specSource = read(REVIEWERS.spec.skillPath);
   const codeSource = read(REVIEWERS.code.skillPath);
   for (const source of [specSource, codeSource]) {
@@ -878,9 +934,18 @@ test('documented Git diff materialization defines the spec range, physically con
     assert.match(source, /review input must be physically outside the repository/i);
     assert.match(source, /failed diff materialization exits before chmod or hashing/i);
     assert.match(source, /Do not remove the created review-input directory or partial diff artifact on failure/i);
-    assert.match(source, /chmod 0444 "\$REVIEW_INPUT_DIR\/diff\.patch"/);
-    assert.match(source, /DIFF_SHA256=\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"/);
-    assert.match(source, /test "\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"/);
+    assert.match(source, /chmod 0444 "\$REVIEW_INPUT_DIR\/diff\.patch" \|\| \{/);
+    assert.match(source, /REVIEW_INPUT_MODE=\$\(stat -c '%a' "\$REVIEW_INPUT_DIR\/diff\.patch"\) \|\| \{/);
+    assert.match(source, /test "\$REVIEW_INPUT_MODE" = 444 \|\| \{/);
+    assert.match(source, /DIFF_SHA256_OUTPUT=\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"\) \|\| \{/);
+    assert.match(source, /DIFF_SHA256=\$\{DIFF_SHA256_OUTPUT%%\[\[:space:\]\]\*\}/);
+    assert.match(source, /case "\$DIFF_SHA256" in\n  ''\|\*\[!0-9a-f\]\*\)/);
+    assert.match(source, /test "\$\{#DIFF_SHA256\}" -eq 64 \|\| \{/);
+    assert.match(source, /POST_REVIEW_SHA256_OUTPUT=\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"\) \|\| \{/);
+    assert.match(source, /POST_REVIEW_SHA256=\$\{POST_REVIEW_SHA256_OUTPUT%%\[\[:space:\]\]\*\}/);
+    assert.match(source, /case "\$POST_REVIEW_SHA256" in\n  ''\|\*\[!0-9a-f\]\*\)/);
+    assert.match(source, /test "\$\{#POST_REVIEW_SHA256\}" -eq 64 \|\| \{/);
+    assert.match(source, /test "\$POST_REVIEW_SHA256" = "\$DIFF_SHA256"/);
   }
   assert.match(specSource, /BASE_SHA=\$PRE_TASK_SHA\nHEAD_SHA=\$REVIEW_BASE/);
   assert.match(codeSource, /BASE_SHA=\$PRE_TASK_SHA\nHEAD_SHA=\$\(git rev-parse HEAD\)/);
@@ -902,10 +967,75 @@ test('documented Git diff materialization defines the spec range, physically con
       headSha,
     });
     const artifact = path.join(reviewInputDir, 'diff.patch');
+    const fakeCommands = mkdtempSync(path.join(externalRoot, 'fake-review-commands-'));
+    const failedChmod = () => fakeCommand(fakeCommands, 'chmod', '#!/bin/sh\nexit 71\n');
+    const unchangedMode = () => fakeCommand(fakeCommands, 'chmod', '#!/bin/sh\nexit 0\n');
+    const failedSha256sum = () => fakeCommand(fakeCommands, 'sha256sum', '#!/bin/sh\nexit 72\n');
+    const malformedSha256sum = () => fakeCommand(fakeCommands, 'sha256sum', '#!/bin/sh\nprintf "%s\\n" "not-a-valid-digest  $1"\n');
+    const materializeWithFakeCommands = () => runDocumentedMaterializer({
+      source: specSource,
+      cwd: repository,
+      tmpDir: externalRoot,
+      baseSha,
+      headSha,
+      commandPath: fakeCommands,
+    });
+
+    failedChmod();
+    assertExitsNonzero(materializeWithFakeCommands, 'a failing chmod must stop materialization');
+    unchangedMode();
+    assertExitsNonzero(materializeWithFakeCommands, 'a successful chmod that leaves the artifact writable must stop materialization');
+    rmSync(path.join(fakeCommands, 'chmod'));
+    failedSha256sum();
+    assertExitsNonzero(materializeWithFakeCommands, 'a failing initial sha256sum must stop materialization');
+    malformedSha256sum();
+    assertExitsNonzero(materializeWithFakeCommands, 'a malformed initial digest must stop materialization even when sha256sum exits zero');
+
     const expectedHash = sha256(readFileSync(artifact));
     assert.equal(path.relative(repository, artifact).startsWith(`..${path.sep}`), true, 'artifact must remain physically outside the repository');
     assert.match(read(artifact), /-base\n\+reviewed implementation/);
     assert.equal(artifactHashMatches(artifact, expectedHash), true);
+
+    const codeReviewInputDir = runDocumentedMaterializer({
+      source: codeSource,
+      cwd: repository,
+      tmpDir: externalRoot,
+      baseSha,
+      headSha,
+    });
+    const codeArtifact = path.join(codeReviewInputDir, 'diff.patch');
+    const codeExpectedHash = sha256(readFileSync(codeArtifact));
+    assert.equal(path.relative(repository, codeArtifact).startsWith(`..${path.sep}`), true, 'code-review artifact must remain physically outside the repository');
+    assert.equal(artifactHashMatches(codeArtifact, codeExpectedHash), true);
+    runDocumentedPostReviewVerifier({
+      source: codeSource,
+      cwd: repository,
+      reviewInputDir: codeReviewInputDir,
+      diffSha256: codeExpectedHash,
+    });
+
+    failedSha256sum();
+    assertExitsNonzero(
+      () => runDocumentedPostReviewVerifier({
+        source: specSource,
+        cwd: repository,
+        reviewInputDir,
+        diffSha256: expectedHash,
+        commandPath: fakeCommands,
+      }),
+      'a failing post-review sha256sum must stop acceptance',
+    );
+    malformedSha256sum();
+    assertExitsNonzero(
+      () => runDocumentedPostReviewVerifier({
+        source: specSource,
+        cwd: repository,
+        reviewInputDir,
+        diffSha256: 'not-a-valid-digest',
+        commandPath: fakeCommands,
+      }),
+      'a malformed post-review digest must stop acceptance even when sha256sum exits zero',
+    );
 
     assert.throws(() => runDocumentedMaterializer({
       source: specSource,

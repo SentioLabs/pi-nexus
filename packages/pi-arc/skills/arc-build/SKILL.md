@@ -257,8 +257,30 @@ git diff --binary --find-renames=0 "$BASE_SHA..$HEAD_SHA" > "$REVIEW_INPUT_DIR/d
   echo 'review diff materialization failed' >&2
   exit 1
 }
-chmod 0444 "$REVIEW_INPUT_DIR/diff.patch"
-DIFF_SHA256=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')
+chmod 0444 "$REVIEW_INPUT_DIR/diff.patch" || {
+  echo 'unable to make review diff artifact read-only' >&2
+  exit 1
+}
+REVIEW_INPUT_MODE=$(stat -c '%a' "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to verify review diff artifact mode' >&2
+  exit 1
+}
+test "$REVIEW_INPUT_MODE" = 444 || {
+  echo 'review diff artifact mode is not 0444' >&2
+  exit 1
+}
+DIFF_SHA256_OUTPUT=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to hash review diff artifact' >&2
+  exit 1
+}
+DIFF_SHA256=${DIFF_SHA256_OUTPUT%%[[:space:]]*}
+case "$DIFF_SHA256" in
+  ''|*[!0-9a-f]*) echo 'review diff artifact hash is malformed' >&2; exit 1 ;;
+esac
+test "${#DIFF_SHA256}" -eq 64 || {
+  echo 'review diff artifact hash is malformed' >&2
+  exit 1
+}
 ```
 
 Physically resolve and contain-check the absolute temporary parent before `mktemp`; reject a relative `TMPDIR` or a symlinked `TMPDIR` that resolves inside the repository before any artifact directory exists. After creation, physically resolve and contain-check the created directory again as race defense. External physical parents remain valid. Failed diff materialization exits before chmod or hashing. Do not remove the created review-input directory or partial diff artifact on failure; retain it as failure evidence.
@@ -318,7 +340,19 @@ test "$CURRENT_CANONICAL_SHA256" = "$CANONICAL_SHA256"
 For a non-inline diff, recheck its immutable bytes after completion and before acceptance:
 
 ```bash
-test "$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')" = "$DIFF_SHA256"
+POST_REVIEW_SHA256_OUTPUT=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to hash review diff artifact after review' >&2
+  exit 1
+}
+POST_REVIEW_SHA256=${POST_REVIEW_SHA256_OUTPUT%%[[:space:]]*}
+case "$POST_REVIEW_SHA256" in
+  ''|*[!0-9a-f]*) echo 'post-review diff artifact hash is malformed' >&2; exit 1 ;;
+esac
+test "${#POST_REVIEW_SHA256}" -eq 64 || {
+  echo 'post-review diff artifact hash is malformed' >&2
+  exit 1
+}
+test "$POST_REVIEW_SHA256" = "$DIFF_SHA256"
 ```
 
 Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading spec review prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: its top-level `.runId` must equal the current `$OUTER_RUN_ID`, `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
