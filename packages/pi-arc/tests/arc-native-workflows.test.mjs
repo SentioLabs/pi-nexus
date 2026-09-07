@@ -34,15 +34,34 @@ function assertCompleteOrderedHandoffs(requests, results) {
   assert.ok(results.every((result) => typeof result.outputReference === 'string'));
   assert.ok(results.every((result) => Array.isArray(result.artifactPaths)));
   assert.ok(results.every((result) => result.artifactPaths.every((path) => typeof path === 'string')));
+  assert.ok(results.every((result) => exactHandoffManifestPaths(result).length === 1));
 }
 
-function nativeResult(key) {
+function nativeResult(key, request = {}) {
+  const runId = `${key}-run`;
+  const artifactPaths = request.async === false
+    ? [
+        `/native/outputs/${key}.md`,
+        `/native/sessions/${runId}.jsonl`,
+        `/native/handoffs/${runId}.json`,
+      ]
+    : [
+        `/native/async/${runId}`,
+        `/native/async/${runId}/output.md`,
+        `/native/async/${runId}/session.jsonl`,
+      ];
   return {
     key,
     ok: true,
-    outputReference: `/native/${key}.md`,
-    artifactPaths: [`/native/${key}.json`, `/native/handoffs/${key}.json`],
+    outputReference: request.async === false
+      ? `/native/outputs/${key}.md`
+      : `/native/async/${runId}/output.md`,
+    artifactPaths,
   };
+}
+
+function exactHandoffManifestPaths(result) {
+  return result.artifactPaths.filter((path) => /\/handoffs\/[^/]+\.json$/.test(path));
 }
 
 function handoffManifestMatchesBase(manifest, baseCommit) {
@@ -128,16 +147,17 @@ test('documented workflowScript bodies execute and retain realistic native hando
     const runs = {
       run(key, item) {
         seen.push([key, item]);
-        return Promise.resolve(nativeResult(key));
+        return Promise.resolve(nativeResult(key, item));
       },
       all(items) {
         seen.push(...items.map((item) => [item.key, item]));
-        return Promise.resolve(items.map((item) => nativeResult(item.key)));
+        return Promise.resolve(items.map((item) => nativeResult(item.key, item)));
       },
     };
     const result = await new AsyncFunction('runs', script)(runs);
     assert.ok(seen.length >= 1);
     assert.ok(seen.every(([, item]) => item.worktree === true));
+    assert.ok(seen.every(([, item]) => item.async === false), 'every awaited inner child must be foreground');
     assert.ok(result);
 
     if (seen.length > 1) {
@@ -149,8 +169,12 @@ test('documented workflowScript bodies execute and retain realistic native hando
     } else {
       assert.equal(seen[0][1].output, 'evaluator.md');
       assert.equal(result.ok, true);
-      assert.equal(result.outputReference, '/native/evaluate.md');
-      assert.deepEqual(result.artifactPaths, ['/native/evaluate.json', '/native/handoffs/evaluate.json']);
+      assert.equal(result.outputReference, '/native/outputs/evaluate.md');
+      assert.deepEqual(result.artifactPaths, [
+        '/native/outputs/evaluate.md',
+        '/native/sessions/evaluate-run.jsonl',
+        '/native/handoffs/evaluate-run.json',
+      ]);
     }
   }
 });
@@ -173,8 +197,23 @@ test('outer workflow calls retain a full-SHA evidence anchor but launch from sym
     );
     assert.match(outerSection, /symbolic `HEAD`.*resolved at (?:worktree )?allocation/i);
     assert.doesNotMatch(outerSection, /baseRef:\s*["'][a-f0-9]{40,64}["']/i);
+    assert.equal((outerSection.match(/\basync:\s*true/g) ?? []).length, 1, 'outer workflow must remain async');
+    assert.match(outerSection, /context: "fresh", async: true/);
+    assert.match(outerSection, /outer workflow remains asynchronous[\s\S]*awaited inner foreground child/i);
   }
   assert.equal((build.match(/baseRef: "HEAD"/g) ?? []).length, 2);
+});
+
+test('explicit inner foreground mode exposes the exact native handoff path while default async does not', () => {
+  const foreground = nativeResult('build-a', { async: false });
+  const defaultAsync = nativeResult('build-a');
+
+  assert.deepEqual(exactHandoffManifestPaths(foreground), ['/native/handoffs/build-a-run.json']);
+  assert.deepEqual(exactHandoffManifestPaths(defaultAsync), []);
+  assert.equal(defaultAsync.outputReference, '/native/async/build-a-run/output.md');
+  assert.match(defaultAsync.artifactPaths[0], /\/async\/build-a-run$/);
+  assert.ok(defaultAsync.artifactPaths.some((path) => path.endsWith('/output.md')));
+  assert.ok(defaultAsync.artifactPaths.some((path) => path.endsWith('/session.jsonl')));
 });
 
 test('handoff manifest base predicate rejects missing, empty, and mismatched baseCommit evidence', () => {
@@ -229,7 +268,7 @@ test('returned handoff manifests gate evaluator findings and parallel patch appl
 
 test('ordered-handoff contract rejects dropped and reordered results', () => {
   const requests = [{ key: 'a' }, { key: 'b' }, { key: 'docs' }];
-  const results = requests.map(({ key }) => nativeResult(key));
+  const results = requests.map(({ key }) => nativeResult(key, { async: false }));
   assert.doesNotThrow(() => assertCompleteOrderedHandoffs(requests, results));
   assert.throws(() => assertCompleteOrderedHandoffs(requests, results.slice(1)), /deep-equal/);
   assert.throws(() => assertCompleteOrderedHandoffs(requests, [results[1], results[0], results[2]]), /deep-equal/);

@@ -238,11 +238,13 @@ test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after eval
 
 ```typescript
 subagent({
-  workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md" });`,
+  workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md", async: false });`,
   context: "fresh", async: true, globalConcurrencyLimit: 1,
   baseRef: "HEAD",
 })
 ```
+
+The outer workflow remains asynchronous and returns a launch receipt. Setting `async: false` on each awaited inner foreground child is deliberate: pi-subagents can expose the exact worktree handoff manifest path in that child's returned string-array `artifactPaths` for mandatory `baseCommit` validation.
 
 Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate.
 
@@ -380,9 +382,9 @@ Launch one top-level native workflow for the coordinated wave, with stable keys 
 subagent({
   workflowScript: `
     const results = await runs.all([
-      { key: "build-a", agent: "arc-builder", task: "<filled builder prompt A>", worktree: true, output: "builder-a.md" },
-      { key: "build-b", agent: "arc-builder", task: "<filled builder prompt B>", worktree: true, output: "builder-b.md" },
-      { key: "docs", agent: "arc-doc-writer", task: "<filled doc prompt>", worktree: true, output: "docs.md" }
+      { key: "build-a", agent: "arc-builder", task: "<filled builder prompt A>", worktree: true, output: "builder-a.md", async: false },
+      { key: "build-b", agent: "arc-builder", task: "<filled builder prompt B>", worktree: true, output: "builder-b.md", async: false },
+      { key: "docs", agent: "arc-doc-writer", task: "<filled doc prompt>", worktree: true, output: "docs.md", async: false }
     ]);
     return results;
   `,
@@ -390,6 +392,8 @@ subagent({
   baseRef: "HEAD",
 })
 ```
+
+The outer workflow remains asynchronous and returns a launch receipt. Setting `async: false` on each awaited inner foreground child is deliberate: pi-subagents can expose the exact worktree handoff manifest path in that child's returned string-array `artifactPaths` for mandatory `baseCommit` validation.
 
 `runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths`. A filename mentioned only in prose is not an output binding.
 
