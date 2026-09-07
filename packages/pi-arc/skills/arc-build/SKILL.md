@@ -192,9 +192,20 @@ test -z "$REVIEW_STATE" || {
 
 Dirty source state blocks review. Never stash, reset, restore, clean, or fall back to shared-cwd review. Capture these exact values as `ReviewBaseline { branch, head, porcelainV2 }`; `REVIEW_BASE` is the native worktree handoff base while `BASE_SHA..HEAD_SHA` remains the implementation range under review.
 
+#### Implementation diff range
+
+After the clean-source preflight and before materializing the spec-review input, define the committed implementation range anchored at the pre-task SHA and the immutable review base:
+
+```bash
+BASE_SHA=$PRE_TASK_SHA
+HEAD_SHA=$REVIEW_BASE
+test -n "$BASE_SHA"
+test -n "$HEAD_SHA"
+```
+
 #### Durable combined review budget
 
-The Arc issue description is both canonical task input and durable budget storage. On first review, preserve the complete canonical description bytes and byte-concatenate the sentinel directly after them without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the sentinel identical even when Arc has trimmed a trailing newline. The actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
+The Arc issue description is both canonical task input and durable budget storage. Bootstrap and reload are distinct. On first review, first inspect the last exact sentinel: a suffix that does not present a recorded canonical SHA-256 is quoted sentinel/header example content; quoted sentinel/header examples remain uninitialized, so preserve and hash the **entire** original description bytes and byte-concatenate the actual sentinel directly after them without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the actual ledger boundary identical even when Arc has trimmed a trailing newline. A last sentinel is initialized only when its terminal suffix is a structurally valid terminal review-ledger trailer (versioned header, canonical SHA-256, fixed authorization, table header/separator, and valid rows) and the recorded canonical SHA-256 matches the exact prefix. A ledger-looking malformed terminal trailer, including a hash mismatch, must fail closed; never truncate quoted canonical task prose. After initialization, the actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
 
 ```markdown
 <!-- arc-review-ledger:v1 -->
@@ -216,16 +227,28 @@ Spec and code review share one combined four-run task budget across sessions and
 
 Materialize `ReviewInput { canonical_spec, canonical_sha256, design_excerpt, diff_path, diff_sha256, prior_findings?, cycle }` in the prompt. The parent supplies the canonical Arc task description above the sentinel and the approved design excerpt; the reviewer never needs Arc CLI or Git. For re-review, include prior findings verbatim and the exact newest fix delta. Outside-delta findings may newly block only when the newest delta exposes a critical latent correctness or safety defect; unrelated noncritical observations become follow-ups.
 
-Small diffs may be inline, with their SHA-256 recorded. For a non-inline diff, create the artifact outside the repository and make it immutable before launch:
+Small diffs may be inline, with their SHA-256 recorded. For a non-inline diff, create the artifact physically outside the repository and make it immutable before launch:
 
 ```bash
-REPO_ROOT=$(git rev-parse --show-toplevel)
+REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P) || {
+  echo 'unable to resolve repository root physically' >&2
+  exit 1
+}
 REVIEW_INPUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/arc-review-input.XXXXXX")
-case "$REVIEW_INPUT_DIR/" in "$REPO_ROOT/"*) echo 'review input must be outside the repository' >&2; exit 1 ;; esac
-git diff --binary --find-renames=0 "$BASE_SHA..$HEAD_SHA" > "$REVIEW_INPUT_DIR/diff.patch"
+REVIEW_INPUT_DIR=$(cd "$REVIEW_INPUT_DIR" && pwd -P) || {
+  echo 'unable to resolve review input directory physically' >&2
+  exit 1
+}
+case "$REVIEW_INPUT_DIR/" in "$REPO_ROOT/"*) echo 'review input must be physically outside the repository' >&2; exit 1 ;; esac
+git diff --binary --find-renames=0 "$BASE_SHA..$HEAD_SHA" > "$REVIEW_INPUT_DIR/diff.patch" || {
+  echo 'review diff materialization failed' >&2
+  exit 1
+}
 chmod 0444 "$REVIEW_INPUT_DIR/diff.patch"
 DIFF_SHA256=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')
 ```
+
+The physical resolution and containment check must complete before launch. A relative `TMPDIR` or a symlinked `TMPDIR` that resolves inside the repository is rejected. Failed diff materialization exits before chmod or hashing. Do not remove the created review-input directory or partial diff artifact on failure; retain it as failure evidence.
 
 The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool. Mode 0444 is defense in depth, but mode 0444 alone does not prove the bytes remained unchanged; the post-review SHA-256 check is authoritative, and any hash mismatch blocks acceptance.
 
@@ -248,7 +271,17 @@ subagent({
 })
 ```
 
-The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The literal outer base ref uses symbolic `HEAD`, resolved at worktree allocation by `pi-subagents`; `REVIEW_BASE` remains the immutable full-SHA verification anchor. The outer workflow remains asynchronous while its exactly one awaited inner foreground child completes. Omit `model:` so the configured specReviewer profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
+The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The literal outer base ref uses symbolic `HEAD`, resolved at worktree allocation by `pi-subagents`; `REVIEW_BASE` remains the immutable full-SHA verification anchor. The outer workflow remains asynchronous while its exactly one awaited inner foreground child completes. Capture the current outer launch's exact returned receipt before returning control; do not use a later notification or a discovered async directory as a substitute:
+
+```bash
+OUTER_LAUNCH_RECEIPT='<exact outer launch receipt returned by subagent>'
+OUTER_RUN_ID=$(printf '%s' "$OUTER_LAUNCH_RECEIPT" | jq -er '.runId | strings | select(length > 0)')
+NATIVE_ASYNC_DIR=$(printf '%s' "$OUTER_LAUNCH_RECEIPT" | jq -er '.details.asyncDir | strings | select(length > 0)')
+NATIVE_STATUS_PATH="$NATIVE_ASYNC_DIR/status.json"
+test -r "$NATIVE_STATUS_PATH"
+```
+
+`NATIVE_ASYNC_DIR` comes only from this launch receipt's exact `details.asyncDir`; read only its `status.json`. Omit `model:` so the configured specReviewer profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
 
 #### Terminal evidence before prose
 
@@ -275,12 +308,13 @@ For a non-inline diff, recheck its immutable bytes after completion and before a
 test "$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')" = "$DIFF_SHA256"
 ```
 
-Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading spec review prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
+Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading spec review prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: its top-level `.runId` must equal the current `$OUTER_RUN_ID`, `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
 
 ```bash
-NATIVE_STATUS_JSON='<exact JSON bytes read directly from persisted native async status.json>'
-printf '%s' "$NATIVE_STATUS_JSON" | jq -e '
-  .state == "complete"
+NATIVE_STATUS_JSON=$(cat "$NATIVE_STATUS_PATH")
+printf '%s' "$NATIVE_STATUS_JSON" | jq -e --arg outerRunId "$OUTER_RUN_ID" '
+  .runId == $outerRunId
+  and .state == "complete"
   and (.error == null)
 ' >/dev/null
 CHILD_RESULT=$(printf '%s' "$NATIVE_STATUS_JSON" | jq -ce '.workflow.value')

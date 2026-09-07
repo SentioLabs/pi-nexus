@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,14 +78,17 @@ async function executeWorkflowExample(source, workflowKey) {
   return { expression, outerRequests, innerRequests, returned, childResult };
 }
 
-function acceptsReview({ runtime, manifest, outputEvidence, baseline, workflowKey = 'spec-review', agent = 'arc-spec-reviewer', output = 'spec-review.md' }) {
+function acceptsReview({ runtime, manifest, outputEvidence, baseline, outerRunId, workflowKey = 'spec-review', agent = 'arc-spec-reviewer', output = 'spec-review.md' }) {
   const child = runtime?.workflow?.value;
   const outputReference = child?.outputReference;
   const expectedHandoffSuffix = typeof child?.runId === 'string' ? `/handoffs/${child.runId}.json` : undefined;
   const handoffPaths = Array.isArray(child?.artifactPaths) && expectedHandoffSuffix
     ? child.artifactPaths.filter((artifactPath) => typeof artifactPath === 'string' && artifactPath.endsWith(expectedHandoffSuffix))
     : [];
-  return runtime?.state === 'complete'
+  return typeof outerRunId === 'string'
+    && outerRunId.length > 0
+    && runtime?.runId === outerRunId
+    && runtime?.state === 'complete'
     && runtime?.error == null
     && child?.key === workflowKey
     && child?.agent === agent
@@ -123,29 +127,58 @@ function acceptsReview({ runtime, manifest, outputEvidence, baseline, workflowKe
         && manifestChild?.patch?.error == null));
 }
 
-function git(cwd, ...args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trimEnd();
+function gitWithEnv(cwd, env, ...args) {
+  return execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trimEnd();
 }
 
-function initializeRepository() {
+function git(cwd, ...args) {
+  return gitWithEnv(cwd, process.env, ...args);
+}
+
+function initializeRepository({ env = process.env } = {}) {
   const cwd = mkdtempSync(path.join(tmpdir(), 'arc-review-safety-'));
-  git(cwd, 'init', '-q', '-b', 'review-base');
-  git(cwd, 'config', 'commit.gpgSign', 'false');
-  git(cwd, 'config', 'user.name', 'Arc Review Test');
-  git(cwd, 'config', 'user.email', 'arc-review@example.invalid');
+  gitWithEnv(cwd, env, 'init', '-q', '-b', 'review-base');
+  const hooksPath = path.resolve(cwd, gitWithEnv(cwd, env, 'rev-parse', '--git-dir'), 'arc-review-safety-hooks');
+  mkdirSync(hooksPath);
+  gitWithEnv(cwd, env, 'config', 'core.hooksPath', hooksPath);
+  gitWithEnv(cwd, env, 'config', 'commit.gpgSign', 'false');
+  gitWithEnv(cwd, env, 'config', 'user.name', 'Arc Review Test');
+  gitWithEnv(cwd, env, 'config', 'user.email', 'arc-review@example.invalid');
   writeFileSync(path.join(cwd, 'tracked.txt'), 'base\n');
-  git(cwd, 'add', 'tracked.txt');
-  git(cwd, 'commit', '-qm', 'base');
+  gitWithEnv(cwd, env, 'add', 'tracked.txt');
+  gitWithEnv(cwd, env, 'commit', '-qm', 'base');
   return cwd;
 }
 
-test('disposable review repositories disable inherited commit signing before their base commit', () => {
+test('disposable review repositories isolate hooks and disable inherited commit signing before their base commit', () => {
   const cwd = initializeRepository();
   try {
     assert.equal(git(cwd, 'config', '--local', '--get', 'commit.gpgSign'), 'false');
+    const hooksPath = git(cwd, 'config', '--local', '--get', 'core.hooksPath');
+    assert.equal(path.isAbsolute(hooksPath), true);
+    assert.equal(statSync(hooksPath).isDirectory(), true);
     assert.match(git(cwd, 'rev-parse', 'HEAD'), /^[a-f0-9]{40}$/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('disposable review repositories ignore a synthetic hostile global hooks path', () => {
+  const globalConfigRoot = mkdtempSync(path.join(tmpdir(), 'arc-review-global-config-'));
+  const hostileHooks = path.join(globalConfigRoot, 'hostile-hooks');
+  const globalConfig = path.join(globalConfigRoot, 'gitconfig');
+  mkdirSync(hostileHooks);
+  writeFileSync(path.join(hostileHooks, 'pre-commit'), '#!/bin/sh\necho hostile hook >&2\nexit 1\n');
+  chmodSync(path.join(hostileHooks, 'pre-commit'), 0o755);
+  writeFileSync(globalConfig, `[core]\n\thooksPath = ${hostileHooks}\n`);
+
+  const cwd = initializeRepository({ env: { ...process.env, GIT_CONFIG_GLOBAL: globalConfig } });
+  try {
+    assert.equal(git(cwd, 'config', '--local', '--get', 'core.hooksPath').startsWith(`${cwd}${path.sep}`), true);
+    assert.match(git(cwd, 'rev-parse', 'HEAD'), /^[a-f0-9]{40}$/, 'the hostile inherited pre-commit hook must not run');
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(globalConfigRoot, { recursive: true, force: true });
   }
 });
 
@@ -169,10 +202,31 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function canonicalBytes(description) {
+function reviewLedgerBoundary(description) {
   const index = description.lastIndexOf(LEDGER_SENTINEL);
-  if (index === -1) throw new Error('initialized review ledger boundary is missing');
-  return description.slice(0, index);
+  if (index === -1) return { initialized: false, canonical: description };
+
+  const canonical = description.slice(0, index);
+  const trailer = description.slice(index + LEDGER_SENTINEL.length);
+  const hashCandidate = trailer.match(/^\n## Review Ledger\nCanonical description SHA-256: `([a-f0-9]{64})`/);
+  if (!hashCandidate) return { initialized: false, canonical: description };
+
+  const structurallyValid = /^\n## Review Ledger\nCanonical description SHA-256: `([a-f0-9]{64})`\nAuthorized reviewer runs: 4\n(?:Owner-authorized additional reviewer runs: [1-9]\d*\n)*\| sequence \| reviewer \| run_id \| base \| head \| elapsed_ms \| disposition \|\n\|---:\|---\|---\|---\|---\|---:\|---\|\n(?:\|\s*\d+\s*\|\s*(?:spec|code)\s*\|\s*[^|\s]+\s*\|\s*[^|\s]+\s*\|\s*[^|\s]+\s*\|\s*\d+\s*\|\s*[^|]+?\s*\|\n)*$/.exec(trailer);
+  assert.ok(structurallyValid, 'malformed terminal review ledger trailer');
+  assert.equal(structurallyValid[1], sha256(canonical), 'canonical description hash mismatch');
+  return { initialized: true, canonical, trailer };
+}
+
+function canonicalBytes(description) {
+  const boundary = reviewLedgerBoundary(description);
+  if (!boundary.initialized) throw new Error('initialized review ledger boundary is missing');
+  return boundary.canonical;
+}
+
+function initializeReviewDescription(description) {
+  const boundary = reviewLedgerBoundary(description);
+  assert.equal(boundary.initialized, false, 'review ledger is already initialized');
+  return serializeReviewDescription({ canonical: boundary.canonical, entries: [], additionalAuthorizations: [] });
 }
 
 function launchedRuns(entries) {
@@ -221,8 +275,10 @@ function serializeReviewDescription(ledger) {
 }
 
 function loadReviewDescription(description) {
-  const canonical = canonicalBytes(description);
-  const ledgerText = description.slice(description.lastIndexOf(LEDGER_SENTINEL) + LEDGER_SENTINEL.length);
+  const boundary = reviewLedgerBoundary(description);
+  assert.ok(boundary.initialized, 'initialized review ledger boundary is missing');
+  const canonical = boundary.canonical;
+  const ledgerText = boundary.trailer;
   const hashMatch = ledgerText.match(/Canonical description SHA-256: `([a-f0-9]{64})`/);
   assert.ok(hashMatch, 'missing canonical description hash');
   assert.equal(hashMatch[1], sha256(canonical), 'canonical description hash mismatch');
@@ -278,6 +334,30 @@ function reviewInput({ priorFindings, latestFixDelta, cycle }) {
   };
 }
 
+function documentedMaterializer(source) {
+  const marker = 'REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P)';
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(markerIndex, -1, 'mandatory review guidance must materialize a diff');
+  const fenceStart = source.lastIndexOf('```bash\n', markerIndex);
+  const fenceEnd = source.indexOf('\n```', markerIndex);
+  assert.notEqual(fenceStart, -1, 'materializer must be in a Bash fence');
+  assert.notEqual(fenceEnd, -1, 'materializer Bash fence must terminate');
+  return source.slice(fenceStart + '```bash\n'.length, fenceEnd);
+}
+
+function runDocumentedMaterializer({ source, cwd, tmpDir, baseSha, headSha }) {
+  return execFileSync(
+    'bash',
+    ['-c', `${documentedMaterializer(source)}\nprintf '%s\\n' "$REVIEW_INPUT_DIR"`],
+    {
+      cwd,
+      env: { ...process.env, TMPDIR: tmpDir, BASE_SHA: baseSha, HEAD_SHA: headSha },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ).trim();
+}
+
 test('reviewer agents expose only read, find, and grep', () => {
   assert.deepEqual(reviewerTools(read(REVIEWERS.spec.agentPath)), ['read', 'find', 'grep']);
   assert.deepEqual(reviewerTools(read(REVIEWERS.code.agentPath)), ['read', 'find', 'grep']);
@@ -316,6 +396,7 @@ test('mandatory workflow examples execute as one isolated foreground reviewer in
 
 test('persisted native workflow status accepts pi-subagents 0.66 completion without a top-level success field', () => {
   const runtime = {
+    runId: 'outer-spec-run',
     state: 'complete',
     error: null,
     workflow: {
@@ -352,6 +433,7 @@ test('persisted native workflow status accepts pi-subagents 0.66 completion with
     manifest,
     outputEvidence: new Map([['/native/outputs/spec-review.md', '## Result: COMPLIANT']]),
     baseline,
+    outerRunId: 'outer-spec-run',
   }), true);
 });
 
@@ -360,6 +442,7 @@ test('review acceptance combines complete native status output with exact no-cha
   const outputReference = '/native/outputs/spec-review.md';
   const handoffPath = '/native/handoffs/spec-run.json';
   const validRuntime = {
+    runId: 'outer-spec-run',
     state: 'complete',
     error: null,
     workflow: {
@@ -391,11 +474,14 @@ test('review acceptance combines complete native status output with exact no-cha
     manifest: validNoChangeManifest,
     outputEvidence: new Map([[outputReference, '## Result: COMPLIANT']]),
     baseline,
+    outerRunId: 'outer-spec-run',
   };
 
   assert.equal(acceptsReview(valid), true);
   for (const runtime of [
     undefined,
+    { ...validRuntime, runId: undefined },
+    { ...validRuntime, runId: 'stale-outer-run' },
     { ...validRuntime, state: undefined },
     { ...validRuntime, state: 'failed' },
     { ...validRuntime, state: 'running' },
@@ -459,8 +545,13 @@ test('documented acceptance predicates combine runtime output and handoff eviden
     assert.match(source, /exact persisted native async `status\.json` after the completion notification or status observation/i);
     assert.match(source, /notification.*prose, not JSON/i);
     assert.match(source, /never merge or reconstruct evidence fields/i);
+    assert.match(source, /OUTER_LAUNCH_RECEIPT/);
+    assert.match(source, /OUTER_RUN_ID/);
+    assert.match(source, /details\.asyncDir/);
+    assert.match(source, /NATIVE_STATUS_PATH/);
     assert.match(source, /NATIVE_STATUS_JSON/);
     assert.match(source, /CHILD_RESULT/);
+    assert.match(source, /\.runId == \$outerRunId/);
     assert.match(source, /\.state == "complete"/);
     assert.match(source, /\.error == null/);
     assert.match(source, /CHILD_RESULT=\$\(printf '%s' "\$NATIVE_STATUS_JSON" \| jq -ce '\.workflow\.value'\)/);
@@ -634,21 +725,22 @@ test('versioned issue description persists combined reviewer runs and bounded ow
   }
 });
 
-test('canonical extraction uses the final sentinel when task prose quotes earlier examples', () => {
+test('ledger bootstrap preserves quoted sentinel/header task content before durable authorization and run rows', () => {
   const canonical = [
     '# Canonical task',
     '',
     `The protocol documents ${LEDGER_SENTINEL} inline.`,
     '',
-    'It also includes the exact example:',
+    'It also includes the exact header example:',
     LEDGER_SENTINEL,
     '## Review Ledger',
+    'Canonical description SHA-256: `<sha256>`',
     'Authorized reviewer runs: 4',
     '',
     'The canonical task continues after both quoted examples.',
   ].join('\n');
   const canonicalHash = sha256(canonical);
-  const initializedDescription = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${canonicalHash}\`\nAuthorized reviewer runs: 4\n`;
+  const initializedDescription = initializeReviewDescription(canonical);
   const firstBoundary = initializedDescription.indexOf(LEDGER_SENTINEL);
   const firstOccurrenceExtraction = initializedDescription.slice(0, firstBoundary);
 
@@ -657,12 +749,25 @@ test('canonical extraction uses the final sentinel when task prose quotes earlie
   assert.notEqual(sha256(firstOccurrenceExtraction), canonicalHash, 'the truncated first-occurrence hash must be wrong');
   assert.equal(canonicalBytes(initializedDescription), canonical);
   assert.equal(sha256(canonicalBytes(initializedDescription)), canonicalHash);
+
+  const authorized = appendOwnerAuthorization(initializedDescription, 3);
+  const durable = appendNativeRun(authorized, 'spec', 'run-1');
+  const reloaded = loadReviewDescription(durable);
+  assert.equal(reloaded.canonical, canonical);
+  assert.deepEqual(reloaded.additionalAuthorizations, [3]);
+  assert.deepEqual(reloaded.entries.map((entry) => entry.run_id), ['run-1']);
+
+  const malformedTerminalTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${canonicalHash}\`\nAuthorized reviewer runs: 4\nnot a ledger table\n`;
+  assert.throws(() => loadReviewDescription(malformedTerminalTrailer), /malformed terminal review ledger trailer/);
   assert.throws(() => canonicalBytes('# ledger initialization lost its boundary'), /ledger boundary/i);
 
   for (const review of Object.values(REVIEWERS)) {
     const source = read(review.skillPath);
     assert.match(source, /actual ledger boundary is the last exact sentinel/i);
-    assert.match(source, /canonical task prose (?:or|and) code may quote earlier sentinel examples/i);
+    assert.match(source, /quoted sentinel\/header examples.*uninitialized|uninitialized.*quoted sentinel\/header examples/i);
+    assert.match(source, /structurally valid terminal review-ledger trailer/i);
+    assert.match(source, /recorded canonical SHA-256 matches the exact prefix/i);
+    assert.match(source, /malformed terminal trailer.*fail closed|fail closed.*malformed terminal trailer/i);
     assert.match(source, /rpartition\(marker\)/);
     assert.match(source, /assert found/);
     assert.match(source, /no last boundary.*fail closed|fail closed.*no last boundary/i);
@@ -714,19 +819,22 @@ test('re-review permits outside-delta expansion only for a critical latent issue
   }
 });
 
-test('documented Git diff materialization is external, mode-0444, hash-addressed, and rejects changed bytes', () => {
-  for (const review of Object.values(REVIEWERS)) {
-    const source = read(review.skillPath);
-    assert.match(source, /REVIEW_INPUT_DIR=\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/arc-review-input\.XXXXXX"\)/);
-    assert.match(source, /git diff --binary --find-renames=0 "\$BASE_SHA\.\.\$HEAD_SHA" > "\$REVIEW_INPUT_DIR\/diff\.patch"/);
+test('documented Git diff materialization defines the spec range, physically contains artifacts, and fails before chmod/hash', () => {
+  const specSource = read(REVIEWERS.spec.skillPath);
+  const codeSource = read(REVIEWERS.code.skillPath);
+  for (const source of [specSource, codeSource]) {
+    assert.match(source, /REPO_ROOT=\$\(cd "\$\(git rev-parse --show-toplevel\)" && pwd -P\)/);
+    assert.match(source, /REVIEW_INPUT_DIR=\$\(cd "\$REVIEW_INPUT_DIR" && pwd -P\)/);
+    assert.match(source, /git diff --binary --find-renames=0 "\$BASE_SHA\.\.\$HEAD_SHA" > "\$REVIEW_INPUT_DIR\/diff\.patch" \|\| \{/);
+    assert.match(source, /review input must be physically outside the repository/i);
+    assert.match(source, /failed diff materialization exits before chmod or hashing/i);
+    assert.match(source, /Do not remove the created review-input directory or partial diff artifact on failure/i);
     assert.match(source, /chmod 0444 "\$REVIEW_INPUT_DIR\/diff\.patch"/);
     assert.match(source, /DIFF_SHA256=\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"/);
     assert.match(source, /test "\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"/);
-    assert.match(source, /outside the repository/i);
-    assert.match(source, /path, SHA-256, base, and head/i);
-    assert.match(source, /mode 0444 alone does not prove.*unchanged|unchanged.*mode 0444 alone does not prove/is);
-    assert.match(source, /hash mismatch.*blocks acceptance/i);
   }
+  assert.match(specSource, /BASE_SHA=\$PRE_TASK_SHA\nHEAD_SHA=\$REVIEW_BASE/);
+  assert.match(codeSource, /BASE_SHA=\$PRE_TASK_SHA\nHEAD_SHA=\$\(git rev-parse HEAD\)/);
 
   const repository = initializeRepository();
   const externalRoot = mkdtempSync(path.join(tmpdir(), 'arc-review-artifact-test-'));
@@ -736,15 +844,47 @@ test('documented Git diff materialization is external, mode-0444, hash-addressed
     git(repository, 'add', 'tracked.txt');
     git(repository, 'commit', '-qm', 'implementation');
     const headSha = git(repository, 'rev-parse', 'HEAD');
-    const artifact = path.join(externalRoot, 'diff.patch');
-    const diffBytes = execFileSync('git', ['diff', '--binary', '--find-renames=0', `${baseSha}..${headSha}`], { cwd: repository });
-    writeFileSync(artifact, diffBytes);
-    chmodSync(artifact, 0o444);
-    const expectedHash = sha256(readFileSync(artifact));
 
-    assert.equal(path.relative(repository, artifact).startsWith(`..${path.sep}`), true, 'artifact must remain outside the repository');
+    const reviewInputDir = runDocumentedMaterializer({
+      source: specSource,
+      cwd: repository,
+      tmpDir: externalRoot,
+      baseSha,
+      headSha,
+    });
+    const artifact = path.join(reviewInputDir, 'diff.patch');
+    const expectedHash = sha256(readFileSync(artifact));
+    assert.equal(path.relative(repository, artifact).startsWith(`..${path.sep}`), true, 'artifact must remain physically outside the repository');
     assert.match(read(artifact), /-base\n\+reviewed implementation/);
     assert.equal(artifactHashMatches(artifact, expectedHash), true);
+
+    assert.throws(() => runDocumentedMaterializer({
+      source: specSource,
+      cwd: repository,
+      tmpDir: externalRoot,
+      baseSha: 'not-a-revision',
+      headSha,
+    }), 'an invalid diff range must fail the materializer before chmod/hash can mask it');
+
+    const insideTmp = path.join(repository, 'inside-tmp');
+    mkdirSync(insideTmp);
+    assert.throws(() => runDocumentedMaterializer({
+      source: specSource,
+      cwd: repository,
+      tmpDir: 'inside-tmp',
+      baseSha,
+      headSha,
+    }), 'a relative TMPDIR resolving inside the repository must be rejected');
+
+    const symlinkTmp = path.join(externalRoot, 'symlinked-tmp');
+    symlinkSync(insideTmp, symlinkTmp);
+    assert.throws(() => runDocumentedMaterializer({
+      source: specSource,
+      cwd: repository,
+      tmpDir: symlinkTmp,
+      baseSha,
+      headSha,
+    }), 'a symlinked TMPDIR resolving inside the repository must be rejected');
 
     chmodSync(artifact, 0o644);
     writeFileSync(artifact, Buffer.concat([readFileSync(artifact), Buffer.from('\nmutated after review\n')]));
