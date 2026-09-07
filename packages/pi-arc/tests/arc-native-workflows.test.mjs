@@ -39,24 +39,18 @@ function assertCompleteOrderedHandoffs(requests, results) {
 
 function nativeResult(key, request = {}) {
   const runId = `${key}-run`;
-  const artifactPaths = request.async === false
-    ? [
-        `/native/outputs/${key}.md`,
-        `/native/sessions/${runId}.jsonl`,
-        `/native/handoffs/${runId}.json`,
-      ]
-    : [
-        `/native/async/${runId}`,
-        `/native/async/${runId}/output.md`,
-        `/native/async/${runId}/session.jsonl`,
-      ];
+  const foreground = request.async === false;
   return {
     key,
     ok: true,
-    outputReference: request.async === false
-      ? `/native/outputs/${key}.md`
-      : `/native/async/${runId}/output.md`,
-    artifactPaths,
+    ...(foreground ? { outputReference: `/native/outputs/${key}.md` } : {}),
+    artifactPaths: foreground
+      ? [
+          `/native/handoffs/${runId}.json`,
+          `/native/outputs/${key}.md`,
+          `/native/sessions/${runId}.jsonl`,
+        ]
+      : [`/native/async/${runId}`],
   };
 }
 
@@ -198,9 +192,9 @@ test('documented workflowScript bodies execute and retain realistic native hando
       assert.equal(result.ok, true);
       assert.equal(result.outputReference, `/native/outputs/${key}.md`);
       assert.deepEqual(result.artifactPaths, [
+        `/native/handoffs/${key}-run.json`,
         `/native/outputs/${key}.md`,
         `/native/sessions/${key}-run.jsonl`,
-        `/native/handoffs/${key}-run.json`,
       ]);
     }
   }
@@ -270,12 +264,20 @@ test('explicit inner foreground mode exposes the exact native handoff path while
   const foreground = nativeResult('build-a', { async: false });
   const defaultAsync = nativeResult('build-a');
 
+  assert.equal(foreground.key, 'build-a');
+  assert.equal(foreground.ok, true);
+  assert.equal(typeof foreground.outputReference, 'string');
+  assert.deepEqual(foreground.artifactPaths, [
+    '/native/handoffs/build-a-run.json',
+    '/native/outputs/build-a.md',
+    '/native/sessions/build-a-run.jsonl',
+  ]);
   assert.deepEqual(exactHandoffManifestPaths(foreground), ['/native/handoffs/build-a-run.json']);
+
+  assert.deepEqual(defaultAsync.artifactPaths, ['/native/async/build-a-run']);
+  assert.equal(defaultAsync.outputReference, undefined);
+  assert.equal(Object.hasOwn(defaultAsync, 'outputReference'), false);
   assert.deepEqual(exactHandoffManifestPaths(defaultAsync), []);
-  assert.equal(defaultAsync.outputReference, '/native/async/build-a-run/output.md');
-  assert.match(defaultAsync.artifactPaths[0], /\/async\/build-a-run$/);
-  assert.ok(defaultAsync.artifactPaths.some((path) => path.endsWith('/output.md')));
-  assert.ok(defaultAsync.artifactPaths.some((path) => path.endsWith('/session.jsonl')));
 });
 
 test('handoff manifest base predicate rejects missing, empty, and mismatched baseCommit evidence', () => {
