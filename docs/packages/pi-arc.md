@@ -20,7 +20,11 @@ pi -e ./packages/pi-arc
 
 The package bundles `@juicesharp/rpiv-todo` and `@juicesharp/rpiv-ask-user-question` through npm `bundledDependencies` so Arc workflows can load checklist and structured-question resources from `node_modules`.
 
-`@sentiolabs/pi-arc` does **not** bundle or load `pi-subagents` itself as of the imported `0.10.0` baseline. Non-delegating Arc CLI, context, and planning features remain usable without it. Every delegated specialist requires the separately installed, loaded, enabled provider; Arc auto-materializes its generated `arc-*` definitions for that provider:
+`@sentiolabs/pi-arc` does **not** bundle or load `pi-subagents` itself as of the imported `0.10.0` baseline. Non-delegating Arc CLI, context, and planning features remain usable without it. Every delegated specialist requires the separately installed, loaded, enabled provider; Arc auto-materializes its generated `arc-*` definitions for that provider.
+
+pi-subagents 0.66.0+ is the tested delegated-review compatibility floor. It remains separately installed and unbundled. Runtime acceptance is based on capability and native handoff evidence, not semver alone. Mandatory reviews require a clean checkout and native isolated worktrees. Each acceptance review uses exactly one read-only foreground reviewer in an asynchronous native workflow and has no shared-cwd or `arc_agent` fallback; generic `arc_agent` dispatch remains available outside mandatory review gates.
+
+Install the provider separately:
 
 ```bash
 pi install npm:pi-subagents

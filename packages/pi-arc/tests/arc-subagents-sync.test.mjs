@@ -81,22 +81,33 @@ test('arc-plan delegates issue-manager through the required provider', () => {
   assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
 });
 
-test('arc-review uses a fresh native completion-gated reviewer', () => {
+test('arc-review uses the mandatory isolated native completion-gated reviewer', () => {
   const source = read('skills/arc-review/SKILL.md');
-  assert.match(source, /arc-code-reviewer/);
-  assert.match(source, /subagent\(\{ agent: "arc-code-reviewer"/);
+  assert.match(source, /return await runs\.run\("code-review"/);
+  assert.match(source, /agent: "arc-code-reviewer"/);
+  assert.match(source, /worktree: true/);
+  assert.match(source, /output: "code-review\.md"/);
+  assert.match(source, /async: false/);
+  assert.match(source, /(?:baseRef|\["baseRef"\]): "HEAD"/);
   assert.match(source, /native completion/i);
-  assert.match(source, /successful terminal runtime state/i);
-  assert.match(source, /Reviews after fixes are fresh independent/);
-  assert.match(source, /arc_agent\(agent="code-reviewer"/);
+  assert.match(source, /fresh independent `arc-code-reviewer` runs|re-review/i);
   assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
+
+  const mandatoryGate = source.slice(source.indexOf('### 3. Dispatch Reviewer'), source.indexOf('### 4. Triage Feedback'));
+  assert.doesNotMatch(mandatoryGate, /arc_agent\(agent="code-reviewer"/);
+  assert.match(mandatoryGate, /obsolete direct shared-cwd form[\s\S]*shown only to identify and reject it; never execute it/i);
 });
 
-test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents completion guard', () => {
+test('arc-code-reviewer dispatch prompt stays immutable and review-only', () => {
   const source = read('skills/arc-review/code-reviewer-prompt.md');
   assert.match(source, /Review only/i);
   assert.match(source, /return findings only/i);
   assert.match(source, /Do not edit files/i);
+  assert.match(source, /\{CANONICAL_SHA256\}/);
+  assert.match(source, /\{DIFF_SHA256\}/);
+  assert.match(source, /\{PRIOR_FINDINGS\}/);
+  assert.match(source, /\{LATEST_FIX_DELTA\}/);
+  assert.match(source, /Any mutation invalidates the review/);
   assert.doesNotMatch(source, /\bmust\s+(?:edit|modify|change|fix|patch|apply)\b/i);
   assert.doesNotMatch(source, /\bapply\s+(?:the\s+)?fix(?:es)?\s+directly\b/i);
   assert.doesNotMatch(source, /\bmake\s+(?:the\s+)?code\s+changes\b/i);
@@ -114,6 +125,8 @@ test('README documents auto-materialized specialists and native completion seman
   assert.match(source, /separately installed, loaded, enabled provider is required/i);
   assert.match(source, /dispatch receipt never advances an Arc stage/i);
   assert.match(source, /same provider and is not an independent execution fallback/i);
+  assert.match(source, /pi-subagents 0\.66\.0\+ is the tested delegated-review compatibility floor/);
+  assert.match(source, /Mandatory reviews require a clean checkout and native isolated worktrees/);
   assert.doesNotMatch(source, /\/subagents-status.*confirm availability/);
 });
 

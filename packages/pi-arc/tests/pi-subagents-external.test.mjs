@@ -23,6 +23,8 @@ test('package stays independent of pi-subagents packaging while delegated runtim
   const pkg = readJson('package.json');
   const lock = readJson('../../package-lock.json');
   const packageLockEntry = lock.packages['packages/pi-arc'];
+  const readme = read('README.md');
+  const packageDocs = read('../../docs/packages/pi-arc.md');
 
   assert.equal(pkg.dependencies[PI_SUBAGENTS_PACKAGE], undefined);
   assert.equal(pkg.dependencies['pi-intercom'], undefined);
@@ -35,4 +37,10 @@ test('package stays independent of pi-subagents packaging while delegated runtim
   assert.ok(!packageLockEntry.bundleDependencies.includes(PI_SUBAGENTS_PACKAGE));
   assert.ok(!packageLockEntry.bundleDependencies.includes('pi-intercom'));
   assert.equal(lock.packages[`node_modules/${PI_SUBAGENTS_PACKAGE}`], undefined);
+
+  for (const documentation of [readme, packageDocs]) {
+    assert.match(documentation, /pi-subagents 0\.66\.0\+ is the tested delegated-review compatibility floor/);
+    assert.match(documentation, /separately installed and unbundled/i);
+    assert.match(documentation, /Runtime acceptance is based on capability and native handoff evidence, not semver alone/);
+  }
 });

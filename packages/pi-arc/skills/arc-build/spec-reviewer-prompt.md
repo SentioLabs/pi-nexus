@@ -1,32 +1,64 @@
 # Spec Reviewer Prompt Template
 
-Use this template when dispatching `spec-reviewer` after an implementer reports `DONE`.
+Use this template only for the native isolated mandatory reviewer workflow.
 
 **Placeholders:**
-- `{TASK_ID}` — arc issue ID
-- `{BASE_SHA}` — pre-task SHA (recorded before dispatching the implementer)
-- `{HEAD_SHA}` — current HEAD after implementer's commit
+- `{TASK_ID}` — Arc issue ID
+- `{CANONICAL_SPEC}` — canonical task-description bytes above the review-ledger sentinel
+- `{CANONICAL_SHA256}` — SHA-256 of those canonical bytes
+- `{DESIGN_EXCERPT}` — relevant approved design text, or `none`
+- `{BASE_SHA}` / `{HEAD_SHA}` — exact implementation diff range
+- `{DIFF_PATH}` — absolute read-only external artifact path, or `inline`
+- `{DIFF_SHA256}` — SHA-256 of the exact diff bytes
+- `{DIFF_CONTENT}` — exact diff when inline, otherwise `read {DIFF_PATH}`
+- `{PRIOR_FINDINGS}` — exact prior findings for re-review, or `none`
+- `{LATEST_FIX_DELTA}` — exact newest fix delta for re-review, or `none`
+- `{CYCLE}` — shared spec/code review cycle number
+- `{EVALUATOR_STATUS}` — code review only: `active` or `not dispatched`; otherwise `not applicable`
 
 ````text
-You are verifying that arc task {TASK_ID}'s implementation matches its spec exactly.
+Verify that the implementation for Arc task {TASK_ID} matches its canonical task spec exactly.
 
-## Task Spec
-<paste output of: arc show {TASK_ID}>
+Review only; return findings only. Do not edit files.
 
-## Changes
-<paste output of: git diff {BASE_SHA}..{HEAD_SHA}>
+Repository writes or artifacts, Git/ref changes, Arc mutation, package installation, cache/build generation, and writer delegation are prohibited. Do not run Git, Arc, tests, package managers, generators, or delegated writers. Any mutation invalidates the review.
+
+## Review Input
+
+Task: {TASK_ID}
+Canonical description SHA-256: {CANONICAL_SHA256}
+Diff base: {BASE_SHA}
+Diff head: {HEAD_SHA}
+Diff path: {DIFF_PATH}
+Diff SHA-256: {DIFF_SHA256}
+Cycle: {CYCLE}
+
+### Canonical Task Spec
+{CANONICAL_SPEC}
+
+### Approved Design Excerpt
+{DESIGN_EXCERPT}
+
+### Changes
+{DIFF_CONTENT}
+
+### Prior Findings
+{PRIOR_FINDINGS}
+
+### Exact Newest Fix Delta
+{LATEST_FIX_DELTA}
+
+### Evaluator Status
+{EVALUATOR_STATUS}
+
+Use only the supplied canonical task, design excerpt, diff bytes, and repository reads. The parent has already captured Git and Arc state; do not retrieve or mutate either. On re-review, verify the prior findings against the exact newest fix delta, then evaluate the resulting implementation. Findings outside that delta may newly block only for a critical latent correctness or safety defect exposed by the delta; report unrelated noncritical observations as follow-ups.
 
 ## Your Job
 
-Compare the diff against the spec. For each requirement in the spec:
-- Is it implemented? If yes, cite the file and line.
-- If no, flag the gap.
-
-For the diff:
-- Is anything present that the spec did NOT ask for? Flag it.
-- Are files modified outside the task's `## Files` section? Flag as scope violation.
-
-You do NOT write code. You do NOT run tests. You do NOT close issues.
+Compare the supplied diff and readable implementation files against the canonical spec. For each requirement:
+- If implemented, cite the file and line.
+- If absent or partial, flag the gap.
+- Flag anything not requested and every file outside the spec's `## Files` list.
 
 ## Report Format
 

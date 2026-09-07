@@ -61,6 +61,8 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
   - Install it once with `pi install npm:pi-subagents`.
   - Coordinated parallel waves use one native `workflowScript`; Arc does not add another scheduler, runner, session, worktree, or completion system.
 
+pi-subagents 0.66.0+ is the tested delegated-review compatibility floor. It remains separately installed and unbundled. Runtime acceptance is based on capability and native handoff evidence, not semver alone. Mandatory reviews require a clean checkout and native isolated worktrees. Their acceptance workflows have exactly one read-only foreground reviewer inside an asynchronous native workflow; unlike generic specialist dispatch, they have no shared-cwd or `arc_agent` fallback.
+
 ## Prerequisites
 
 - Pi installed.

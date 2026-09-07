@@ -172,24 +172,143 @@ Address each concern and re-report.
 
 ### 5. Spec Compliance Review
 
-After confirming tests pass, dispatch the `spec-reviewer` to independently verify the implementation matches the spec:
+Mandatory spec review is an Arc acceptance gate, not generic dispatch. It requires the separately installed native provider and exact `arc-spec-reviewer` capability. There is no shared-cwd, `arc_agent`, generic-agent, provider-runner, or CLI fallback for this gate. If capability or evidence is unavailable, stop with setup or infrastructure guidance.
+
+#### Clean source preflight
+
+Run from the repository root before materializing input or launching a reviewer:
 
 ```bash
-BASE_SHA=$PRE_TASK_SHA
+REVIEW_BRANCH=$(git branch --show-current)
+REVIEW_BASE=$(git rev-parse HEAD)
+REVIEW_STATE=$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')
+test -n "$REVIEW_BRANCH"
+test -z "$REVIEW_STATE" || {
+  printf '%s\n' "$REVIEW_STATE" >&2
+  echo 'review requires a clean source checkout' >&2
+  exit 1
+}
 ```
 
-Dispatch `spec-reviewer`:
+Dirty source state blocks review. Never stash, reset, restore, clean, or fall back to shared-cwd review. Capture these exact values as `ReviewBaseline { branch, head, porcelainV2 }`; `REVIEW_BASE` is the native worktree handoff base while `BASE_SHA..HEAD_SHA` remains the implementation range under review.
 
-Fill `./spec-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, and `{HEAD_SHA}`. Preserve review-only behavior. Use `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="spec-reviewer", task="<filled prompt>")`. Omit `model:` so the configured `specReviewer` profile wins; `large` frontmatter/model fallback remains available.
+#### Durable combined review budget
 
-The call returns a dispatch receipt, not review success. Return control for native completion, then require successful terminal runtime state and a complete final review artifact. Failure, pause, stop, incomplete or malformed output blocks the stage regardless of compliance prose. Do not substitute generic `worker` or `reviewer` agents.
+The Arc issue description is both canonical task input and durable budget storage. On first review, preserve the complete canonical description bytes and byte-concatenate the sentinel directly after them without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the sentinel identical even when Arc has trimmed a trailing newline. Append exactly this versioned boundary and header:
+
+```markdown
+<!-- arc-review-ledger:v1 -->
+## Review Ledger
+Canonical description SHA-256: `<sha256>`
+Authorized reviewer runs: 4
+```
+
+Bytes above the sentinel are canonical and must never change. Compute and verify their SHA-256 before every launch. Content below the sentinel is the ledger only. Use rows with the conceptual shape `ReviewLedgerEntry { sequence, reviewer, run_id, base, head, elapsed_ms, disposition }`:
+
+```markdown
+| sequence | reviewer | run_id | base | head | elapsed_ms | disposition |
+|---:|---|---|---|---|---:|---|
+```
+
+Spec and code review share one combined four-run task budget across sessions and cycles. Before each launch, count all rows carrying a native run identity. Every returned native run identity consumes exactly one row, including a run that later fails; record its row as soon as the launch returns the identity, then update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. The allowed total is four plus the sum of those explicit finite grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the first exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing.
+
+#### Immutable parent-supplied input
+
+Materialize `ReviewInput { canonical_spec, canonical_sha256, design_excerpt, diff_path, diff_sha256, prior_findings?, cycle }` in the prompt. The parent supplies the canonical Arc task description above the sentinel and the approved design excerpt; the reviewer never needs Arc CLI or Git. For re-review, include prior findings verbatim and the exact newest fix delta. Outside-delta findings may newly block only when the newest delta exposes a critical latent correctness or safety defect; unrelated noncritical observations become follow-ups.
+
+Small diffs may be inline, with their SHA-256 recorded. For a non-inline diff, create the artifact outside the repository and make it immutable before launch:
+
+```bash
+REPO_ROOT=$(git rev-parse --show-toplevel)
+REVIEW_INPUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/arc-review-input.XXXXXX")
+case "$REVIEW_INPUT_DIR/" in "$REPO_ROOT/"*) echo 'review input must be outside the repository' >&2; exit 1 ;; esac
+git diff --binary --find-renames=0 "$BASE_SHA..$HEAD_SHA" > "$REVIEW_INPUT_DIR/diff.patch"
+chmod 0444 "$REVIEW_INPUT_DIR/diff.patch"
+DIFF_SHA256=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')
+```
+
+The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool.
+
+#### One native isolated reviewer
+
+Immediately before outer launch, require `test "$(git rev-parse HEAD)" = "$REVIEW_BASE"`. Then launch exactly one awaited foreground reviewer inside an asynchronous native workflow:
+
+```typescript
+subagent({
+  ["workflowScript"]: `return await runs.run("spec-review", {
+    agent: "arc-spec-reviewer",
+    task: "<filled immutable review prompt>",
+    worktree: true,
+    async: false,
+    output: "spec-review.md"
+  });`,
+  context: "fresh",
+  async: true,
+  globalConcurrencyLimit: 1,
+  ["baseRef"]: "HEAD"
+})
+```
+
+The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The outer workflow stays `async: true` and returns control for native completion. Omit `model:` so the configured specReviewer profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
+
+#### Terminal evidence before prose
+
+After every terminal outcome, success or failure, run this invariant before retry, builder dispatch, issue closure, or publication:
+
+```bash
+test "$(git branch --show-current)" = "$REVIEW_BRANCH"
+test "$(git rev-parse HEAD)" = "$REVIEW_BASE"
+test -z "$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')"
+```
+
+Any failure invalidates the review and stops for explicit inspection. Never reset, restore, clean, stash, commit, or switch execution mode automatically. This post-run invariant is required even when native launch, execution, output capture, or reviewer completion fails.
+
+Re-read the Arc issue after completion, split its description at the first exact ledger sentinel without normalizing bytes, and recompute the prefix hash. A parent may use this byte-preserving pipeline; the reviewer itself never receives Arc access:
+
+```bash
+CURRENT_CANONICAL_SHA256=$(arc show "$TASK_ID" --json | jq -j .description | python3 -c 'import hashlib, sys; data=sys.stdin.buffer.read(); marker=b"<!-- arc-review-ledger:v1 -->"; before, found, _=data.partition(marker); assert found; print(hashlib.sha256(before).hexdigest())')
+test "$CURRENT_CANONICAL_SHA256" = "$CANONICAL_SHA256"
+```
+
+For a non-inline diff, recheck its immutable bytes after completion and before acceptance:
+
+```bash
+test "$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')" = "$DIFF_SHA256"
+```
+
+Require successful outer workflow completion and the complete foreground child result. In that result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it. Validate the native handoff before reading spec review prose:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$REVIEW_BASE" --arg key "spec-review" --arg agent "arc-spec-reviewer" '
+    .version == 1
+    and (.groups | type == "array" and length > 0)
+    and all(.groups[];
+      .baseCommit == $base
+      and (.children | type == "array" and length == 1)
+      and all(.children[];
+        .workflowKey == $key
+        and .agent == $agent
+        and .status == "completed"
+        and .patch.changed == false
+        and .patch.filesChanged == 0
+        and .patch.insertions == 0
+        and .patch.deletions == 0
+        and (.patch.error == null)
+      )
+    )
+  ' "$HANDOFF_MANIFEST"
+```
+
+Missing or malformed output, runtime failure, wrong workflow/agent identity, wrong base, more or fewer than one child, any patch/error evidence, a changed canonical/diff input hash, or a changed primary branch/HEAD/status blocks acceptance. Arc never applies reviewer patches. Only after all native, immutable-input, and post-run evidence passes may Arc interpret the report and apply its finding-disposition policy.
 
 Handle results:
 - `COMPLIANT` → proceed to Step 6
 - `ISSUES (Missing)` → re-dispatch `builder` with specific gaps listed by the spec reviewer. Re-run spec compliance review after.
 - `ISSUES (Extra)` → re-dispatch `builder` to remove the extras listed by the spec reviewer. Re-run spec compliance review after.
 - `ISSUES (Misunderstood)` → re-dispatch `builder` with clarification from the spec reviewer's findings. Re-run spec compliance review after.
-- Circuit breaker: 3 spec-review/fix cycles without resolution → escalate to user.
+- Apply the combined four-launched-run spec/code budget from this gate's versioned issue ledger; there is no separate per-finding or per-reviewer circuit breaker.
 
 > **Docs-only tasks**: Skip this step. The spec-reviewer is designed around code verification (file lists, function signatures, test coverage) and doesn't apply to documentation. For docs-only tasks, the orchestrator verifies formatting/completeness directly: check that all files in `## Files` were created/modified, links resolve, heading hierarchy is correct, code blocks have language tags.
 
@@ -197,13 +316,13 @@ Handle results:
 
 ### 6. Code Quality Review
 
-Only dispatched after spec compliance passes. Use the `review` skill or dispatch `code-reviewer` directly:
+Only after spec compliance passes, invoke the `review` skill and follow its mandatory isolated `code-review` workflow exactly. Do not dispatch `code-reviewer` directly and do not use `arc_agent` for this acceptance gate:
 
 ```bash
 HEAD_SHA=$(git rev-parse HEAD)
 ```
 
-Use the template at `../arc-review/code-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or "none" — retrieve it directly with `arc show <parent-epic-id>` and use "none" when no parent design context exists, `{EVALUATOR_STATUS}` = "active" if evaluator was dispatched, else "not dispatched"). Follow Model Selection above for the dispatch `model:` — the configured `codeReviewer` profile is authoritative and `large` frontmatter is the fallback.
+Use `../arc-review/code-reviewer-prompt.md` and supply its complete immutable `ReviewInput`. The parent obtains `{DESIGN_EXCERPT}` directly with `arc show <parent-epic-id>` and uses "none" when no parent design exists; the reviewer never runs Arc. Include canonical task/hash, exact diff path/hash/base/head, prior findings, exact newest fix delta for re-review, cycle, and evaluator status. The configured `codeReviewer` profile remains authoritative through the review skill's native workflow.
 
 **On `{EVALUATOR_STATUS}`:** Decide whether to dispatch the evaluator (step 6.5) BEFORE filling this placeholder. If you plan to run step 6.5 in parallel with step 6, set `{EVALUATOR_STATUS}="active"`. Otherwise set `"not dispatched"`. Step 6.5 has the decision criteria for when to dispatch the evaluator.
 
@@ -216,7 +335,7 @@ Handle findings:
 | **Deviation (fix)** | Re-dispatch `builder` to match the design. |
 | **Deviation (accept)** | Log as arc comment: "Accepted deviation: \<description\>. Rationale: \<why\>." Proceed. |
 
-Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.
+Use the combined four-launched-run spec/code budget from the versioned issue ledger. A fifth reviewer launch requires explicit owner authorization recorded with a finite additional count.
 
 > **Docs-only tasks**: Skip code quality review. For substantial documentation changes (developer-facing API docs, architecture docs), optionally dispatch `code-reviewer` for a quality check.
 

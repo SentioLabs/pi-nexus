@@ -158,8 +158,16 @@ test('review and evaluator profiles remain authoritative with large fallbacks', 
   }
 
   const build = read('skills/arc-build/SKILL.md');
-  assert.match(build, /subagent\(\{ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true \}\);/);
-  assert.doesNotMatch(build, /subagent\(\{ agent: "arc-spec-reviewer",[^})]*model:/);
+  const specGate = build.slice(build.indexOf('### 5. Spec Compliance Review'), build.indexOf('### 6. Code Quality Review'));
+  assert.match(specGate, /return await runs\.run\("spec-review", \{/);
+  assert.match(specGate, /agent: "arc-spec-reviewer"/);
+  assert.match(specGate, /worktree: true/);
+  assert.match(specGate, /async: false/);
+  assert.match(specGate, /output: "spec-review\.md"/);
+  assert.match(specGate, /(?:baseRef|\["baseRef"\]): "HEAD"/);
+  const specWorkflowRequest = specGate.slice(specGate.indexOf('runs.run("spec-review"'), specGate.indexOf('});`'));
+  assert.doesNotMatch(specWorkflowRequest, /model:/);
+  assert.doesNotMatch(specGate, /arc_agent\(agent="spec-reviewer"|subagent\(\{ agent: "arc-spec-reviewer"/);
   assert.doesNotMatch(build, /runs\.run\("evaluate", \{[^})]*model:/);
   assert.doesNotMatch(build, /arc_agent\(agent="evaluator",[^)]*model=/);
   assert.match(build, /runs\.run\("evaluate".*worktree: true/s);

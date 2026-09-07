@@ -13,6 +13,8 @@ This is a **repo-local maintainer-only** workflow for the `pi-nexus` source chec
 
 **Never blindly copy upstream files.** Regenerate mechanical resources, inspect the diff, then adapt only the changes that make sense for Pi.
 
+**Task overrides:** A task's pinned source and orchestration boundaries override generic examples in this skill. When a task pins a commit, archive that exact commit even if a newer live checkout exists. When a task declares a no-push boundary, commit only its allowed files and do not push, close issues, or mutate review records even though the generic session-close example below includes those actions. Record the pinned repository path, commit, local commit SHA, and no-push status in the handoff.
+
 **Quality bar:** this skill must be enough to run a complete sync without a supplemental prompt. Treat the package tests as executable Pi contracts. If regeneration breaks a test or removes a Pi-specific guard, update `scripts/migrate-arc-plugin.py` so the guard is reproduced on every future sync; do not hand-edit generated files in a way the next migration will erase.
 
 The Claude plugin and Pi package intentionally differ:

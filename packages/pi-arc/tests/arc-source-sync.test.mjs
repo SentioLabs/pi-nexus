@@ -58,6 +58,9 @@ test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
   assert.match(source, /thin asynchronous one-specialist semantics over the same required `pi-subagents` provider/);
   assert.match(source, /not an independent execution fallback/);
   assert.match(source, /extract that exact tree with `git archive` into a temporary directory/);
+  assert.match(source, /record both the repository path and commit in the handoff/);
+  assert.match(source, /task's pinned source and orchestration boundaries override generic examples/i);
+  assert.match(source, /no-push boundary/i);
   assert.match(source, /Preserve model fallback precedence separately from execution-provider requirements/);
   assert.match(source, /git push/);
   assert.match(source, /Do not tell the user "ready to push"/);
@@ -71,6 +74,10 @@ test('migration generator owns native workflow and completion transforms', () =>
   assert.match(source, /outputReference/);
   assert.match(source, /Targeted Fix and Recovery/);
   assert.match(source, /same provider and is not an independent fallback/);
+  assert.match(source, /MANDATORY_REVIEW_PROTOCOL/);
+  assert.match(source, /return await runs\.run/);
+  assert.match(source, /arc-review-ledger:v1/);
+  assert.match(source, /REVIEWER_MUTATION_POLICY/);
   const nativeTransforms = source.slice(source.indexOf('NATIVE_PROVIDER_REQUIREMENT'));
   assert.doesNotMatch(nativeTransforms, /clarify\s*:\s*false/);
   assert.doesNotMatch(nativeTransforms, /arc_agent`? is self-contained|self-contained fallback/i);
