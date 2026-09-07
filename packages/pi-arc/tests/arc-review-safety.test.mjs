@@ -44,39 +44,84 @@ function reviewerTools(source) {
   return [...match[1].matchAll(/^  - (.+)$/gm)].map((entry) => entry[1]);
 }
 
-function workflowRequest(source, workflowKey) {
-  const marker = `runs.run("${workflowKey}", {`;
-  const start = source.indexOf(marker);
-  assert.notEqual(start, -1, `missing ${workflowKey} inner workflow`);
-  const end = source.indexOf('});`', start);
-  assert.notEqual(end, -1, `missing ${workflowKey} workflow terminator`);
-  return source.slice(start, end);
+function workflowExample(source, workflowKey) {
+  const marker = `return await runs.run("${workflowKey}"`;
+  const markerIndex = source.indexOf(marker);
+  assert.notEqual(markerIndex, -1, `missing ${workflowKey} inner workflow`);
+  const fenceStart = source.lastIndexOf('```typescript\n', markerIndex);
+  assert.notEqual(fenceStart, -1, `missing ${workflowKey} TypeScript fence`);
+  const expressionStart = fenceStart + '```typescript\n'.length;
+  const fenceEnd = source.indexOf('\n```', markerIndex);
+  assert.notEqual(fenceEnd, -1, `missing ${workflowKey} workflow fence terminator`);
+  return source.slice(expressionStart, fenceEnd);
 }
 
-function outerRequest(source, workflowKey) {
-  const request = workflowRequest(source, workflowKey);
-  const start = source.lastIndexOf('subagent({', source.indexOf(request));
-  assert.notEqual(start, -1, `missing ${workflowKey} outer workflow`);
-  const end = source.indexOf('\n})', source.indexOf(request));
-  assert.notEqual(end, -1, `missing ${workflowKey} outer workflow terminator`);
-  return source.slice(start, end);
+async function executeWorkflowExample(source, workflowKey) {
+  const expression = workflowExample(source, workflowKey);
+  const outerRequests = [];
+  const innerRequests = [];
+  const childResult = { key: workflowKey, ok: true };
+  const evaluateOuter = Function('subagent', `"use strict"; return (${expression});`);
+  const outerResult = evaluateOuter((request) => {
+    outerRequests.push(request);
+    return request;
+  });
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const executeInner = new AsyncFunction('runs', outerResult.workflowScript);
+  const returned = await executeInner({
+    async run(key, request) {
+      innerRequests.push({ key, request });
+      return childResult;
+    },
+  });
+  return { expression, outerRequests, innerRequests, returned, childResult };
 }
 
-function acceptsReview(manifest, baseline, workflowKey = 'spec-review', agent = 'arc-spec-reviewer') {
-  return manifest?.version === 1
+function acceptsReview({ runtime, manifest, outputEvidence, baseline, workflowKey = 'spec-review', agent = 'arc-spec-reviewer', output = 'spec-review.md' }) {
+  const child = runtime?.workflow?.value;
+  const outputReference = child?.outputReference;
+  const expectedHandoffSuffix = typeof child?.runId === 'string' ? `/handoffs/${child.runId}.json` : undefined;
+  const handoffPaths = Array.isArray(child?.artifactPaths) && expectedHandoffSuffix
+    ? child.artifactPaths.filter((artifactPath) => typeof artifactPath === 'string' && artifactPath.endsWith(expectedHandoffSuffix))
+    : [];
+  return runtime?.state === 'complete'
+    && runtime?.success === true
+    && runtime?.error == null
+    && child?.key === workflowKey
+    && child?.agent === agent
+    && child?.ok === true
+    && child?.error == null
+    && child?.stopped !== true
+    && child?.detached !== true
+    && child?.interrupted !== true
+    && child?.terminalOutcome == null
+    && typeof child?.runId === 'string'
+    && child.runId.length > 0
+    && typeof child?.output === 'string'
+    && child.output.trim().length > 0
+    && typeof outputReference === 'string'
+    && outputReference.endsWith(`/${output}`)
+    && Array.isArray(child?.artifactPaths)
+    && child.artifactPaths.includes(outputReference)
+    && outputEvidence instanceof Map
+    && typeof outputEvidence.get(outputReference) === 'string'
+    && outputEvidence.get(outputReference) === child.output
+    && outputEvidence.get(outputReference).trim().length > 0
+    && handoffPaths.length === 1
+    && manifest?.version === 1
     && Array.isArray(manifest.groups)
     && manifest.groups.length > 0
-    && manifest.groups.every((group) => group?.baseCommit === baseline.head
+    && manifest.groups.every((group) => group?.baseCommit === baseline?.head
       && Array.isArray(group.children)
       && group.children.length === 1
-      && group.children.every((child) => child?.workflowKey === workflowKey
-        && child?.agent === agent
-        && child?.status === 'completed'
-        && child?.patch?.changed === false
-        && child?.patch?.filesChanged === 0
-        && child?.patch?.insertions === 0
-        && child?.patch?.deletions === 0
-        && child?.patch?.error == null));
+      && group.children.every((manifestChild) => manifestChild?.workflowKey === workflowKey
+        && manifestChild?.agent === agent
+        && manifestChild?.status === 'completed'
+        && manifestChild?.patch?.changed === false
+        && manifestChild?.patch?.filesChanged === 0
+        && manifestChild?.patch?.insertions === 0
+        && manifestChild?.patch?.deletions === 0
+        && manifestChild?.patch?.error == null));
 }
 
 function git(cwd, ...args) {
@@ -149,6 +194,67 @@ function recordNativeRun(ledger, reviewer, runId) {
   });
 }
 
+function serializeReviewDescription(ledger) {
+  const rows = ledger.entries.map((entry) => `| ${entry.sequence} | ${entry.reviewer} | ${entry.run_id} | ${entry.base} | ${entry.head} | ${entry.elapsed_ms} | ${entry.disposition} |`);
+  const grants = ledger.additionalAuthorizations.map((grant) => `Owner-authorized additional reviewer runs: ${grant}`);
+  return [
+    `${ledger.canonical}${LEDGER_SENTINEL}`,
+    '## Review Ledger',
+    `Canonical description SHA-256: \`${sha256(ledger.canonical)}\``,
+    'Authorized reviewer runs: 4',
+    ...grants,
+    '| sequence | reviewer | run_id | base | head | elapsed_ms | disposition |',
+    '|---:|---|---|---|---|---:|---|',
+    ...rows,
+    '',
+  ].join('\n');
+}
+
+function loadReviewDescription(description) {
+  const canonical = canonicalBytes(description);
+  const ledgerText = description.slice(description.lastIndexOf(LEDGER_SENTINEL) + LEDGER_SENTINEL.length);
+  const hashMatch = ledgerText.match(/Canonical description SHA-256: `([a-f0-9]{64})`/);
+  assert.ok(hashMatch, 'missing canonical description hash');
+  assert.equal(hashMatch[1], sha256(canonical), 'canonical description hash mismatch');
+  assert.match(ledgerText, /Authorized reviewer runs: 4/);
+  const additionalAuthorizations = [...ledgerText.matchAll(/^Owner-authorized additional reviewer runs: (\S+)$/gm)].map((match) => Number(match[1]));
+  const entries = [...ledgerText.matchAll(/^\|\s*(\d+)\s*\|\s*(spec|code)\s*\|\s*([^|\s]+)\s*\|\s*([^|\s]+)\s*\|\s*([^|\s]+)\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|$/gm)].map((match) => ({
+    sequence: Number(match[1]),
+    reviewer: match[2],
+    run_id: match[3],
+    base: match[4],
+    head: match[5],
+    elapsed_ms: Number(match[6]),
+    disposition: match[7],
+  }));
+  const ledger = { canonical, entries, additionalAuthorizations };
+  authorizedRuns(ledger);
+  return ledger;
+}
+
+function appendNativeRun(description, reviewer, runId) {
+  const ledger = loadReviewDescription(description);
+  recordNativeRun(ledger, reviewer, runId);
+  return serializeReviewDescription(ledger);
+}
+
+function appendOwnerAuthorization(description, grant) {
+  const ledger = loadReviewDescription(description);
+  ledger.additionalAuthorizations.push(grant);
+  authorizedRuns(ledger);
+  return serializeReviewDescription(ledger);
+}
+
+function artifactHashMatches(artifact, expectedHash) {
+  assert.equal(statSync(artifact).mode & 0o777, 0o444, 'review artifact mode must remain 0444');
+  assert.equal(sha256(readFileSync(artifact)), expectedHash, 'review artifact hash changed');
+  return true;
+}
+
+function outsideDeltaFindingMayBlock({ severity, latent, exposedByNewestDelta }) {
+  return severity === 'critical' && latent === true && exposedByNewestDelta === true;
+}
+
 function reviewInput({ priorFindings, latestFixDelta, cycle }) {
   return {
     canonical_spec: 'canonical task',
@@ -167,27 +273,57 @@ test('reviewer agents expose only read, find, and grep', () => {
   assert.deepEqual(reviewerTools(read(REVIEWERS.code.agentPath)), ['read', 'find', 'grep']);
 });
 
-test('mandatory review guidance defines one stable isolated foreground reviewer inside an async workflow', () => {
+test('mandatory workflow examples execute as one isolated foreground reviewer inside an async HEAD workflow', async () => {
   for (const review of Object.values(REVIEWERS)) {
     const source = read(review.skillPath);
-    const request = workflowRequest(source, review.workflowKey);
-    const outer = outerRequest(source, review.workflowKey);
+    const execution = await executeWorkflowExample(source, review.workflowKey);
 
-    assert.match(request, new RegExp(`agent: "${review.agent}"`));
-    assert.match(request, /worktree: true/);
-    assert.match(request, /async: false/);
-    assert.match(request, new RegExp(`output: "${review.output.replace('.', '\\.')}"`));
-    assert.match(outer, /context: "fresh"/);
-    assert.match(outer, /async: true/);
-    assert.match(outer, /globalConcurrencyLimit: 1/);
-    assert.match(outer, /(?:baseRef|\["baseRef"\]): "HEAD"/);
-    assert.match(outer, /return await runs\.run/);
-    assert.equal((outer.match(/runs\.run\(/g) ?? []).length, 1, 'mandatory workflow must launch exactly one reviewer');
+    assert.equal(execution.outerRequests.length, 1);
+    assert.deepEqual(execution.outerRequests[0], {
+      workflowScript: execution.outerRequests[0].workflowScript,
+      context: 'fresh',
+      async: true,
+      globalConcurrencyLimit: 1,
+      baseRef: 'HEAD',
+    });
+    assert.equal(execution.innerRequests.length, 1, 'mandatory workflow must launch exactly one reviewer');
+    assert.deepEqual(execution.innerRequests[0], {
+      key: review.workflowKey,
+      request: {
+        agent: review.agent,
+        task: '<filled immutable review prompt>',
+        worktree: true,
+        async: false,
+        output: review.output,
+      },
+    });
+    assert.equal(execution.returned, execution.childResult, 'outer workflow must return the awaited foreground child result');
+    assert.match(execution.expression, /\n  workflowScript: `return await runs\.run/);
+    assert.match(execution.expression, /\n  baseRef: "HEAD"/);
+    assert.doesNotMatch(execution.expression, /\["(?:workflowScript|baseRef)"\]/);
   }
 });
 
-test('review acceptance rejects wrong identity, base, status, and every patch mutation', () => {
+test('review acceptance combines successful runtime output with exact no-change handoff evidence', () => {
   const baseline = { branch: 'main', head: 'a'.repeat(40), porcelainV2: '' };
+  const outputReference = '/native/outputs/spec-review.md';
+  const handoffPath = '/native/handoffs/spec-run.json';
+  const validRuntime = {
+    state: 'complete',
+    success: true,
+    error: null,
+    workflow: {
+      value: {
+        key: 'spec-review',
+        agent: 'arc-spec-reviewer',
+        ok: true,
+        runId: 'spec-run',
+        output: '## Result: COMPLIANT',
+        outputReference,
+        artifactPaths: [outputReference, '/native/sessions/spec-run.jsonl', handoffPath],
+      },
+    },
+  };
   const validNoChangeManifest = {
     version: 1,
     groups: [{
@@ -200,11 +336,57 @@ test('review acceptance rejects wrong identity, base, status, and every patch mu
       }],
     }],
   };
+  const valid = {
+    runtime: validRuntime,
+    manifest: validNoChangeManifest,
+    outputEvidence: new Map([[outputReference, '## Result: COMPLIANT']]),
+    baseline,
+  };
 
-  assert.equal(acceptsReview(validNoChangeManifest, baseline), true);
-  assert.equal(acceptsReview({ ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], baseCommit: 'b'.repeat(40) }] }, baseline), false);
-  assert.equal(acceptsReview({ ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], children: [{ ...validNoChangeManifest.groups[0].children[0], agent: 'arc-code-reviewer' }] }] }, baseline), false);
-  assert.equal(acceptsReview({ ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], children: [{ ...validNoChangeManifest.groups[0].children[0], status: 'failed' }] }] }, baseline), false);
+  assert.equal(acceptsReview(valid), true);
+  for (const runtime of [
+    undefined,
+    { ...validRuntime, state: 'failed' },
+    { ...validRuntime, success: false },
+    { ...validRuntime, error: 'workflow failed' },
+    { ...validRuntime, workflow: undefined },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, key: 'wrong-review' } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, ok: false } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, error: 'child failed' } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, stopped: true } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, detached: true } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, interrupted: true } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, terminalOutcome: { state: 'partial', reason: 'timeout' } } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, output: '' } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, output: '   ' } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, output: 42 } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, outputReference: undefined } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, outputReference: '/native/outputs/wrong.md' } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, artifactPaths: ['/native/sessions/spec-run.jsonl', handoffPath] } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, artifactPaths: [outputReference] } } },
+    { ...validRuntime, workflow: { value: { ...validRuntime.workflow.value, artifactPaths: 'malformed' } } },
+  ]) {
+    assert.equal(acceptsReview({ ...valid, runtime }), false);
+  }
+  assert.equal(acceptsReview({ ...valid, outputEvidence: new Map() }), false);
+  assert.equal(acceptsReview({ ...valid, outputEvidence: {} }), false);
+  assert.equal(acceptsReview({ ...valid, outputEvidence: new Map([[outputReference, '']]) }), false);
+  assert.equal(acceptsReview({ ...valid, outputEvidence: new Map([[outputReference, 'malformed different bytes']]) }), false);
+
+  for (const manifest of [
+    undefined,
+    'malformed',
+    {},
+    { ...validNoChangeManifest, groups: undefined },
+    { ...validNoChangeManifest, groups: [] },
+    { ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], baseCommit: 'b'.repeat(40) }] },
+    { ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], children: [] }] },
+    { ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], children: [{ ...validNoChangeManifest.groups[0].children[0], workflowKey: 'wrong-review' }] }] },
+    { ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], children: [{ ...validNoChangeManifest.groups[0].children[0], agent: 'arc-code-reviewer' }] }] },
+    { ...validNoChangeManifest, groups: [{ ...validNoChangeManifest.groups[0], children: [{ ...validNoChangeManifest.groups[0].children[0], status: 'failed' }] }] },
+  ]) {
+    assert.equal(acceptsReview({ ...valid, manifest }), false);
+  }
 
   for (const patch of [
     { changed: true, filesChanged: 0, insertions: 0, deletions: 0, error: null },
@@ -215,13 +397,25 @@ test('review acceptance rejects wrong identity, base, status, and every patch mu
   ]) {
     const changedPatchManifest = structuredClone(validNoChangeManifest);
     changedPatchManifest.groups[0].children[0].patch = patch;
-    assert.equal(acceptsReview(changedPatchManifest, baseline), false);
+    assert.equal(acceptsReview({ ...valid, manifest: changedPatchManifest }), false);
   }
 });
 
-test('documented handoff predicate checks exact identity, base, completion, and no-change evidence', () => {
+test('documented acceptance predicates combine runtime output and handoff evidence', () => {
   for (const review of Object.values(REVIEWERS)) {
     const source = read(review.skillPath);
+    assert.match(source, /RUNTIME_RESULT/);
+    assert.match(source, /CHILD_RESULT/);
+    assert.match(source, /\.state == "complete"/);
+    assert.match(source, /\.success == true/);
+    assert.match(source, /\.key == \$key/);
+    assert.match(source, /\.terminalOutcome == null/);
+    assert.match(source, /\.output \| type == "string"/);
+    assert.match(source, /\.outputReference \| type == "string"/);
+    assert.match(source, /test -s "\$OUTPUT_REFERENCE"/);
+    assert.match(source, /RUNTIME_OUTPUT_SHA256/);
+    assert.match(source, /SAVED_OUTPUT_SHA256/);
+    assert.match(source, /test "\$SAVED_OUTPUT_SHA256" = "\$RUNTIME_OUTPUT_SHA256"/);
     assert.match(source, /\.version == 1/);
     assert.match(source, /\.baseCommit == \$base/);
     assert.match(source, /\.children \| type == "array" and length == 1/);
@@ -235,6 +429,7 @@ test('documented handoff predicate checks exact identity, base, completion, and 
     assert.match(source, /\.patch\.error == null/);
     assert.match(source, /artifactPaths/);
     assert.match(source, /exactly one returned path ending in `handoffs\/<run-id>\.json`/i);
+    assert.match(source, /runtime and output evidence.*handoff evidence|handoff evidence.*runtime and output evidence/i);
   }
 });
 
@@ -334,32 +529,51 @@ test('mandatory review guidance fails closed on dirty state and preserves every 
   }
 });
 
-test('versioned ledger preserves canonical bytes and shares one four-run budget across reviewers', () => {
+test('versioned issue description persists combined reviewer runs and bounded owner authorization across sessions', () => {
   const canonical = '# Canonical task\n\nExact task bytes.';
   const canonicalHash = sha256(canonical);
-  const description = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${canonicalHash}\`\nAuthorized reviewer runs: 4\n`;
-  const ledger = { entries: [], additionalAuthorizations: [] };
+  let description = serializeReviewDescription({ canonical, entries: [], additionalAuthorizations: [] });
 
   assert.equal(canonicalBytes(description), canonical);
   assert.equal(sha256(canonicalBytes(description)), canonicalHash);
 
-  recordNativeRun(ledger, 'spec', 'run-1');
-  recordNativeRun(ledger, 'code', 'run-2');
-  recordNativeRun(ledger, 'spec', 'run-3');
-  recordNativeRun(ledger, 'code', 'run-4');
-  recordNativeRun(ledger, 'spec', undefined);
+  for (const [reviewer, runId] of [
+    ['spec', 'run-1'],
+    ['code', 'run-2'],
+    ['spec', 'run-3'],
+    ['code', 'run-4'],
+  ]) {
+    description = appendNativeRun(description, reviewer, runId);
+    const reloadedByNextSession = loadReviewDescription(description);
+    assert.equal(launchedRuns(reloadedByNextSession.entries).length, Number(runId.at(-1)));
+    assert.equal(sha256(reloadedByNextSession.canonical), canonicalHash);
+  }
 
-  assert.equal(launchedRuns(ledger.entries).length, 4);
-  assert.deepEqual(ledger.entries.map((entry) => entry.reviewer), ['spec', 'code', 'spec', 'code']);
-  assert.equal(canLaunchReviewer(ledger), false);
-  assert.throws(() => recordNativeRun(ledger, 'spec', 'run-5'), /budget exhausted/);
-  assert.equal(sha256(canonicalBytes(`${description}| 1 | spec | run-1 | base | head | 0 | launched |\n`)), canonicalHash);
+  const fourthSession = loadReviewDescription(description);
+  assert.deepEqual(fourthSession.entries.map((entry) => entry.reviewer), ['spec', 'code', 'spec', 'code']);
+  assert.equal(canLaunchReviewer(fourthSession), false);
+  assert.throws(() => appendNativeRun(description, 'spec', 'run-5'), /budget exhausted/);
+  assert.equal(appendNativeRun(description, 'spec', undefined), description, 'a run without native identity must not persist a row');
 
-  ledger.additionalAuthorizations.push(1);
-  assert.equal(canLaunchReviewer(ledger), true);
-  recordNativeRun(ledger, 'spec', 'run-5');
-  assert.equal(canLaunchReviewer(ledger), false);
-  assert.throws(() => authorizedRuns({ ...ledger, additionalAuthorizations: [Number.POSITIVE_INFINITY] }), /finite positive/);
+  description = appendOwnerAuthorization(description, 1);
+  const ownerAuthorizedSession = loadReviewDescription(description);
+  assert.deepEqual(ownerAuthorizedSession.additionalAuthorizations, [1]);
+  assert.equal(authorizedRuns(ownerAuthorizedSession), 5);
+  assert.equal(canLaunchReviewer(ownerAuthorizedSession), true);
+
+  description = appendNativeRun(description, 'spec', 'run-5');
+  const fifthSession = loadReviewDescription(description);
+  assert.equal(launchedRuns(fifthSession.entries).length, 5);
+  assert.equal(canLaunchReviewer(fifthSession), false);
+  assert.match(description, /^Owner-authorized additional reviewer runs: 1$/m);
+  assert.throws(() => appendOwnerAuthorization(description, Number.POSITIVE_INFINITY), /finite positive/);
+
+  for (const review of Object.values(REVIEWERS)) {
+    const source = read(review.skillPath);
+    assert.match(source, /persist(?:ed|ing).*issue description.*re-read|re-read.*persist(?:ed|ing).*issue description/is);
+    assert.match(source, /never rely on an in-memory count/i);
+    assert.match(source, /owner authorization.*persist.*re-read|persist.*owner authorization.*re-read/is);
+  }
 });
 
 test('canonical extraction uses the final sentinel when task prose quotes earlier examples', () => {
@@ -417,7 +631,7 @@ test('guidance defines canonical ledger sentinel, launched-run accounting, and b
   assert.doesNotMatch(reviewFixSection, /3 review\/fix cycles/i);
 });
 
-test('re-review input carries prior findings and the exact latest fix delta', () => {
+test('re-review permits outside-delta expansion only for a critical latent issue exposed by the newest delta', () => {
   const priorFindings = '- Critical: validation absent';
   const latestFixDelta = 'diff --git a/a.js b/a.js\n+validate();\n';
   const input = reviewInput({ priorFindings, latestFixDelta, cycle: 2 });
@@ -425,16 +639,24 @@ test('re-review input carries prior findings and the exact latest fix delta', ()
   assert.equal(input.prior_findings, priorFindings);
   assert.equal(input.latest_fix_delta, latestFixDelta);
   assert.equal(input.cycle, 2);
+  assert.equal(outsideDeltaFindingMayBlock({ severity: 'important', latent: true, exposedByNewestDelta: true }), false);
+  assert.equal(outsideDeltaFindingMayBlock({ severity: 'minor', latent: true, exposedByNewestDelta: true }), false);
+  assert.equal(outsideDeltaFindingMayBlock({ severity: 'critical', latent: false, exposedByNewestDelta: true }), false);
+  assert.equal(outsideDeltaFindingMayBlock({ severity: 'critical', latent: true, exposedByNewestDelta: false }), false);
+  assert.equal(outsideDeltaFindingMayBlock({ severity: 'critical', latent: true, exposedByNewestDelta: true }), true);
 
   for (const review of Object.values(REVIEWERS)) {
     const prompt = read(review.promptPath);
     assert.match(prompt, /\{PRIOR_FINDINGS\}/);
     assert.match(prompt, /\{LATEST_FIX_DELTA\}/);
     assert.match(prompt, /exact newest fix delta/i);
+    assert.match(prompt, /newly block only if all three conditions hold/i);
+    assert.match(prompt, /critical.*latent.*exposed by the newest delta/is);
+    assert.match(prompt, /unrelated noncritical.*must not expand|must not expand.*unrelated noncritical/is);
   }
 });
 
-test('non-inline review input is immutable, external, hash-addressed, and rechecked', () => {
+test('documented Git diff materialization is external, mode-0444, hash-addressed, and rejects changed bytes', () => {
   for (const review of Object.values(REVIEWERS)) {
     const source = read(review.skillPath);
     assert.match(source, /REVIEW_INPUT_DIR=\$\(mktemp -d "\$\{TMPDIR:-\/tmp\}\/arc-review-input\.XXXXXX"\)/);
@@ -444,18 +666,36 @@ test('non-inline review input is immutable, external, hash-addressed, and rechec
     assert.match(source, /test "\$\(sha256sum "\$REVIEW_INPUT_DIR\/diff\.patch"/);
     assert.match(source, /outside the repository/i);
     assert.match(source, /path, SHA-256, base, and head/i);
+    assert.match(source, /mode 0444 alone does not prove.*unchanged|unchanged.*mode 0444 alone does not prove/is);
+    assert.match(source, /hash mismatch.*blocks acceptance/i);
   }
 
-  const root = mkdtempSync(path.join(tmpdir(), 'arc-review-artifact-test-'));
+  const repository = initializeRepository();
+  const externalRoot = mkdtempSync(path.join(tmpdir(), 'arc-review-artifact-test-'));
   try {
-    const artifact = path.join(root, 'diff.patch');
-    writeFileSync(artifact, 'immutable diff\n');
+    const baseSha = git(repository, 'rev-parse', 'HEAD');
+    writeFileSync(path.join(repository, 'tracked.txt'), 'reviewed implementation\n');
+    git(repository, 'add', 'tracked.txt');
+    git(repository, 'commit', '-qm', 'implementation');
+    const headSha = git(repository, 'rev-parse', 'HEAD');
+    const artifact = path.join(externalRoot, 'diff.patch');
+    const diffBytes = execFileSync('git', ['diff', '--binary', '--find-renames=0', `${baseSha}..${headSha}`], { cwd: repository });
+    writeFileSync(artifact, diffBytes);
+    chmodSync(artifact, 0o444);
     const expectedHash = sha256(readFileSync(artifact));
+
+    assert.equal(path.relative(repository, artifact).startsWith(`..${path.sep}`), true, 'artifact must remain outside the repository');
+    assert.match(read(artifact), /-base\n\+reviewed implementation/);
+    assert.equal(artifactHashMatches(artifact, expectedHash), true);
+
+    chmodSync(artifact, 0o644);
+    writeFileSync(artifact, Buffer.concat([readFileSync(artifact), Buffer.from('\nmutated after review\n')]));
     chmodSync(artifact, 0o444);
     assert.equal(statSync(artifact).mode & 0o777, 0o444);
-    assert.equal(sha256(readFileSync(artifact)), expectedHash);
+    assert.throws(() => artifactHashMatches(artifact, expectedHash), /hash changed/);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(repository, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
   }
 });
 

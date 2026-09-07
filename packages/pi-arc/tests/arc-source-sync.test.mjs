@@ -77,6 +77,7 @@ test('migration generator owns native workflow and completion transforms', () =>
   assert.match(source, /MANDATORY_REVIEW_PROTOCOL/);
   assert.match(source, /return await runs\.run/);
   assert.match(source, /arc-review-ledger:v1/);
+  assert.doesNotMatch(source, /Computed property spelling|\[\\?"workflowScript\\?"\]|\[\\?"baseRef\\?"\]/);
   assert.match(source, /REVIEWER_MUTATION_POLICY/);
   const nativeTransforms = source.slice(source.indexOf('NATIVE_PROVIDER_REQUIREMENT'));
   assert.doesNotMatch(nativeTransforms, /clarify\s*:\s*false/);

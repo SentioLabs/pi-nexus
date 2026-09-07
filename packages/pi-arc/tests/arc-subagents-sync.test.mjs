@@ -95,7 +95,8 @@ test('arc-review uses the mandatory isolated native completion-gated reviewer', 
 
   const mandatoryGate = source.slice(source.indexOf('### 3. Dispatch Reviewer'), source.indexOf('### 4. Triage Feedback'));
   assert.doesNotMatch(mandatoryGate, /arc_agent\(agent="code-reviewer"/);
-  assert.match(mandatoryGate, /obsolete direct shared-cwd form[\s\S]*shown only to identify and reject it; never execute it/i);
+  assert.doesNotMatch(mandatoryGate, /subagent\(\{\s*agent:\s*"arc-code-reviewer"/);
+  assert.doesNotMatch(mandatoryGate, /obsolete direct shared-cwd form/i);
 });
 
 test('arc-code-reviewer dispatch prompt stays immutable and review-only', () => {

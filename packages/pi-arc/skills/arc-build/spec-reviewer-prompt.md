@@ -51,7 +51,7 @@ Cycle: {CYCLE}
 ### Evaluator Status
 {EVALUATOR_STATUS}
 
-Use only the supplied canonical task, design excerpt, diff bytes, and repository reads. The parent has already captured Git and Arc state; do not retrieve or mutate either. On re-review, verify the prior findings against the exact newest fix delta, then evaluate the resulting implementation. Findings outside that delta may newly block only for a critical latent correctness or safety defect exposed by the delta; report unrelated noncritical observations as follow-ups.
+Use only the supplied canonical task, design excerpt, diff bytes, and repository reads. The parent has already captured Git and Arc state; do not retrieve or mutate either. On re-review, verify the prior findings against the exact newest fix delta, then evaluate the resulting implementation. A finding outside that delta may newly block only if all three conditions hold: it is critical, it is a latent correctness or safety defect, and it was exposed by the newest delta. Unrelated noncritical findings must not expand the blocking review scope; report them as follow-ups.
 
 ## Your Job
 

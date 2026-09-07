@@ -1607,7 +1607,7 @@ Cycle: {{CYCLE}}
 ### Evaluator Status
 {{EVALUATOR_STATUS}}
 
-Use only the supplied canonical task, design excerpt, diff bytes, and repository reads. The parent has already captured Git and Arc state; do not retrieve or mutate either. On re-review, verify the prior findings against the exact newest fix delta, then evaluate the resulting implementation. Findings outside that delta may newly block only for a critical latent correctness or safety defect exposed by the delta; report unrelated noncritical observations as follow-ups.
+Use only the supplied canonical task, design excerpt, diff bytes, and repository reads. The parent has already captured Git and Arc state; do not retrieve or mutate either. On re-review, verify the prior findings against the exact newest fix delta, then evaluate the resulting implementation. A finding outside that delta may newly block only if all three conditions hold: it is critical, it is a latent correctness or safety defect, and it was exposed by the newest delta. Unrelated noncritical findings must not expand the blocking review scope; report them as follow-ups.
 
 {report}
 ````
@@ -1702,7 +1702,7 @@ Bytes above the sentinel are canonical and must never change. Compute and verify
 |---:|---|---|---|---|---:|---|
 ```
 
-Spec and code review share one combined four-run task budget across sessions and cycles. Before each launch, count all rows carrying a native run identity. Every returned native run identity consumes exactly one row, including a run that later fails; record its row as soon as the launch returns the identity, then update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. The allowed total is four plus the sum of those explicit finite grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the last exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing. After ledger initialization, no last boundary means the ledger is malformed: fail closed instead of treating the full description as canonical.
+Spec and code review share one combined four-run task budget across sessions and cycles. The persisted Arc issue description is the only budget source of truth: before each launch, re-read it and count all persisted rows carrying a native run identity; never rely on an in-memory count from the current session. Every returned native run identity consumes exactly one row, including a run that later fails; persist its row as soon as the launch returns the identity, then re-read the issue and update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. Persist owner authorization, re-read it from the issue description, and validate the finite positive count before using it. The allowed total is four plus the sum of those explicit persisted grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the last exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing. After ledger initialization, no last boundary means the ledger is malformed: fail closed instead of treating the full description as canonical.
 
 #### Immutable parent-supplied input
 
@@ -1719,7 +1719,7 @@ chmod 0444 "$REVIEW_INPUT_DIR/diff.patch"
 DIFF_SHA256=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')
 ```
 
-The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool.
+The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool. Mode 0444 is defense in depth, but mode 0444 alone does not prove the bytes remained unchanged; the post-review SHA-256 check is authoritative, and any hash mismatch blocks acceptance.
 
 #### One native isolated reviewer
 
@@ -1768,10 +1768,39 @@ For a non-inline diff, recheck its immutable bytes after completion and before a
 test "$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')" = "$DIFF_SHA256"
 ```
 
-Require successful outer workflow completion and the complete foreground child result. In that result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it. Validate the native handoff before reading __LABEL__ prose:
+Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact successful terminal outer completion and its complete foreground child result before reading __LABEL__ prose. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it. Preserve the native completion JSON as `RUNTIME_RESULT` without reconstructing fields. The outer result must be completed and successful without an error, and its returned workflow value is `CHILD_RESULT`:
 
 ```bash
-HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+RUNTIME_RESULT='<exact JSON native outer completion returned by the provider>'
+printf '%s' "$RUNTIME_RESULT" | jq -e '
+  .state == "complete"
+  and .success == true
+  and (.error == null)
+' >/dev/null
+CHILD_RESULT=$(printf '%s' "$RUNTIME_RESULT" | jq -ce '.workflow.value')
+printf '%s' "$CHILD_RESULT" |
+  jq -e --arg key "__KEY__" --arg agent "__AGENT__" --arg output "/__OUTPUT__" '
+    .key == $key
+    and .agent == $agent
+    and .ok == true
+    and (.error == null)
+    and (.stopped != true)
+    and (.detached != true)
+    and (.interrupted != true)
+    and (.terminalOutcome == null)
+    and (.runId | type == "string" and length > 0)
+    and (.output | type == "string" and test("\\S"))
+    and (.outputReference | type == "string" and endswith($output))
+    and (.outputReference as $reference | .artifactPaths | type == "array" and index($reference) != null)
+  ' >/dev/null
+OUTPUT_REFERENCE=$(printf '%s' "$CHILD_RESULT" | jq -er '.outputReference')
+test -r "$OUTPUT_REFERENCE" && test -s "$OUTPUT_REFERENCE"
+RUNTIME_OUTPUT_SHA256=$(printf '%s' "$CHILD_RESULT" | jq -j '.output' | sha256sum | awk '{print $1}')
+SAVED_OUTPUT_SHA256=$(sha256sum "$OUTPUT_REFERENCE" | awk '{print $1}')
+test "$SAVED_OUTPUT_SHA256" = "$RUNTIME_OUTPUT_SHA256"
+HANDOFF_COUNT=$(printf '%s' "$CHILD_RESULT" | jq -r --arg run "$(printf '%s' "$CHILD_RESULT" | jq -r '.runId')" '[.artifactPaths[] | select(endswith("/handoffs/" + $run + ".json"))] | length')
+test "$HANDOFF_COUNT" -eq 1
+HANDOFF_MANIFEST=$(printf '%s' "$CHILD_RESULT" | jq -r --arg run "$(printf '%s' "$CHILD_RESULT" | jq -r '.runId')" '.artifactPaths[] | select(endswith("/handoffs/" + $run + ".json"))')
 test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
   jq -e --arg base "$REVIEW_BASE" --arg key "__KEY__" --arg agent "__AGENT__" '
     .version == 1
@@ -1793,7 +1822,7 @@ test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
   ' "$HANDOFF_MANIFEST"
 ```
 
-Missing or malformed output, runtime failure, wrong workflow/agent identity, wrong base, more or fewer than one child, any patch/error evidence, a changed canonical/diff input hash, or a changed primary branch/HEAD/status blocks acceptance. Arc never applies reviewer patches. Only after all native, immutable-input, and post-run evidence passes may Arc interpret the report and apply its finding-disposition policy.
+Missing or malformed runtime or reviewer output, missing or empty handoff groups, missing output evidence, runtime failure, wrong workflow/agent identity, wrong base, more or fewer than one child, any patch/error evidence, a changed canonical/diff input hash, or a changed primary branch/HEAD/status blocks acceptance. Arc never applies reviewer patches. Only after all runtime and output evidence, native handoff evidence, immutable-input evidence, and post-run evidence passes may Arc interpret the report and apply its finding-disposition policy.
 '''
 
 
@@ -1815,16 +1844,6 @@ spec_review_protocol = mandatory_review_protocol(
     "spec-review.md",
     "specReviewer",
 )
-# Computed property spelling is the same public request shape while keeping this
-# newly mandatory single-review example distinct from the existing build-only
-# evaluator/coordinated-wave example classifier.
-spec_review_protocol = spec_review_protocol.replace(
-    "  workflowScript: `return await runs.run",
-    "  [\"workflowScript\"]: `return await runs.run",
-).replace(
-    "  baseRef: \"HEAD\"",
-    "  [\"baseRef\"]: \"HEAD\"",
-)
 replace_section(
     "skills/arc-build/SKILL.md",
     "### 5. Spec Compliance Review\n\n",
@@ -1839,11 +1858,6 @@ code_review_protocol = mandatory_review_protocol(
     "arc-code-reviewer",
     "code-review.md",
     "codeReviewer",
-)
-code_review_protocol = code_review_protocol.replace(
-    "If capability or evidence is unavailable, stop with setup or infrastructure guidance.\n",
-    "If capability or evidence is unavailable, stop with setup or infrastructure guidance. The obsolete direct shared-cwd form `subagent({ agent: \"arc-code-reviewer\", task: \"<filled reviewer prompt>\", context: \"fresh\", async: true });` is shown only to identify and reject it; never execute it for mandatory review.\n",
-    1,
 )
 replace_section(
     "skills/arc-review/SKILL.md",

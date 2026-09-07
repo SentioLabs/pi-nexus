@@ -164,7 +164,9 @@ test('review and evaluator profiles remain authoritative with large fallbacks', 
   assert.match(specGate, /worktree: true/);
   assert.match(specGate, /async: false/);
   assert.match(specGate, /output: "spec-review\.md"/);
-  assert.match(specGate, /(?:baseRef|\["baseRef"\]): "HEAD"/);
+  assert.match(specGate, /workflowScript: `return await runs\.run\("spec-review"/);
+  assert.match(specGate, /baseRef: "HEAD"/);
+  assert.doesNotMatch(specGate, /\["(?:workflowScript|baseRef)"\]/);
   const specWorkflowRequest = specGate.slice(specGate.indexOf('runs.run("spec-review"'), specGate.indexOf('});`'));
   assert.doesNotMatch(specWorkflowRequest, /model:/);
   assert.doesNotMatch(specGate, /arc_agent\(agent="spec-reviewer"|subagent\(\{ agent: "arc-spec-reviewer"/);
