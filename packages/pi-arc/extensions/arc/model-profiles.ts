@@ -18,7 +18,7 @@ export const ARC_MODEL_PROFILE_KEYS = [
 
 export type ArcModelProfileKey = (typeof ARC_MODEL_PROFILE_KEYS)[number];
 
-export const ARC_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const ARC_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type ArcThinkingLevel = (typeof ARC_THINKING_LEVELS)[number];
 
@@ -177,13 +177,20 @@ export function findArcModelInfo(model: string | undefined, availableModels: Arc
 export function getSupportedArcThinkingLevels(model: ArcModelInfo | undefined): ArcThinkingLevel[] {
   if (!model) return [...ARC_THINKING_LEVELS];
   if (model.reasoning === false) return ["off"];
-  if (!model.thinkingLevelMap) return [...ARC_THINKING_LEVELS];
+  if (!model.thinkingLevelMap) return ARC_THINKING_LEVELS.filter((level) => level !== "xhigh" && level !== "max");
   return ARC_THINKING_LEVELS.filter((level) => {
-    const mapped = model.thinkingLevelMap?.[level];
+    const mapped = model.thinkingLevelMap[level];
     if (mapped === null) return false;
-    if (level === "xhigh") return mapped !== undefined;
-    return true;
+    return (level !== "xhigh" && level !== "max") || mapped !== undefined;
   });
+}
+
+export function resolveSupportedArcThinkingLevel(
+  levels: ArcThinkingLevel[],
+  requested: ArcThinkingLevel,
+): ArcThinkingLevel | undefined {
+  if (levels.includes(requested)) return requested;
+  return levels.includes("off") ? "off" : levels[0];
 }
 
 export function applyArcThinkingSuffix(model: string | undefined, thinking: ArcThinkingLevel | undefined): string | undefined {
@@ -216,14 +223,14 @@ export function resolveArcModelProfile(input: ResolveArcModelProfileInput): ArcM
     }
     const levels = getSupportedArcThinkingLevels(modelInfo);
     const requestedThinking = profile.thinking ?? "off";
-    const thinking = levels.includes(requestedThinking) ? requestedThinking : "off";
+    const thinking = resolveSupportedArcThinkingLevel(levels, requestedThinking);
     return {
       profileKey,
       source: "profile",
       model: modelInfo.fullId,
       thinking,
-      shouldPrompt: !levels.includes(requestedThinking),
-      warning: levels.includes(requestedThinking) ? undefined : `Configured ${profileKey} thinking level is unsupported: ${requestedThinking}`,
+      shouldPrompt: thinking !== requestedThinking,
+      warning: thinking === requestedThinking ? undefined : `Configured ${profileKey} thinking level is unsupported: ${requestedThinking}`,
     };
   }
 

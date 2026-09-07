@@ -622,8 +622,8 @@ test('arc extension wires model resolution and native dispatch without the Pi ru
   assert.match(arcSource, /dispatchArcSubagent/);
   assert.match(arcSource, /getActiveTools/);
   assert.doesNotMatch(arcSource, /runPiSubprocess|spawn\(["']pi["']/);
-  assert.match(arcSource, /runArcWithStdin/);
-  assert.match(arcSource, /spawn\("arc"/);
+  assert.match(arcSource, /runArcCommand/);
+  assert.doesNotMatch(arcSource, /spawn\("arc"/);
   assert.match(arcSource, /materializeArcSubagentsForContext/);
 });
 

@@ -19,36 +19,46 @@ This catches the case where build was invoked without going through `brainstorm`
 
 ## Model Selection
 
-Arc model selection resolves in this order: explicit dispatch override → configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` → legacy `arc.modelTiers` / frontmatter → package defaults. Removing an execution fallback does not remove model fallback. Users should run `/arc-models`; omit `model:` when the configured role profile should remain authoritative.
+`modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred role-specific policy. Resolution is: explicit dispatch `model:` override, configured role profile, legacy `arc.modelTiers` / frontmatter, then package defaults. Existing configured profiles and explicit overrides remain authoritative; recommendations never rewrite them. Users should run `/arc-models`, and should omit `model:` when the configured role profile should remain authoritative.
 
-| Tier | Default concrete model | Use for |
+| Role / tier | Recommended model and effort | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
-| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| issueManager / `nano` | Luna, `off` | Low-reasoning Arc CLI work |
+| docWriter / `small` | Luna, `low` | Documentation and mechanical edits |
+| builder / `standard` | Terra, `medium` | Contained implementation |
+| brainstorm, plan | Astra, `high` | Design exploration and task sequencing |
+| devopsBuilder, codeReviewer, specReviewer, evaluator / `large` | Astra, `high` | Operations, review, and adversarial validation |
 
-Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The dedicated `devopsBuilder` profile uses `large`; `issueManager` normally uses `nano`.
+Package defaults are Luna for `nano`/`small`, Terra for `standard`, and Astra for `large`. Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The legacy tier map remains model-only and is a compatibility fallback, not an execution-provider fallback.
 
-Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
+Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; it does not support `off`/`none`, so `low` is its minimum effective effort. The picker offers only levels advertised by the active model. Terra at `high` is the cost-sensitive option for harder bounded implementation. Astra at `low` or `medium` is an explicit capability-first choice; no direct Arc benchmark exists showing it is equivalent to Terra-high. API prices are not Codex quota prices—compare accepted-task quality, retries, total tokens/cost, and elapsed time on representative work before changing cost-sensitive defaults. `xhigh` and `max` are deliberate exceptional escalations for explicitly bounded work, never automatic retries.
 
-A single implementation handoff can use `subagent({ agent: "arc-builder", task: "<filled builder prompt>", context: "fresh", async: true });`; `arc_agent(agent="builder", task="<filled builder prompt>")` is the one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
+Use Pi-native `model:effort` suffixes only for deliberate explicit overrides:
 
-On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh", async: true })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh", async: true })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh", async: true })
+```
 
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` is a thin Arc-facing asynchronous wrapper over that same required provider, not an independent runner or a bundled sequential execution fallback.
 
-Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+A single implementation handoff can use `subagent({ agent: "arc-builder", task: "<filled builder prompt>", context: "fresh", async: true });`; `arc_agent(agent="builder", task="<filled builder prompt>")` is the one-specialist Arc-facing alternative using the same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status, fleet, or transcript only for a deliberate inspection or recovery decision.
 
+On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application, or issue closure. Preserve parent verification and review gates.
+
+Native workflow, launch, extension, or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD, and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
 
 | Task signal | Dispatch `model:` |
 |---|---|
-| Bulk issue creation or other low-reasoning Arc CLI operations | `nano` |
-| Mechanical: 1-2 files, unambiguous | `small` |
-| Standard contained implementation | omit `model:` or use `standard` |
-| Cross-layer, architectural, security-sensitive | `large` |
-| `NEEDS_CONTEXT` | same model, richer context |
+| Bulk issue creation or other low-reasoning Arc CLI operations | omit (issueManager profile) or `nano` |
+| Mechanical, unambiguous work | omit (docWriter profile) or `small` |
+| Standard contained implementation | omit (builder profile) or `standard` |
+| Cross-layer, high-risk, or adversarial work | omit (configured role profile) or `large` |
+| Re-dispatch after `BLOCKED` | classify the blocker; only a verified reasoning-limit blocker may move one tier up. Infrastructure or tooling failures require same-protocol recovery without model escalation; context, scope, and plan blockers follow their specific paths. re-dispatches stop at `large`. |
+| Re-dispatch after `NEEDS_CONTEXT` | same tier with richer context |
 
-Do not escalate a model merely because execution infrastructure failed. For a genuine reasoning limit, follow the existing bounded tier escalation and stop at `large`.
+**When unsure, omit `model:`** so the configured role profile remains authoritative. For a genuine reasoning limit, use one bounded tier escalation and stop at `large`; if it still blocks, escalate with the blocker summary rather than increasing effort automatically.
 
 ## Dispatch Modes
 
@@ -112,7 +122,7 @@ arc list --parent=<epic-id> --json | jq '.[] | select(.status != "closed")'
 ### 2. Claim Task
 
 ```bash
-arc update <task-id> --take
+arc update <task-id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"
 ```
 
 ### 3. Dispatch Agent
@@ -779,7 +789,7 @@ A recovery result must pass the same native terminal-state, artifact, parent-tes
 
 ```bash
 arc ready                           # Find next task
-arc update <id> --take                  # Claim task (sets session ID + in_progress)
+arc update <id> --take --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}" # Claim task (sets session ID + in_progress)
 arc show <id>                        # Get task description for subagent
 arc close <id> -r "reason"            # Close completed task
 ```

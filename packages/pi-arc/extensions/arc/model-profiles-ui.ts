@@ -9,6 +9,7 @@ import {
   applyArcThinkingSuffix,
   findArcModelInfo,
   getSupportedArcThinkingLevels,
+  resolveSupportedArcThinkingLevel,
   toArcModelInfo,
 } from "./model-profiles.ts";
 
@@ -65,15 +66,15 @@ const PROFILE_LABELS: Record<ArcModelProfileKey, string> = {
 const RECOMMENDED_MODEL_PROVIDER = "openai-codex";
 
 const PROFILE_RECOMMENDATIONS: Record<ArcModelProfileKey, ProfileRecommendation> = {
-  brainstorm: { modelId: "gpt-5.6-sol", thinking: "high", reason: "design exploration and architecture judgment" },
-  plan: { modelId: "gpt-5.6-sol", thinking: "high", reason: "task breakdown and sequencing" },
+  brainstorm: { modelId: "gpt-6-astra", thinking: "high", reason: "design exploration and architecture judgment" },
+  plan: { modelId: "gpt-6-astra", thinking: "high", reason: "task breakdown and sequencing" },
   issueManager: { modelId: "gpt-5.6-luna", thinking: "off", reason: "Arc CLI formatting and issue updates" },
   builder: { modelId: "gpt-5.6-terra", thinking: "medium", reason: "implementation and code navigation" },
-  devopsBuilder: { modelId: "gpt-5.6-sol", thinking: "high", reason: "live-system operations and blast-radius judgment" },
-  codeReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "review judgment and risk detection" },
+  devopsBuilder: { modelId: "gpt-6-astra", thinking: "high", reason: "live-system operations and blast-radius judgment" },
+  codeReviewer: { modelId: "gpt-6-astra", thinking: "high", reason: "review judgment and risk detection" },
   docWriter: { modelId: "gpt-5.6-luna", thinking: "low", reason: "documentation prose and light reasoning" },
-  specReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "spec compliance and ambiguity detection" },
-  evaluator: { modelId: "gpt-5.6-sol", thinking: "high", reason: "adversarial validation" },
+  specReviewer: { modelId: "gpt-6-astra", thinking: "high", reason: "spec compliance and ambiguity detection" },
+  evaluator: { modelId: "gpt-6-astra", thinking: "high", reason: "adversarial validation" },
 };
 
 const THINKING_DESCRIPTIONS: Record<ArcThinkingLevel, string> = {
@@ -82,7 +83,8 @@ const THINKING_DESCRIPTIONS: Record<ArcThinkingLevel, string> = {
   low: "Light reasoning",
   medium: "Moderate reasoning",
   high: "Deep reasoning",
-  xhigh: "Maximum reasoning",
+  xhigh: "Very high reasoning",
+  max: "Maximum reasoning",
 };
 
 export async function openArcModelProfilesEditor(
@@ -192,9 +194,9 @@ function modelMatchesRecommendation(
   return info?.fullId === recommendation.fullId;
 }
 
-function recommendedThinkingForModel(recommendation: ProfileRecommendation, model: ArcModelInfo | undefined): ArcThinkingLevel {
+function recommendedThinkingForModel(recommendation: ProfileRecommendation, model: ArcModelInfo | undefined): ArcThinkingLevel | undefined {
   const levels = getSupportedArcThinkingLevels(model);
-  return levels.includes(recommendation.thinking) ? recommendation.thinking : "off";
+  return resolveSupportedArcThinkingLevel(levels, recommendation.thinking);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -345,8 +347,8 @@ class ArcModelProfilesComponent {
     }
 
     if (matchesKey(data, "return")) {
-      const selected = levels[this.thinkingCursor] ?? "off";
-      this.ensureSelectedProfile().thinking = selected;
+      const selected = levels[this.thinkingCursor];
+      if (selected) this.ensureSelectedProfile().thinking = selected;
       this.mode = "profiles";
       this.tui.requestRender();
       return;
@@ -493,7 +495,7 @@ class ArcModelProfilesComponent {
       const recommendation = recommended.recommendation;
       const recommendedModel = modelMatchesRecommendation(profile?.model, recommended.model, this.models, this.options.preferredProvider);
       const thinking = profile?.thinking ?? "off";
-      const recommendedThinking = recommendedThinkingForModel(recommendation, recommended.model);
+      const recommendedThinking = recommendedThinkingForModel(recommendation, recommended.model) ?? "off";
       const recommendedProfile = recommendedModel && thinking === recommendedThinking;
       const supportedLevels = getSupportedArcThinkingLevels(modelInfo);
       const unsupportedThinking = Boolean(profile?.model && modelInfo && !supportedLevels.includes(thinking));
@@ -549,8 +551,9 @@ class ArcModelProfilesComponent {
     profile.model = selected.fullId;
     const levels = getSupportedArcThinkingLevels(findArcModelInfo(profile.model, this.models, this.options.preferredProvider));
     const current = profile.thinking ?? "off";
-    if (levels.length === 1 && levels[0] === "off") profile.thinking = "off";
-    else if (!levels.includes(current)) profile.thinking = "off";
+    const thinking = resolveSupportedArcThinkingLevel(levels, current);
+    if (thinking) profile.thinking = thinking;
+    else delete profile.thinking;
   }
 
   private refreshModelFilter(): void {
@@ -574,7 +577,7 @@ class ArcModelProfilesComponent {
       const profile = this.ensureProfile(key);
       profile.model = recommended.model.fullId;
       const levels = getSupportedArcThinkingLevels(recommended.model);
-      profile.thinking = levels.includes(recommendation.thinking) ? recommendation.thinking : "off";
+      profile.thinking = resolveSupportedArcThinkingLevel(levels, recommendation.thinking);
     }
   }
 

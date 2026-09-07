@@ -26,5 +26,5 @@ arc team context <epic-id> --json   # JSON for a specific epic
 **JSON output** includes full issue details with plans and dependencies for each role group.
 
 **Related commands:**
-- `arc prime --role=lead` — Lead-oriented context output
-- `arc prime --role=frontend` — Role-filtered context (or use `ARC_TEAMMATE_ROLE` env var)
+- `arc prime --role=lead --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"` — Lead-oriented context output
+- `arc prime --role=frontend --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"` — Role-filtered context (or use `ARC_TEAMMATE_ROLE` env var)

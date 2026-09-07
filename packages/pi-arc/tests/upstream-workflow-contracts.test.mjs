@@ -27,17 +27,17 @@ test('planner-only review contract is consistent across Arc workflow skills', ()
   assert.doesNotMatch(combined, /arc:(?:plan|build)|arc plan create (?!--no-frontmatter)/);
 });
 
-test('GPT-5.6 variants map onto Arc model tiers and role profiles', () => {
+test('Astra, Terra, and Luna map onto Arc model tiers and role profiles', () => {
   const extension = read('extensions/arc.ts');
   const readme = read('README.md');
 
   assert.match(extension, /nano: "openai-codex\/gpt-5\.6-luna"/);
   assert.match(extension, /small: "openai-codex\/gpt-5\.6-luna"/);
   assert.match(extension, /standard: "openai-codex\/gpt-5\.6-terra"/);
-  assert.match(extension, /large: "openai-codex\/gpt-5\.6-sol"/);
-  assert.match(readme, /Luna for fast\/affordable `nano` and `small` work/);
-  assert.match(readme, /Terra for balanced `standard` implementation/);
-  assert.match(readme, /Sol for `large` design, operations, review, and adversarial evaluation/);
+  assert.match(extension, /large: "openai-codex\/gpt-6-astra"/);
+  assert.match(readme, /Luna \(`off` for issue management and `low` for docs\)/);
+  assert.match(readme, /Terra for `standard`/);
+  assert.match(readme, /Astra for `large`/);
 });
 
 test('general Arc reference uses Pi-native lifecycle and dispatch wording', () => {

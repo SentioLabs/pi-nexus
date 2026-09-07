@@ -6,6 +6,7 @@
 - npm 11 or newer.
 - Pi installed for local package loading checks.
 - The `arc` CLI installed when working on `@sentiolabs/pi-arc` behavior.
+- The `git-spice` CLI installed when working on `@sentiolabs/pi-git-spice` behavior.
 
 ## Install
 
@@ -43,6 +44,12 @@ Run only `@sentiolabs/pi-frontend-design` tests:
 npm test --workspace @sentiolabs/pi-frontend-design
 ```
 
+Run only `@sentiolabs/pi-git-spice` tests:
+
+```bash
+npm test --workspace @sentiolabs/pi-git-spice
+```
+
 Run only `@sentiolabs/pi-scriptable-statusline` tests:
 
 ```bash
@@ -69,6 +76,12 @@ Verify publish contents for `@sentiolabs/pi-frontend-design` only:
 npm run pack:dry-run --workspace @sentiolabs/pi-frontend-design
 ```
 
+Verify publish contents for `@sentiolabs/pi-git-spice` only:
+
+```bash
+npm run pack:dry-run --workspace @sentiolabs/pi-git-spice
+```
+
 Verify publish contents for `@sentiolabs/pi-scriptable-statusline` only:
 
 ```bash
@@ -82,6 +95,7 @@ Test the workspace package without installing permanently:
 ```bash
 pi -e ./packages/pi-arc
 pi -e ./packages/pi-frontend-design
+pi -e ./packages/pi-git-spice
 pi -e ./packages/pi-scriptable-statusline
 ```
 
@@ -90,5 +104,6 @@ Install the package into the current project's local Pi settings:
 ```bash
 pi install -l ./packages/pi-arc
 pi install -l ./packages/pi-frontend-design
+pi install -l ./packages/pi-git-spice
 pi install -l ./packages/pi-scriptable-statusline
 ```

@@ -94,6 +94,7 @@ for f in sorted((SRC / "commands").glob("*.md")):
     text = re.sub(r"/arc:([a-zA-Z0-9_-]+)", r"/arc-\1", text)
     text = text.replace("Claude Code", "Pi")
     text = text.replace("Claude", "Pi")
+    text = text.replace("ARC_SESSION_ID", "PI_SESSION_ID")
     text = text.replace("SessionStart and PreCompact hooks", "the Pi arc extension on session start and before compaction")
     text = re.sub(r"When to use arc vs TodoWrite", "When to use arc vs the bundled `todo` checklist workflow", text, flags=re.IGNORECASE)
     text = re.sub(r"todowrite vs arc", "todo checklist vs arc", text, flags=re.IGNORECASE)
@@ -126,6 +127,7 @@ def transform_text(text: str) -> str:
     # Harness naming and Claude-specific tool names.
     text = text.replace("Claude Code", "Pi")
     text = text.replace("Claude", "Pi")
+    text = text.replace("ARC_SESSION_ID", "PI_SESSION_ID")
     text = text.replace("SessionStart/PreCompact hooks", "Pi extension session-start and before-compaction handlers")
     text = text.replace("SessionStart and PreCompact hooks", "Pi extension session-start and before-compaction handlers")
     text = text.replace("via the Task tool", "through the auto-materialized `arc-issue-manager` pi-subagent when available, or the bundled `arc_agent` fallback")
@@ -198,6 +200,29 @@ for src_dir in sorted((SRC / "skills").iterdir()):
             continue
         md.write_text(transform_text(md.read_text()))
 
+# Copy agents as bundled prompts for arc_agent.
+for f in sorted((SRC / "agents").glob("*.md")):
+    text = transform_text(f.read_text())
+    text = text.replace("  - Bash", "  - bash")
+    text = text.replace("  - Read", "  - read")
+    text = text.replace("  - Write", "  - write")
+    text = text.replace("  - Edit", "  - edit")
+    text = text.replace("  - Glob", "  - find")
+    text = text.replace("  - Grep", "  - grep")
+    text = re.sub(r"(?m)^model:\s*haiku\s*$", "model: small", text)
+    text = re.sub(r"(?m)^model:\s*sonnet\s*$", "model: standard", text)
+    text = re.sub(r"(?m)^model:\s*opus\s*$", "model: large", text)
+    if f.name in {"code-reviewer.md", "devops-builder.md", "evaluator.md", "spec-reviewer.md"}:
+        text = re.sub(r"(?m)^model:\s*standard\s*$", "model: large", text)
+    if f.name == "issue-manager.md":
+        text = re.sub(r"(?m)^model:\s*small\s*$", "model: nano", text)
+        if "## Timing / Progress Instrumentation" not in text:
+            text = text.replace(
+                "## Creating Epics with Tasks",
+                "## Timing / Progress Instrumentation\n\nFor bulk operations, print lightweight progress lines before and after each phase so the dispatcher can tell whether time is spent in the model or in the Arc CLI:\n\n```bash\nSTART_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=start\"\n# phase commands here\nEND_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=done elapsed_ms=$((END_MS-START_MS))\"\n```\n\nUse phase names such as `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include a final `## Timing` section in the summary with per-phase `elapsed_ms` values when available. This instrumentation is informational only; do not add sleeps, polling loops, or extra verification that the manifest did not request.\n\n## Creating Epics with Tasks",
+            )
+    (ARC_ROOT / "agents" / f.name).write_text(text)
+
 # Patch generated skills for Pi-specific execution semantics.
 def patch_file(rel: str, replacements: list[tuple[str, str]]) -> None:
     path = ARC_ROOT / rel
@@ -216,6 +241,90 @@ def replace_section(rel: str, start_marker: str, end_marker: str, replacement: s
     end = text.index(end_marker, start)
     path.write_text(text[:start] + replacement + text[end:])
 
+
+def normalize_session_binding(rel: str, unbound: str, canonical: str) -> None:
+    """Normalize one exact pre- or post-session-binding source shape."""
+    path = ARC_ROOT / rel
+    text = path.read_text()
+    unbound_count = text.count(unbound)
+    canonical_count = text.count(canonical)
+    if unbound_count + canonical_count != 1:
+        raise RuntimeError(
+            f"Expected exactly one known session-binding shape while normalizing {rel}: "
+            f"unbound={unbound_count}, canonical={canonical_count}"
+        )
+    if unbound_count:
+        path.write_text(text.replace(unbound, canonical, 1))
+
+
+# Normalize the exact operational session-binding delta from the pinned
+# pre-binding source or the already Pi-bound source before Pi-specific patches.
+normalize_session_binding(
+    "agents/issue-manager.md",
+    "arc update <id> --take                     # Claim work (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim work (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "prompts/arc-prime.md",
+    "Run `arc prime` to output workflow context for AI assistants.",
+    "Run `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` to output workflow context for AI assistants.",
+)
+normalize_session_binding(
+    "prompts/arc-ready.md",
+    "If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run `arc update <id> --take` to claim it (sets session ID + in_progress).",
+    "If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run `arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` to claim it (sets session ID + in_progress).",
+)
+normalize_session_binding(
+    "prompts/arc-team.md",
+    "- `arc prime --role=lead` — Team lead context output",
+    "- `arc prime --role=lead --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Team lead context output",
+)
+normalize_session_binding(
+    "prompts/arc-team.md",
+    "- `arc prime --role=frontend` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
+    "- `arc prime --role=frontend --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
+)
+normalize_session_binding(
+    "prompts/arc-update.md",
+    "arc update <id> --take                 # Claim work (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim work (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "skills/arc/SKILL.md",
+    "Run `arc prime` for full workflow context, or `arc <command> --help` for specific commands.\n\n**Essential commands:**",
+    "Run `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` for full workflow context, or `arc <command> --help` for specific commands.\n\n## Session Binding\n\nOperational claim commands and manual `arc prime` commands must pass `--session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"`. `PI_SESSION_ID` is the canonical identity persisted by the lifecycle hook; do not substitute an agent ID or another runtime's session value. Lifecycle hooks keep their stdin-provided session identity and do not need this shell variable.\n\n**Essential commands:**",
+)
+normalize_session_binding(
+    "skills/arc/SKILL.md",
+    "arc update <id> --take                  # Claim work (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim work (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "skills/arc-build/SKILL.md",
+    "arc update <task-id> --take\n",
+    "arc update <task-id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"\n",
+)
+normalize_session_binding(
+    "skills/arc-build/SKILL.md",
+    "arc update <id> --take                  # Claim task (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim task (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "skills/arc-finish/SKILL.md",
+    "    arc prime\n",
+    "    arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"\n",
+)
+normalize_session_binding(
+    "skills/arc-finish/SKILL.md",
+    "- Performative session summaries — `arc prime` handles handoff context",
+    "- Performative session summaries — `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` handles handoff context",
+)
+normalize_session_binding(
+    "skills/arc-finish/SKILL.md",
+    "- Always run `arc prime` at the end for next-session context",
+    "- Always run `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` at the end for next-session context",
+)
+
 patch_file("prompts/arc-team.md", [
     (
         "description: Agent team operations",
@@ -226,8 +335,8 @@ patch_file("prompts/arc-team.md", [
         "Show teammate-label planning context with `arc team`.\n\nPi does not support Claude-style team deployment. Use this command only to inspect `teammate:*` issue groupings; implementation remains orchestrated through `/arc-build`.",
     ),
     (
-        "**Related commands:**\n- `arc prime --role=lead` — Team lead context output\n- `arc prime --role=frontend` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
-        "**Related commands:**\n- `arc prime --role=lead` — Lead-oriented context output\n- `arc prime --role=frontend` — Role-filtered context (or use `ARC_TEAMMATE_ROLE` env var)",
+        "**Related commands:**\n- `arc prime --role=lead --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Team lead context output\n- `arc prime --role=frontend --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
+        "**Related commands:**\n- `arc prime --role=lead --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Lead-oriented context output\n- `arc prime --role=frontend --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Role-filtered context (or use `ARC_TEAMMATE_ROLE` env var)",
     ),
 ])
 
@@ -235,6 +344,10 @@ patch_file("skills/arc/SKILL.md", [
     (
         "- **Agentic team**: Add `teammate:*` labels, invoke `/arc-team-dispatch`. Best for parallel multi-role work.",
         "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when that companion package and Arc agent definitions are available. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
+    ),
+    (
+        "Operational claim commands and manual `arc prime` commands must pass `--session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"`. `PI_SESSION_ID` is the canonical identity persisted by the lifecycle hook; do not substitute an agent ID or another runtime's session value. Lifecycle hooks keep their stdin-provided session identity and do not need this shell variable.",
+        "Operational claim commands and manual `arc prime` commands must pass `--session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"`. `PI_SESSION_ID` is the current shell session-manager identity; do not substitute an agent ID or another runtime's session value. The Pi extension captures its current session-manager identity for registration and its own prime command without mutating the process environment.",
     ),
 ])
 
@@ -430,14 +543,24 @@ replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dis
 
 Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
-`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults map the GPT-5.6 family by role: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning.
+`arc_agent` resolves Arc model tiers through `arc.modelTiers` in Pi settings. Defaults map Luna to fast/affordable work, Terra to balanced implementation, and Astra to high-risk reasoning.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
 | `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
 | `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `large` | `openai-codex/gpt-6-astra` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+
+Role profiles carry effort: Luna is `off` for issue management and `low` for docs; Terra is `medium` for builders; Astra is `high` for brainstorm, plan, DevOps, review, and evaluation. Existing profiles and explicit dispatch overrides remain authoritative. Astra supports `low`, `medium`, `high`, `xhigh`, and `max`, not `off`/`none`; use `low` as its minimum effective effort. Use Terra `high` for harder bounded implementation. Astra `low`/`medium` are explicit capability-first choices, but no direct Arc benchmark shows they equal Terra-high. API prices are not Codex quota prices. Reserve Astra `xhigh`/`max` for exceptional bounded work, not automatic retries.
+
+Explicit Pi-subagents dispatches use `model:effort` suffixes:
+
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh" })
+```
 
 Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/settings.json`:
 
@@ -448,7 +571,7 @@ Users can override the tier map in `~/.pi/agent/settings.json` or project `.pi/s
       "nano": "openai-codex/gpt-5.6-luna",
       "small": "openai-codex/gpt-5.6-luna",
       "standard": "openai-codex/gpt-5.6-terra",
-      "large": "openai-codex/gpt-5.6-sol"
+      "large": "openai-codex/gpt-6-astra"
     }
   }
 }
@@ -480,7 +603,7 @@ arc_agent(agent="builder", model="large", task="...")       # complex
 # Preferred when pi-subagents Arc agents are installed:
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -648,29 +771,6 @@ patch_file("skills/arc-summarize/SKILL.md", [
     ),
 ])
 
-# Copy agents as bundled prompts for arc_agent.
-for f in sorted((SRC / "agents").glob("*.md")):
-    text = transform_text(f.read_text())
-    text = text.replace("  - Bash", "  - bash")
-    text = text.replace("  - Read", "  - read")
-    text = text.replace("  - Write", "  - write")
-    text = text.replace("  - Edit", "  - edit")
-    text = text.replace("  - Glob", "  - find")
-    text = text.replace("  - Grep", "  - grep")
-    text = re.sub(r"(?m)^model:\s*haiku\s*$", "model: small", text)
-    text = re.sub(r"(?m)^model:\s*sonnet\s*$", "model: standard", text)
-    text = re.sub(r"(?m)^model:\s*opus\s*$", "model: large", text)
-    if f.name in {"code-reviewer.md", "devops-builder.md", "evaluator.md", "spec-reviewer.md"}:
-        text = re.sub(r"(?m)^model:\s*standard\s*$", "model: large", text)
-    if f.name == "issue-manager.md":
-        text = re.sub(r"(?m)^model:\s*small\s*$", "model: nano", text)
-        if "## Timing / Progress Instrumentation" not in text:
-            text = text.replace(
-                "## Creating Epics with Tasks",
-                "## Timing / Progress Instrumentation\n\nFor bulk operations, print lightweight progress lines before and after each phase so the dispatcher can tell whether time is spent in the model or in the Arc CLI:\n\n```bash\nSTART_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=start\"\n# phase commands here\nEND_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=done elapsed_ms=$((END_MS-START_MS))\"\n```\n\nUse phase names such as `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include a final `## Timing` section in the summary with per-phase `elapsed_ms` values when available. This instrumentation is informational only; do not add sleeps, polling loops, or extra verification that the manifest did not request.\n\n## Creating Epics with Tasks",
-            )
-    (ARC_ROOT / "agents" / f.name).write_text(text)
-
 # Final Pi-native overlays for Claude-source changes that need adaptation or
 # preservation of Pi-only behavior. Keep these near the end so they override
 # the mechanical source transform and remain reproducible on the next sync.
@@ -704,6 +804,13 @@ patch_file("skills/arc/SKILL.md", [
         "- **Parallel Arc build**: For independent task batches, `build` can use worktree-isolated `pi-subagents` runs when an external `pi-subagents` extension/tool is installed and Arc specialist definitions are available. Custom Arc specialists remain the preferred `pi-subagents` targets, and generic `worker`/`reviewer` agents should not be substituted for Arc gates. This is not Claude-style team deployment; the orchestrator still owns verification, patch application, issue closure, and handoff.",
     ),
 ])
+
+insert_before_if_missing(
+    "skills/arc/SKILL.md",
+    "## Quick Start",
+    "## Model policy\n\nArc recommends Luna for low-cost issue-manager/docs work, Terra at medium for standard builders, and Astra at high for planning and large-tier operations/review. Existing role profiles and explicit dispatch overrides remain authoritative. See [arc-build model selection](../arc-build/SKILL.md#model-selection) for role/effort guidance, supported-effort limits, and explicit `model:effort` dispatch examples.\n\n",
+    "## Model policy",
+)
 
 patch_file("skills/arc-brainstorm/SKILL.md", [
     (
@@ -746,14 +853,24 @@ patch_file("skills/arc-brainstorm/SKILL.md", [
 
 replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dispatch Modes", """## Model Selection
 
-Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. GPT-5.6 maps naturally onto Arc's roles: Luna for fast/affordable work, Terra for balanced implementation, and Sol for high-risk reasoning. The dedicated `devopsBuilder` profile uses Sol because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
+Every Arc subagent dispatch can override the subagent's frontmatter model via the `model:` parameter. `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred way to choose role-specific models, and `arc.modelTiers` is a legacy fallback for older setups. Arc recommends Luna for fast/affordable work, Terra for balanced implementation, and Astra for high-risk reasoning. The dedicated `devopsBuilder` profile uses Astra because live-system changes require blast-radius, staging, and rollback judgment. Before dispatching, assess the task size/risk and choose the smallest model tier that is likely to succeed. The default floor per agent is set in frontmatter — use overrides to downgrade trivial tasks or escalate complex/high-risk tasks.
 
 | Tier | Default concrete model | Use for |
 |---|---|---|
 | `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
 | `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
 | `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| `large` | `openai-codex/gpt-6-astra` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+
+Role profiles carry effort: Luna is `off` for issue management and `low` for docs; Terra is `medium` for builders; Astra is `high` for brainstorm, plan, DevOps, review, and evaluation. Existing profiles and explicit dispatch overrides remain authoritative. Astra supports `low`, `medium`, `high`, `xhigh`, and `max`, not `off`/`none`; use `low` as its minimum effective effort. Use Terra `high` for harder bounded implementation. Astra `low`/`medium` are explicit capability-first choices, but no direct Arc benchmark shows they equal Terra-high. API prices are not Codex quota prices. Reserve Astra `xhigh`/`max` for exceptional bounded work, not automatic retries.
+
+Explicit Pi-subagents dispatches use `model:effort` suffixes:
+
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh" })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh" })
+```
 
 ```markdown
 Arc model selection resolves in this order:
@@ -775,7 +892,7 @@ Legacy fallback settings can still override the tier map in `~/.pi/agent/setting
       "nano": "openai-codex/gpt-5.6-luna",
       "small": "openai-codex/gpt-5.6-luna",
       "standard": "openai-codex/gpt-5.6-terra",
-      "large": "openai-codex/gpt-5.6-sol"
+      "large": "openai-codex/gpt-6-astra"
     }
   }
 }
@@ -807,7 +924,7 @@ arc_agent(agent="builder", model="large", task="...")       # complex
 # Preferred when pi-subagents Arc agents are installed:
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-luna", context: "fresh", async: true, clarify: false })
 subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra", context: "fresh", async: true, clarify: false })
-subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-sol", context: "fresh", async: true, clarify: false })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra", context: "fresh", async: true, clarify: false })
 ```
 
 **When unsure, omit `model:`** — the agent's frontmatter floor is calibrated for the typical case.
@@ -1271,33 +1388,46 @@ NATIVE_FAILURE_REQUIREMENT = """Native workflow, launch, extension or child-tool
 
 replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dispatch Modes", """## Model Selection
 
-Arc model selection resolves in this order: explicit dispatch override → configured `modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` → legacy `arc.modelTiers` / frontmatter → package defaults. Removing an execution fallback does not remove model fallback. Users should run `/arc-models`; omit `model:` when the configured role profile should remain authoritative.
+`modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred role-specific policy. Resolution is: explicit dispatch `model:` override, configured role profile, legacy `arc.modelTiers` / frontmatter, then package defaults. Existing configured profiles and explicit overrides remain authoritative; recommendations never rewrite them. Users should run `/arc-models`, and should omit `model:` when the configured role profile should remain authoritative.
 
-| Tier | Default concrete model | Use for |
+| Role / tier | Recommended model and effort | Use for |
 |---|---|---|
-| `nano` | `openai-codex/gpt-5.6-luna` | Bulk CLI issue creation and other low-reasoning issue-manager work |
-| `small` | `openai-codex/gpt-5.6-luna` | Mechanical edits and docs |
-| `standard` | `openai-codex/gpt-5.6-terra` | Normal contained implementation/review |
-| `large` | `openai-codex/gpt-5.6-sol` | Cross-cutting, architectural, security-sensitive, or adversarial review |
+| issueManager / `nano` | Luna, `off` | Low-reasoning Arc CLI work |
+| docWriter / `small` | Luna, `low` | Documentation and mechanical edits |
+| builder / `standard` | Terra, `medium` | Contained implementation |
+| brainstorm, plan | Astra, `high` | Design exploration and task sequencing |
+| devopsBuilder, codeReviewer, specReviewer, evaluator / `large` | Astra, `high` | Operations, review, and adversarial validation |
 
-Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The dedicated `devopsBuilder` profile uses `large`; `issueManager` normally uses `nano`.
+Package defaults are Luna for `nano`/`small`, Terra for `standard`, and Astra for `large`. Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The legacy tier map remains model-only and is a compatibility fallback, not an execution-provider fallback.
 
-""" + NATIVE_PROVIDER_REQUIREMENT + """
-A single implementation handoff can use `subagent({ agent: "arc-builder", task: "<filled builder prompt>", context: "fresh", async: true });`; `arc_agent(agent="builder", task="<filled builder prompt>")` is the one-specialist Arc-facing alternative using that same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status/fleet/transcript only for a deliberate inspection or recovery decision.
+Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; it does not support `off`/`none`, so `low` is its minimum effective effort. The picker offers only levels advertised by the active model. Terra at `high` is the cost-sensitive option for harder bounded implementation. Astra at `low` or `medium` is an explicit capability-first choice; no direct Arc benchmark exists showing it is equivalent to Terra-high. API prices are not Codex quota prices—compare accepted-task quality, retries, total tokens/cost, and elapsed time on representative work before changing cost-sensitive defaults. `xhigh` and `max` are deliberate exceptional escalations for explicitly bounded work, never automatic retries.
 
-""" + NATIVE_COMPLETION_REQUIREMENT + """
+Use Pi-native `model:effort` suffixes only for deliberate explicit overrides:
 
-""" + NATIVE_FAILURE_REQUIREMENT + """
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh", async: true })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh", async: true })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh", async: true })
+```
+
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` is a thin Arc-facing asynchronous wrapper over that same required provider, not an independent runner or a bundled sequential execution fallback.
+
+A single implementation handoff can use `subagent({ agent: "arc-builder", task: "<filled builder prompt>", context: "fresh", async: true });`; `arc_agent(agent="builder", task="<filled builder prompt>")` is the one-specialist Arc-facing alternative using the same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status, fleet, or transcript only for a deliberate inspection or recovery decision.
+
+On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application, or issue closure. Preserve parent verification and review gates.
+
+Native workflow, launch, extension, or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD, and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
 
 | Task signal | Dispatch `model:` |
 |---|---|
-| Bulk issue creation or other low-reasoning Arc CLI operations | `nano` |
-| Mechanical: 1-2 files, unambiguous | `small` |
-| Standard contained implementation | omit `model:` or use `standard` |
-| Cross-layer, architectural, security-sensitive | `large` |
-| `NEEDS_CONTEXT` | same model, richer context |
+| Bulk issue creation or other low-reasoning Arc CLI operations | omit (issueManager profile) or `nano` |
+| Mechanical, unambiguous work | omit (docWriter profile) or `small` |
+| Standard contained implementation | omit (builder profile) or `standard` |
+| Cross-layer, high-risk, or adversarial work | omit (configured role profile) or `large` |
+| Re-dispatch after `BLOCKED` | classify the blocker; only a verified reasoning-limit blocker may move one tier up. Infrastructure or tooling failures require same-protocol recovery without model escalation; context, scope, and plan blockers follow their specific paths. re-dispatches stop at `large`. |
+| Re-dispatch after `NEEDS_CONTEXT` | same tier with richer context |
 
-Do not escalate a model merely because execution infrastructure failed. For a genuine reasoning limit, follow the existing bounded tier escalation and stop at `large`.
+**When unsure, omit `model:`** so the configured role profile remains authoritative. For a genuine reasoning limit, use one bounded tier escalation and stop at `large`; if it still blocks, escalate with the blocker summary rather than increasing effort automatically.
 """)
 
 replace_section("skills/arc-build/SKILL.md", "### 3. Dispatch Agent\n\n", "\n### 4. Evaluate Result", """### 3. Dispatch Agent

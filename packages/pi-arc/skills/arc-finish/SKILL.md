@@ -125,7 +125,7 @@ Create a checklist using the bundled `todo` tool (or `/todos`) with all steps an
     ```
 19. Output context for next session:
     ```bash
-    arc prime
+    arc prime --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"
     ```
 
 ## Context-Aware Behavior
@@ -140,7 +140,7 @@ Create a checklist using the bundled `todo` tool (or `/todos`) with all steps an
 - `git stash clear`, `git remote prune origin` — housekeeping, not gates
 - Worktree directory `.gitignore` verification — assumed to be configured at project setup
 - Merge/PR/keep/discard choice — arc workflow always commits and pushes
-- Performative session summaries — `arc prime` handles handoff context
+- Performative session summaries — `arc prime --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"` handles handoff context
 
 ## Rules
 
@@ -148,5 +148,5 @@ Create a checklist using the bundled `todo` tool (or `/todos`) with all steps an
 - Never commit with `git add -A` — stage specific files
 - Never leave unpushed commits
 - Never close arc issues without completing the work
-- Always run `arc prime` at the end for next-session context
+- Always run `arc prime --session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"` at the end for next-session context
 - Format all arc content (descriptions, plans, comments) per `skills/arc/_formatting.md`

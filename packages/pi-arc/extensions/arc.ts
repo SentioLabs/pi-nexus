@@ -24,6 +24,7 @@ import {
   normalizeArcModelsConfig,
   resolveArcModelProfile,
   resolveArcModelsConfigPath,
+  resolveSupportedArcThinkingLevel,
   saveArcModelsConfig,
   toArcModelInfo,
 } from "./arc/model-profiles.ts";
@@ -42,11 +43,7 @@ import {
   type ArcSubagentScope,
 } from "./arc/subagents.ts";
 
-type ArcCommandResult = {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-};
+import { registerArcSession, runArcCommand, type ArcCommandResult } from "./arc/session.ts";
 
 const WORKFLOW_SKILLS: Array<{ command: string; skill: string; description: string }> = [
   {
@@ -127,7 +124,7 @@ const DEFAULT_ARC_MODEL_TIERS: ArcModelTierMap = {
   nano: "openai-codex/gpt-5.6-luna",
   small: "openai-codex/gpt-5.6-luna",
   standard: "openai-codex/gpt-5.6-terra",
-  large: "openai-codex/gpt-5.6-sol",
+  large: "openai-codex/gpt-6-astra",
 };
 
 const MODEL_TIER_ALIASES: Record<string, ArcModelTier> = {
@@ -274,15 +271,15 @@ type ArcProfileRecommendation = {
 const ARC_RECOMMENDED_MODEL_PROVIDER = "openai-codex";
 
 const ARC_PROFILE_RECOMMENDATIONS: Record<ArcModelProfileKey, ArcProfileRecommendation> = {
-  brainstorm: { modelId: "gpt-5.6-sol", thinking: "high", reason: "design exploration and architecture judgment" },
-  plan: { modelId: "gpt-5.6-sol", thinking: "high", reason: "task breakdown and sequencing" },
+  brainstorm: { modelId: "gpt-6-astra", thinking: "high", reason: "design exploration and architecture judgment" },
+  plan: { modelId: "gpt-6-astra", thinking: "high", reason: "task breakdown and sequencing" },
   issueManager: { modelId: "gpt-5.6-luna", thinking: "off", reason: "Arc CLI formatting and issue updates" },
   builder: { modelId: "gpt-5.6-terra", thinking: "medium", reason: "implementation and code navigation" },
-  devopsBuilder: { modelId: "gpt-5.6-sol", thinking: "high", reason: "live-system operations and blast-radius judgment" },
-  codeReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "review judgment and risk detection" },
+  devopsBuilder: { modelId: "gpt-6-astra", thinking: "high", reason: "live-system operations and blast-radius judgment" },
+  codeReviewer: { modelId: "gpt-6-astra", thinking: "high", reason: "review judgment and risk detection" },
   docWriter: { modelId: "gpt-5.6-luna", thinking: "low", reason: "documentation prose and light reasoning" },
-  specReviewer: { modelId: "gpt-5.6-sol", thinking: "high", reason: "spec compliance and ambiguity detection" },
-  evaluator: { modelId: "gpt-5.6-sol", thinking: "high", reason: "adversarial validation" },
+  specReviewer: { modelId: "gpt-6-astra", thinking: "high", reason: "spec compliance and ambiguity detection" },
+  evaluator: { modelId: "gpt-6-astra", thinking: "high", reason: "adversarial validation" },
 };
 
 type BrainstormProfilePromptAction = "recommended" | "customize" | "skip" | "reconfigure" | "fallback" | "disable" | "cancel";
@@ -327,7 +324,7 @@ function applyRecommendedArcModelProfiles(config: ArcModelsConfig, models: ArcMo
     config.modelProfiles[profileKey] = {
       ...config.modelProfiles[profileKey],
       model: recommended.model.fullId,
-      thinking: levels.includes(recommendation.thinking) ? recommendation.thinking : "off",
+      thinking: resolveSupportedArcThinkingLevel(levels, recommendation.thinking),
     };
   }
   config.setup = { ...config.setup, completedAt: new Date().toISOString(), dismissedAt: null };
@@ -691,92 +688,31 @@ async function formatSkippedArcSubagentDetails(result: ArcSubagentMaterializatio
   return details;
 }
 
-function runArcWithStdin(
-  args: string[],
-  stdin: unknown,
-  cwd: string,
-  signal?: AbortSignal,
-  timeoutMs = 15_000,
-): Promise<ArcCommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn("arc", args, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const finish = (result: ArcCommandResult) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      if (signal) signal.removeEventListener("abort", abort);
-      resolve(result);
-    };
-
-    const abort = () => {
-      child.kill("SIGTERM");
-    };
-
-    const timeout = setTimeout(() => {
-      stderr += `Timed out after ${timeoutMs}ms`;
-      child.kill("SIGTERM");
-    }, timeoutMs);
-
-    if (signal) {
-      if (signal.aborted) abort();
-      else signal.addEventListener("abort", abort, { once: true });
-    }
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.stdin.on("error", (error) => {
-      stderr += error.message;
-    });
-    child.on("error", (error) => {
-      finish({ code: 127, stdout, stderr: stderr + error.message });
-    });
-    child.on("close", (code) => {
-      finish({ code, stdout, stderr });
-    });
-
-    child.stdin.end(`${JSON.stringify(stdin)}\n`);
-  });
-}
-
 export default function arcExtension(pi: ExtensionAPI) {
   let primeCache = "";
   let primeError = "";
   let lastPrimeAt = 0;
 
   async function runArc(args: string[], ctx: ExtensionContext, timeout = 15_000): Promise<ArcCommandResult> {
-    const result = await pi.exec("arc", args, { timeout, signal: ctx.signal });
-    return {
-      code: result.code,
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
-    };
+    return runArcCommand(args, ctx, { timeoutMs: timeout });
   }
 
   async function refreshPrime(ctx: ExtensionContext): Promise<boolean> {
     try {
-      const result = await runArc(["prime"], ctx, 20_000);
+      const sessionID = ctx.sessionManager.getSessionId();
+      const result = await runArcCommand(["prime", "--session-id", sessionID], ctx, { timeoutMs: 20_000, sessionID });
       lastPrimeAt = Date.now();
       if (result.code === 0) {
         primeCache = result.stdout.trim();
         primeError = "";
         return true;
       }
+      primeCache = "";
       primeError = outputOf(result);
       return false;
     } catch (error) {
       lastPrimeAt = Date.now();
+      primeCache = "";
       primeError = error instanceof Error ? error.message : String(error);
       return false;
     }
@@ -879,17 +815,11 @@ export default function arcExtension(pi: ExtensionAPI) {
       ctx.ui.notify(ok ? "arc context loaded" : "arc context unavailable", ok ? "info" : "warning");
     }
 
-    const payload = {
-      harness: "pi",
-      event: "session_start",
-      cwd: ctx.cwd,
-      sessionFile: ctx.sessionManager.getSessionFile(),
-      timestamp: new Date().toISOString(),
-    };
-
-    // Best-effort compatibility with arc AI session tracking. Older arc versions may not
-    // support this payload outside Claude; failures are intentionally non-fatal.
-    await runArcWithStdin(["ai", "session", "start", "--stdin"], payload, ctx.cwd, ctx.signal).catch(() => undefined);
+    // Session registration is best effort; claim commands verify it before assigning work.
+    const registration = await registerArcSession(ctx);
+    if (registration.code !== 0 && ctx.hasUI) {
+      ctx.ui.notify(`Arc session registration failed: ${outputOf(registration)}`, "warning");
+    }
   });
 
   pi.on("session_before_compact", async (_event, ctx) => {
