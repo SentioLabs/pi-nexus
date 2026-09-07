@@ -130,6 +130,7 @@ function git(cwd, ...args) {
 function initializeRepository() {
   const cwd = mkdtempSync(path.join(tmpdir(), 'arc-review-safety-'));
   git(cwd, 'init', '-q', '-b', 'review-base');
+  git(cwd, 'config', 'commit.gpgSign', 'false');
   git(cwd, 'config', 'user.name', 'Arc Review Test');
   git(cwd, 'config', 'user.email', 'arc-review@example.invalid');
   writeFileSync(path.join(cwd, 'tracked.txt'), 'base\n');
@@ -137,6 +138,16 @@ function initializeRepository() {
   git(cwd, 'commit', '-qm', 'base');
   return cwd;
 }
+
+test('disposable review repositories disable inherited commit signing before their base commit', () => {
+  const cwd = initializeRepository();
+  try {
+    assert.equal(git(cwd, 'config', '--local', '--get', 'commit.gpgSign'), 'false');
+    assert.match(git(cwd, 'rev-parse', 'HEAD'), /^[a-f0-9]{40}$/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 function reviewBaseline(cwd) {
   return {
