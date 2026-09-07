@@ -67,7 +67,7 @@ Dirty source state blocks review. Never stash, reset, restore, clean, or fall ba
 
 #### Durable combined review budget
 
-The Arc issue description is both canonical task input and durable budget storage. Bootstrap and reload are distinct. On first review, first inspect the last exact sentinel: a suffix that does not present a recorded canonical SHA-256 is quoted sentinel/header example content; quoted sentinel/header examples remain uninitialized, so preserve and hash the **entire** original description bytes and byte-concatenate the actual sentinel directly after them without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the actual ledger boundary identical even when Arc has trimmed a trailing newline. A last sentinel is initialized only when its terminal suffix is a structurally valid terminal review-ledger trailer (versioned header, canonical SHA-256, fixed authorization, table header/separator, and valid rows) and the recorded canonical SHA-256 matches the exact prefix. A ledger-looking malformed terminal trailer, including a hash mismatch, must fail closed; never truncate quoted canonical task prose. After initialization, the actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
+The Arc issue description is both canonical task input and durable budget storage. Bootstrap and reload are distinct. On first review, inspect the last exact sentinel. First-time bootstrap may preserve and hash the **entire** original description bytes only when that last sentinel's terminal suffix is ordinary quoted/task prose with no review-ledger signature; byte-concatenate the actual sentinel directly after those bytes without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the actual ledger boundary identical even when Arc has trimmed a trailing newline. Earlier sentinel/header examples are canonical quoted prose because only the last exact sentinel can be the boundary. If the terminal suffix contains any review-ledger signature — the exact `## Review Ledger` header, a `Canonical description SHA-256` field, `Authorized reviewer runs: 4`, or ledger table syntax (header, separator, or row) — it is durable ledger state and must be a structurally valid terminal review-ledger trailer (versioned header, valid canonical SHA-256, fixed authorization, table header/separator, and valid rows) whose recorded hash matches the exact prefix. Missing, invalid, or mismatched hashes and every other malformed terminal trailer fail closed; never absorb prior ledger data into canonical bytes or reset the budget. After initialization, the actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
 
 ```markdown
 <!-- arc-review-ledger:v1 -->
@@ -96,7 +96,20 @@ REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P) || {
   echo 'unable to resolve repository root physically' >&2
   exit 1
 }
-REVIEW_INPUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/arc-review-input.XXXXXX")
+TMP_PARENT=${TMPDIR:-/tmp}
+case "$TMP_PARENT" in
+  /*) ;;
+  *) echo 'TMPDIR must be an absolute path' >&2; exit 1 ;;
+esac
+TMP_PARENT=$(cd "$TMP_PARENT" && pwd -P) || {
+  echo 'unable to resolve temporary parent physically' >&2
+  exit 1
+}
+case "$TMP_PARENT/" in "$REPO_ROOT/"*) echo 'review input must be physically outside the repository' >&2; exit 1 ;; esac
+REVIEW_INPUT_DIR=$(mktemp -d "$TMP_PARENT/arc-review-input.XXXXXX") || {
+  echo 'unable to create review input directory' >&2
+  exit 1
+}
 REVIEW_INPUT_DIR=$(cd "$REVIEW_INPUT_DIR" && pwd -P) || {
   echo 'unable to resolve review input directory physically' >&2
   exit 1
@@ -110,7 +123,7 @@ chmod 0444 "$REVIEW_INPUT_DIR/diff.patch"
 DIFF_SHA256=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch" | awk '{print $1}')
 ```
 
-The physical resolution and containment check must complete before launch. A relative `TMPDIR` or a symlinked `TMPDIR` that resolves inside the repository is rejected. Failed diff materialization exits before chmod or hashing. Do not remove the created review-input directory or partial diff artifact on failure; retain it as failure evidence.
+Physically resolve and contain-check the absolute temporary parent before `mktemp`; reject a relative `TMPDIR` or a symlinked `TMPDIR` that resolves inside the repository before any artifact directory exists. After creation, physically resolve and contain-check the created directory again as race defense. External physical parents remain valid. Failed diff materialization exits before chmod or hashing. Do not remove the created review-input directory or partial diff artifact on failure; retain it as failure evidence.
 
 The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool. Mode 0444 is defense in depth, but mode 0444 alone does not prove the bytes remained unchanged; the post-review SHA-256 check is authoritative, and any hash mismatch blocks acceptance.
 

@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -202,19 +203,29 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function hasTerminalLedgerSignature(trailer) {
+  return /(?:^|\n)## Review Ledger(?:\n|$)/.test(trailer)
+    || /(?:^|\n)Canonical description SHA-256:/.test(trailer)
+    || /(?:^|\n)Authorized reviewer runs: 4(?:\n|$)/.test(trailer)
+    || /(?:^|\n)\| sequence \| reviewer \| run_id \| base \| head \| elapsed_ms \| disposition \|(?:\n|$)/.test(trailer)
+    || /(?:^|\n)\|---:\|---\|---\|---\|---\|---:\|---\|(?:\n|$)/.test(trailer)
+    || /(?:^|\n)\|\s*\d+\s*\|\s*(?:spec|code)\s*\|/.test(trailer);
+}
+
 function reviewLedgerBoundary(description) {
   const index = description.lastIndexOf(LEDGER_SENTINEL);
   if (index === -1) return { initialized: false, canonical: description };
 
   const canonical = description.slice(0, index);
   const trailer = description.slice(index + LEDGER_SENTINEL.length);
-  const hashCandidate = trailer.match(/^\n## Review Ledger\nCanonical description SHA-256: `([a-f0-9]{64})`/);
-  if (!hashCandidate) return { initialized: false, canonical: description };
-
   const structurallyValid = /^\n## Review Ledger\nCanonical description SHA-256: `([a-f0-9]{64})`\nAuthorized reviewer runs: 4\n(?:Owner-authorized additional reviewer runs: [1-9]\d*\n)*\| sequence \| reviewer \| run_id \| base \| head \| elapsed_ms \| disposition \|\n\|---:\|---\|---\|---\|---\|---:\|---\|\n(?:\|\s*\d+\s*\|\s*(?:spec|code)\s*\|\s*[^|\s]+\s*\|\s*[^|\s]+\s*\|\s*[^|\s]+\s*\|\s*\d+\s*\|\s*[^|]+?\s*\|\n)*$/.exec(trailer);
-  assert.ok(structurallyValid, 'malformed terminal review ledger trailer');
-  assert.equal(structurallyValid[1], sha256(canonical), 'canonical description hash mismatch');
-  return { initialized: true, canonical, trailer };
+  if (structurallyValid) {
+    assert.equal(structurallyValid[1], sha256(canonical), 'canonical description hash mismatch');
+    return { initialized: true, canonical, trailer };
+  }
+
+  assert.equal(hasTerminalLedgerSignature(trailer), false, 'malformed terminal review ledger trailer');
+  return { initialized: false, canonical: description };
 }
 
 function canonicalBytes(description) {
@@ -725,26 +736,30 @@ test('versioned issue description persists combined reviewer runs and bounded ow
   }
 });
 
-test('ledger bootstrap preserves quoted sentinel/header task content before durable authorization and run rows', () => {
+test('ledger bootstrap preserves quoted sentinel/header task content and fails closed on malformed terminal ledger state', () => {
   const canonical = [
     '# Canonical task',
     '',
     `The protocol documents ${LEDGER_SENTINEL} inline.`,
     '',
-    'It also includes the exact header example:',
+    'It also includes this earlier quoted ledger header example:',
     LEDGER_SENTINEL,
     '## Review Ledger',
     'Canonical description SHA-256: `<sha256>`',
     'Authorized reviewer runs: 4',
+    '| sequence | reviewer | run_id | base | head | elapsed_ms | disposition |',
+    '|---:|---|---|---|---|---:|---|',
     '',
-    'The canonical task continues after both quoted examples.',
+    'The canonical task continues after the quoted header.',
+    LEDGER_SENTINEL,
+    'This last quoted sentinel is ordinary task prose, not durable ledger state.',
   ].join('\n');
   const canonicalHash = sha256(canonical);
   const initializedDescription = initializeReviewDescription(canonical);
   const firstBoundary = initializedDescription.indexOf(LEDGER_SENTINEL);
   const firstOccurrenceExtraction = initializedDescription.slice(0, firstBoundary);
 
-  assert.equal((canonical.match(new RegExp(LEDGER_SENTINEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? []).length, 2);
+  assert.equal((canonical.match(new RegExp(LEDGER_SENTINEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? []).length, 3);
   assert.notEqual(firstOccurrenceExtraction, canonical, 'first-occurrence extraction must truncate this fixture');
   assert.notEqual(sha256(firstOccurrenceExtraction), canonicalHash, 'the truncated first-occurrence hash must be wrong');
   assert.equal(canonicalBytes(initializedDescription), canonical);
@@ -757,16 +772,25 @@ test('ledger bootstrap preserves quoted sentinel/header task content before dura
   assert.deepEqual(reloaded.additionalAuthorizations, [3]);
   assert.deepEqual(reloaded.entries.map((entry) => entry.run_id), ['run-1']);
 
-  const malformedTerminalTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${canonicalHash}\`\nAuthorized reviewer runs: 4\nnot a ledger table\n`;
-  assert.throws(() => loadReviewDescription(malformedTerminalTrailer), /malformed terminal review ledger trailer/);
+  const ledgerTable = '| sequence | reviewer | run_id | base | head | elapsed_ms | disposition |\n|---:|---|---|---|---|---:|---|';
+  const missingHashTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nAuthorized reviewer runs: 4\n${ledgerTable}\n`;
+  const invalidHashTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`not-a-sha\`\nAuthorized reviewer runs: 4\n${ledgerTable}\n`;
+  const mismatchedHashTrailer = `${canonical}${LEDGER_SENTINEL}\n## Review Ledger\nCanonical description SHA-256: \`${'0'.repeat(64)}\`\nAuthorized reviewer runs: 4\n${ledgerTable}\n`;
+  const rowOnlyTrailer = `${canonical}${LEDGER_SENTINEL}\n| 1 | spec | prior-run | base | head | 0 | launched |\n`;
+  for (const malformed of [missingHashTrailer, invalidHashTrailer, mismatchedHashTrailer, rowOnlyTrailer]) {
+    assert.throws(() => initializeReviewDescription(malformed), /malformed terminal review ledger trailer|canonical description hash mismatch/);
+    assert.throws(() => loadReviewDescription(malformed), /malformed terminal review ledger trailer|canonical description hash mismatch/);
+  }
   assert.throws(() => canonicalBytes('# ledger initialization lost its boundary'), /ledger boundary/i);
 
   for (const review of Object.values(REVIEWERS)) {
     const source = read(review.skillPath);
     assert.match(source, /actual ledger boundary is the last exact sentinel/i);
-    assert.match(source, /quoted sentinel\/header examples.*uninitialized|uninitialized.*quoted sentinel\/header examples/i);
+    assert.match(source, /ordinary quoted\/task prose|quoted\/task prose.*uninitialized/i);
     assert.match(source, /structurally valid terminal review-ledger trailer/i);
-    assert.match(source, /recorded canonical SHA-256 matches the exact prefix/i);
+    assert.match(source, /recorded hash matches the exact prefix/i);
+    assert.match(source, /missing.*invalid.*malformed|malformed.*missing.*invalid/i);
+    assert.match(source, /ledger table (?:header, separator, or row|syntax)/i);
     assert.match(source, /malformed terminal trailer.*fail closed|fail closed.*malformed terminal trailer/i);
     assert.match(source, /rpartition\(marker\)/);
     assert.match(source, /assert found/);
@@ -824,7 +848,12 @@ test('documented Git diff materialization defines the spec range, physically con
   const codeSource = read(REVIEWERS.code.skillPath);
   for (const source of [specSource, codeSource]) {
     assert.match(source, /REPO_ROOT=\$\(cd "\$\(git rev-parse --show-toplevel\)" && pwd -P\)/);
+    assert.match(source, /TMP_PARENT=\$\{TMPDIR:-\/tmp\}/);
+    assert.match(source, /case "\$TMP_PARENT" in\n  \/\*\) ;;/);
+    assert.match(source, /TMP_PARENT=\$\(cd "\$TMP_PARENT" && pwd -P\)/);
+    assert.match(source, /REVIEW_INPUT_DIR=\$\(mktemp -d "\$TMP_PARENT\/arc-review-input\.XXXXXX"\)/);
     assert.match(source, /REVIEW_INPUT_DIR=\$\(cd "\$REVIEW_INPUT_DIR" && pwd -P\)/);
+    assert.ok(source.indexOf('case "$TMP_PARENT/" in "$REPO_ROOT/"*') < source.indexOf('mktemp -d "$TMP_PARENT/arc-review-input.XXXXXX"'), 'the physical temp parent containment check must precede mktemp');
     assert.match(source, /git diff --binary --find-renames=0 "\$BASE_SHA\.\.\$HEAD_SHA" > "\$REVIEW_INPUT_DIR\/diff\.patch" \|\| \{/);
     assert.match(source, /review input must be physically outside the repository/i);
     assert.match(source, /failed diff materialization exits before chmod or hashing/i);
@@ -868,6 +897,7 @@ test('documented Git diff materialization defines the spec range, physically con
 
     const insideTmp = path.join(repository, 'inside-tmp');
     mkdirSync(insideTmp);
+    const beforeRelativeTmp = readdirSync(insideTmp).sort();
     assert.throws(() => runDocumentedMaterializer({
       source: specSource,
       cwd: repository,
@@ -875,9 +905,11 @@ test('documented Git diff materialization defines the spec range, physically con
       baseSha,
       headSha,
     }), 'a relative TMPDIR resolving inside the repository must be rejected');
+    assert.deepEqual(readdirSync(insideTmp).sort(), beforeRelativeTmp, 'relative in-repository TMPDIR rejection must not create an artifact child or file');
 
     const symlinkTmp = path.join(externalRoot, 'symlinked-tmp');
     symlinkSync(insideTmp, symlinkTmp);
+    const beforeSymlinkTmp = readdirSync(insideTmp).sort();
     assert.throws(() => runDocumentedMaterializer({
       source: specSource,
       cwd: repository,
@@ -885,6 +917,7 @@ test('documented Git diff materialization defines the spec range, physically con
       baseSha,
       headSha,
     }), 'a symlinked TMPDIR resolving inside the repository must be rejected');
+    assert.deepEqual(readdirSync(insideTmp).sort(), beforeSymlinkTmp, 'symlinked in-repository TMPDIR rejection must not create an artifact child or file');
 
     chmodSync(artifact, 0o644);
     writeFileSync(artifact, Buffer.concat([readFileSync(artifact), Buffer.from('\nmutated after review\n')]));
