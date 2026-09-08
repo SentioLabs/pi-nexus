@@ -13,6 +13,8 @@ This is a **repo-local maintainer-only** workflow for the `pi-nexus` source chec
 
 **Never blindly copy upstream files.** Regenerate mechanical resources, inspect the diff, then adapt only the changes that make sense for Pi.
 
+**Task overrides:** A task's pinned source and orchestration boundaries override generic examples in this skill. When a task pins a commit, archive that exact commit even if a newer live checkout exists. When a task declares a no-push boundary, commit only its allowed files and do not push, close issues, or mutate review records even though the generic session-close example below includes those actions. Record the pinned repository path, commit, local commit SHA, and no-push status in the handoff.
+
 **Quality bar:** this skill must be enough to run a complete sync without a supplemental prompt. Treat the package tests as executable Pi contracts. If regeneration breaks a test or removes a Pi-specific guard, update `scripts/migrate-arc-plugin.py` so the guard is reproduced on every future sync; do not hand-edit generated files in a way the next migration will erase.
 
 The Claude plugin and Pi package intentionally differ:
@@ -40,7 +42,7 @@ All package commands below should run from `packages/pi-arc`:
 cd packages/pi-arc
 ```
 
-If no path is provided, you may try the migration script default, but verify it before using it; in monorepo checkouts an explicit source path is usually clearer.
+If no path is provided, you may try the migration script default, but verify it before using it; in monorepo checkouts an explicit source path is usually clearer. When a task pins a source commit, verify the object and extract that exact tree with `git archive` into a temporary directory; never generate from a live checkout and record both the repository path and commit in the handoff.
 
 Expand `~` and verify the source looks like the Claude Arc plugin:
 
@@ -114,8 +116,8 @@ Pi behavior to preserve:
 - Collision-safe skill names like `arc-build`, not bare `build`.
 - Bundled `@juicesharp/rpiv-ask-user-question` provides `ask_user_question`; preserve the snake_case tool name, the package `questions[]` schema, package-provided `Type something.` / `Chat about this` escape-hatch guidance, JSON `questions[]` examples in brainstorm/plan, and `(Recommended)` option convention.
 - Bundled `todo` checklist guidance, not Claude checklist/task tool names.
-- `arc_agent` fallback semantics plus preferred Arc `pi-subagents` definitions when available.
-- Arc `modelProfiles` guidance and auto-materialized Arc `pi-subagents` specialists; `/arc-subagents-sync` is deprecated repair/backcompat, not the primary setup path.
+- `arc_agent` thin asynchronous one-specialist semantics over the same required `pi-subagents` provider; it is not an independent execution fallback.
+- Arc `modelProfiles` guidance and auto-materialized Arc `pi-subagents` specialists; `/arc-subagents-sync` is deprecated repair/backcompat, not the primary setup path. Preserve model fallback precedence separately from execution-provider requirements.
 - Parallel readiness contract: brainstorm/plan keep `## Parallel Readiness`, `### T0 Foundation Decision`, `### File Ownership Matrix`, `### Parallel Batch Manifest`, and `### Validation Matrix`; build consumes the manifest and applies one patch at a time.
 - Review-only code-reviewer dispatch prompt: it must say `Review only; return findings only. Do not edit files.` and must not contain wording that asks the reviewer to edit, fix, patch, or apply changes directly.
 - Issue-manager bulk creation remains phased: create epic, create all child tasks, capture IDs, apply dependencies only after all child IDs exist, apply labels after dependencies, and report `## Timing`.

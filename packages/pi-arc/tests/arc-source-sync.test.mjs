@@ -55,8 +55,34 @@ test('arc-source-sync codifies reproducible Pi adaptation loop', () => {
   assert.match(source, /Review-only code-reviewer dispatch prompt/);
   assert.match(source, /Parallel readiness contract/);
   assert.match(source, /auto-materialized Arc `pi-subagents` specialists/);
+  assert.match(source, /thin asynchronous one-specialist semantics over the same required `pi-subagents` provider/);
+  assert.match(source, /not an independent execution fallback/);
+  assert.match(source, /extract that exact tree with `git archive` into a temporary directory/);
+  assert.match(source, /record both the repository path and commit in the handoff/);
+  assert.match(source, /task's pinned source and orchestration boundaries override generic examples/i);
+  assert.match(source, /no-push boundary/i);
+  assert.match(source, /Preserve model fallback precedence separately from execution-provider requirements/);
   assert.match(source, /git push/);
   assert.match(source, /Do not tell the user "ready to push"/);
+});
+
+test('migration generator owns native workflow and completion transforms', () => {
+  const source = read('scripts/migrate-arc-plugin.py');
+  assert.match(source, /NATIVE_PROVIDER_REQUIREMENT/);
+  assert.match(source, /workflowScript/);
+  assert.match(source, /runs\.all/);
+  assert.match(source, /outputReference/);
+  assert.match(source, /Targeted Fix and Recovery/);
+  assert.match(source, /same provider and is not an independent fallback/);
+  assert.match(source, /MANDATORY_REVIEW_PROTOCOL/);
+  assert.match(source, /return await runs\.run/);
+  assert.match(source, /arc-review-ledger:v1/);
+  assert.doesNotMatch(source, /Computed property spelling|\[\\?"workflowScript\\?"\]|\[\\?"baseRef\\?"\]/);
+  assert.match(source, /REVIEWER_MUTATION_POLICY/);
+  const nativeTransforms = source.slice(source.indexOf('NATIVE_PROVIDER_REQUIREMENT'));
+  assert.doesNotMatch(nativeTransforms, /clarify\s*:\s*false/);
+  assert.doesNotMatch(nativeTransforms, /arc_agent`? is self-contained|self-contained fallback/i);
+  assert.doesNotMatch(nativeTransforms, /poll(?:ing)? (?:it )?with `subagent|wait for terminal status.*polling/i);
 });
 
 test('migration preserves the general Arc model-policy guidance', () => {
@@ -87,6 +113,135 @@ test('migration preserves the general Arc model-policy guidance', () => {
     assert.match(arcSkill, /## Model policy/);
     assert.match(arcSkill, /Arc recommends Luna for low-cost issue-manager\/docs work/);
     assert.match(arcSkill, /\[arc-build model selection\]\(\.\.\/arc-build\/SKILL\.md#model-selection\)/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+function writeSessionBindingFixture(root, bound) {
+  const guarded = '--session-id "${PI_SESSION_ID:?PI_SESSION_ID is required}"';
+  const session = (command) => (bound ? `${command} ${guarded}` : command);
+  const files = {
+    'agents/issue-manager.md': `arc update <id> --take${bound ? ` ${guarded} ` : '                     '}# Claim work (sets session ID + in_progress)\n`,
+    'prompts/arc-prime.md': `Run \`${session('arc prime')}\` to output workflow context for AI assistants.\n`,
+    'prompts/arc-ready.md': `If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run \`${session('arc update <id> --take')}\` to claim it (sets session ID + in_progress).\n`,
+    'prompts/arc-team.md': `description: Agent team operations\n\nManage agent team operations with \`arc team\`.\n\n**Related commands:**\n- \`${session('arc prime --role=lead')}\` — Team lead context output\n- \`${session('arc prime --role=frontend')}\` — Teammate-specific context (or use \`ARC_TEAMMATE_ROLE\` env var)\n`,
+    'prompts/arc-update.md': `arc update <id> --take${bound ? ` ${guarded} ` : '                 '}# Claim work (sets session ID + in_progress)\n`,
+    'skills/arc/SKILL.md': `## CLI Reference\n\nRun \`${session('arc prime')}\` for full workflow context, or \`arc <command> --help\` for specific commands.\n${bound ? `\n## Session Binding\n\nOperational claim commands and manual \`arc prime\` commands must pass \`${guarded}\`. \`PI_SESSION_ID\` is the canonical identity persisted by the lifecycle hook; do not substitute an agent ID or another runtime's session value. Lifecycle hooks keep their stdin-provided session identity and do not need this shell variable.\n` : ''}\n**Essential commands:**\n\narc update <id> --take${bound ? ` ${guarded} ` : '                  '}# Claim work (sets session ID + in_progress)\n`,
+    'skills/arc-build/SKILL.md': `arc update <task-id> --take${bound ? ` ${guarded}` : ''}\narc update <id> --take${bound ? ` ${guarded} ` : '                  '}# Claim task (sets session ID + in_progress)\n`,
+    'skills/arc-finish/SKILL.md': `    ${session('arc prime')}\n- Performative session summaries — \`${session('arc prime')}\` handles handoff context\n- Always run \`${session('arc prime')}\` at the end for next-session context\n`,
+  };
+  for (const [relative, contents] of Object.entries(files)) {
+    const destination = path.join(root, relative);
+    mkdirSync(path.dirname(destination), { recursive: true });
+    writeFileSync(destination, contents);
+  }
+}
+
+function sessionNormalizationParts(migration) {
+  const patchHelperStart = migration.indexOf('def patch_file(');
+  const patchHelperEnd = migration.indexOf('\n\ndef replace_section(', patchHelperStart);
+  const normalizationStart = migration.indexOf('def normalize_session_binding(');
+  const normalizationEnd = migration.indexOf('\n\npatch_file("prompts/arc-team.md", [', normalizationStart);
+  const teamPatchStart = normalizationEnd + 2;
+  const teamPatchEnd = migration.indexOf('\n\npatch_file("skills/arc/SKILL.md", [', teamPatchStart);
+
+  assert.notEqual(patchHelperStart, -1, 'missing patch_file helper');
+  assert.notEqual(patchHelperEnd, -1, 'missing patch_file helper boundary');
+  assert.notEqual(normalizationStart, -1, 'missing session-binding normalizer');
+  assert.notEqual(normalizationEnd, -1, 'missing session-binding normalizer boundary');
+  assert.notEqual(teamPatchEnd, -1, 'missing arc-team wording patch boundary');
+  return {
+    patchHelper: migration.slice(patchHelperStart, patchHelperEnd),
+    normalization: migration.slice(normalizationStart, normalizationEnd),
+    teamPatch: migration.slice(teamPatchStart, teamPatchEnd),
+  };
+}
+
+test('migration normalizes legacy session bindings before applying the arc-team wording patch', () => {
+  const migration = read('scripts/migrate-arc-plugin.py');
+  const { patchHelper, normalization, teamPatch } = sessionNormalizationParts(migration);
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-team-session-'));
+  const scriptPath = path.join(fixture, 'session-normalization.py');
+
+  try {
+    writeSessionBindingFixture(fixture, false);
+    writeFileSync(
+      scriptPath,
+      `from pathlib import Path\nARC_ROOT = Path(${JSON.stringify(fixture)})\n\n${patchHelper}\n\n${normalization}\n\n${teamPatch}\n`,
+    );
+    execFileSync('python3', [scriptPath], { stdio: 'pipe' });
+
+    const guarded = /--session-id "\$\{PI_SESSION_ID:\?PI_SESSION_ID is required\}"/;
+    for (const relative of [
+      'agents/issue-manager.md',
+      'prompts/arc-prime.md',
+      'prompts/arc-ready.md',
+      'prompts/arc-team.md',
+      'prompts/arc-update.md',
+      'skills/arc/SKILL.md',
+      'skills/arc-build/SKILL.md',
+      'skills/arc-finish/SKILL.md',
+    ]) {
+      assert.match(readFileSync(path.join(fixture, relative), 'utf8'), guarded, relative);
+    }
+    const arcSkill = readFileSync(path.join(fixture, 'skills', 'arc', 'SKILL.md'), 'utf8');
+    assert.match(arcSkill, /## Session Binding\n\nOperational claim commands/);
+    const team = readFileSync(path.join(fixture, 'prompts', 'arc-team.md'), 'utf8');
+    assert.match(team, /Lead-oriented context output/);
+    assert.match(team, /Role-filtered context/);
+    assert.match(team, /ARC_TEAMMATE_ROLE/);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('migration accepts an already Pi-bound session shape without changing it', () => {
+  const migration = read('scripts/migrate-arc-plugin.py');
+  const { normalization } = sessionNormalizationParts(migration);
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-bound-session-'));
+  const scriptPath = path.join(fixture, 'session-normalization.py');
+
+  try {
+    writeSessionBindingFixture(fixture, true);
+    const before = new Map();
+    for (const relative of [
+      'agents/issue-manager.md',
+      'prompts/arc-prime.md',
+      'prompts/arc-ready.md',
+      'prompts/arc-team.md',
+      'prompts/arc-update.md',
+      'skills/arc/SKILL.md',
+      'skills/arc-build/SKILL.md',
+      'skills/arc-finish/SKILL.md',
+    ]) {
+      before.set(relative, readFileSync(path.join(fixture, relative), 'utf8'));
+    }
+    writeFileSync(scriptPath, `from pathlib import Path\nARC_ROOT = Path(${JSON.stringify(fixture)})\n\n${normalization}\n`);
+    execFileSync('python3', [scriptPath], { stdio: 'pipe' });
+    for (const [relative, contents] of before) {
+      assert.equal(readFileSync(path.join(fixture, relative), 'utf8'), contents, relative);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('migration rejects an unknown session-binding shape instead of guessing', () => {
+  const migration = read('scripts/migrate-arc-plugin.py');
+  const { normalization } = sessionNormalizationParts(migration);
+  const fixture = mkdtempSync(path.join(tmpdir(), 'pi-arc-unknown-session-'));
+  const scriptPath = path.join(fixture, 'session-normalization.py');
+  const primePath = path.join(fixture, 'prompts', 'arc-prime.md');
+
+  try {
+    writeSessionBindingFixture(fixture, true);
+    writeFileSync(primePath, 'Run `arc prime --session-id "$PI_SESSION_ID"` to output workflow context for AI assistants.\n');
+    writeFileSync(scriptPath, `from pathlib import Path\nARC_ROOT = Path(${JSON.stringify(fixture)})\n\n${normalization}\n`);
+    assert.throws(
+      () => execFileSync('python3', [scriptPath], { encoding: 'utf8', stdio: 'pipe' }),
+      /Expected exactly one known session-binding shape.*prompts\/arc-prime\.md/,
+    );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

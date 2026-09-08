@@ -200,6 +200,29 @@ for src_dir in sorted((SRC / "skills").iterdir()):
             continue
         md.write_text(transform_text(md.read_text()))
 
+# Copy agents as bundled prompts for arc_agent.
+for f in sorted((SRC / "agents").glob("*.md")):
+    text = transform_text(f.read_text())
+    text = text.replace("  - Bash", "  - bash")
+    text = text.replace("  - Read", "  - read")
+    text = text.replace("  - Write", "  - write")
+    text = text.replace("  - Edit", "  - edit")
+    text = text.replace("  - Glob", "  - find")
+    text = text.replace("  - Grep", "  - grep")
+    text = re.sub(r"(?m)^model:\s*haiku\s*$", "model: small", text)
+    text = re.sub(r"(?m)^model:\s*sonnet\s*$", "model: standard", text)
+    text = re.sub(r"(?m)^model:\s*opus\s*$", "model: large", text)
+    if f.name in {"code-reviewer.md", "devops-builder.md", "evaluator.md", "spec-reviewer.md"}:
+        text = re.sub(r"(?m)^model:\s*standard\s*$", "model: large", text)
+    if f.name == "issue-manager.md":
+        text = re.sub(r"(?m)^model:\s*small\s*$", "model: nano", text)
+        if "## Timing / Progress Instrumentation" not in text:
+            text = text.replace(
+                "## Creating Epics with Tasks",
+                "## Timing / Progress Instrumentation\n\nFor bulk operations, print lightweight progress lines before and after each phase so the dispatcher can tell whether time is spent in the model or in the Arc CLI:\n\n```bash\nSTART_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=start\"\n# phase commands here\nEND_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=done elapsed_ms=$((END_MS-START_MS))\"\n```\n\nUse phase names such as `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include a final `## Timing` section in the summary with per-phase `elapsed_ms` values when available. This instrumentation is informational only; do not add sleeps, polling loops, or extra verification that the manifest did not request.\n\n## Creating Epics with Tasks",
+            )
+    (ARC_ROOT / "agents" / f.name).write_text(text)
+
 # Patch generated skills for Pi-specific execution semantics.
 def patch_file(rel: str, replacements: list[tuple[str, str]]) -> None:
     path = ARC_ROOT / rel
@@ -217,6 +240,90 @@ def replace_section(rel: str, start_marker: str, end_marker: str, replacement: s
     start = text.index(start_marker)
     end = text.index(end_marker, start)
     path.write_text(text[:start] + replacement + text[end:])
+
+
+def normalize_session_binding(rel: str, unbound: str, canonical: str) -> None:
+    """Normalize one exact pre- or post-session-binding source shape."""
+    path = ARC_ROOT / rel
+    text = path.read_text()
+    unbound_count = text.count(unbound)
+    canonical_count = text.count(canonical)
+    if unbound_count + canonical_count != 1:
+        raise RuntimeError(
+            f"Expected exactly one known session-binding shape while normalizing {rel}: "
+            f"unbound={unbound_count}, canonical={canonical_count}"
+        )
+    if unbound_count:
+        path.write_text(text.replace(unbound, canonical, 1))
+
+
+# Normalize the exact operational session-binding delta from the pinned
+# pre-binding source or the already Pi-bound source before Pi-specific patches.
+normalize_session_binding(
+    "agents/issue-manager.md",
+    "arc update <id> --take                     # Claim work (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim work (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "prompts/arc-prime.md",
+    "Run `arc prime` to output workflow context for AI assistants.",
+    "Run `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` to output workflow context for AI assistants.",
+)
+normalize_session_binding(
+    "prompts/arc-ready.md",
+    "If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run `arc update <id> --take` to claim it (sets session ID + in_progress).",
+    "If there are ready tasks, ask the user which one they'd like to work on. If they choose one, run `arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` to claim it (sets session ID + in_progress).",
+)
+normalize_session_binding(
+    "prompts/arc-team.md",
+    "- `arc prime --role=lead` — Team lead context output",
+    "- `arc prime --role=lead --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Team lead context output",
+)
+normalize_session_binding(
+    "prompts/arc-team.md",
+    "- `arc prime --role=frontend` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
+    "- `arc prime --role=frontend --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` — Teammate-specific context (or use `ARC_TEAMMATE_ROLE` env var)",
+)
+normalize_session_binding(
+    "prompts/arc-update.md",
+    "arc update <id> --take                 # Claim work (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim work (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "skills/arc/SKILL.md",
+    "Run `arc prime` for full workflow context, or `arc <command> --help` for specific commands.\n\n**Essential commands:**",
+    "Run `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` for full workflow context, or `arc <command> --help` for specific commands.\n\n## Session Binding\n\nOperational claim commands and manual `arc prime` commands must pass `--session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"`. `PI_SESSION_ID` is the canonical identity persisted by the lifecycle hook; do not substitute an agent ID or another runtime's session value. Lifecycle hooks keep their stdin-provided session identity and do not need this shell variable.\n\n**Essential commands:**",
+)
+normalize_session_binding(
+    "skills/arc/SKILL.md",
+    "arc update <id> --take                  # Claim work (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim work (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "skills/arc-build/SKILL.md",
+    "arc update <task-id> --take\n",
+    "arc update <task-id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"\n",
+)
+normalize_session_binding(
+    "skills/arc-build/SKILL.md",
+    "arc update <id> --take                  # Claim task (sets session ID + in_progress)",
+    "arc update <id> --take --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\" # Claim task (sets session ID + in_progress)",
+)
+normalize_session_binding(
+    "skills/arc-finish/SKILL.md",
+    "    arc prime\n",
+    "    arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"\n",
+)
+normalize_session_binding(
+    "skills/arc-finish/SKILL.md",
+    "- Performative session summaries — `arc prime` handles handoff context",
+    "- Performative session summaries — `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` handles handoff context",
+)
+normalize_session_binding(
+    "skills/arc-finish/SKILL.md",
+    "- Always run `arc prime` at the end for next-session context",
+    "- Always run `arc prime --session-id \"${PI_SESSION_ID:?PI_SESSION_ID is required}\"` at the end for next-session context",
+)
 
 patch_file("prompts/arc-team.md", [
     (
@@ -663,29 +770,6 @@ patch_file("skills/arc-summarize/SKILL.md", [
         "Preserve the current Arc description mechanically: write it to a temporary file, append only the backlink, then pipe the file back through `--stdin`. Never retype the existing body through the model:\n\n```bash\nTMP=$(mktemp)\narc show <arc-id> --json | jq -j .description > \"$TMP\"\ncat >> \"$TMP\" <<'EOF'\n\n---\n**Tracker:** [BT-3014](https://bactrack.atlassian.net/browse/BT-3014)\nEOF\narc update <arc-id> --stdin < \"$TMP\"\nrm -f \"$TMP\"\n```",
     ),
 ])
-
-# Copy agents as bundled prompts for arc_agent.
-for f in sorted((SRC / "agents").glob("*.md")):
-    text = transform_text(f.read_text())
-    text = text.replace("  - Bash", "  - bash")
-    text = text.replace("  - Read", "  - read")
-    text = text.replace("  - Write", "  - write")
-    text = text.replace("  - Edit", "  - edit")
-    text = text.replace("  - Glob", "  - find")
-    text = text.replace("  - Grep", "  - grep")
-    text = re.sub(r"(?m)^model:\s*haiku\s*$", "model: small", text)
-    text = re.sub(r"(?m)^model:\s*sonnet\s*$", "model: standard", text)
-    text = re.sub(r"(?m)^model:\s*opus\s*$", "model: large", text)
-    if f.name in {"code-reviewer.md", "devops-builder.md", "evaluator.md", "spec-reviewer.md"}:
-        text = re.sub(r"(?m)^model:\s*standard\s*$", "model: large", text)
-    if f.name == "issue-manager.md":
-        text = re.sub(r"(?m)^model:\s*small\s*$", "model: nano", text)
-        if "## Timing / Progress Instrumentation" not in text:
-            text = text.replace(
-                "## Creating Epics with Tasks",
-                "## Timing / Progress Instrumentation\n\nFor bulk operations, print lightweight progress lines before and after each phase so the dispatcher can tell whether time is spent in the model or in the Arc CLI:\n\n```bash\nSTART_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=start\"\n# phase commands here\nEND_MS=$(node -e 'console.log(Date.now())')\necho \"[arc-issue-manager] phase=child_tasks status=done elapsed_ms=$((END_MS-START_MS))\"\n```\n\nUse phase names such as `epic`, `child_tasks`, `dependencies`, `labels`, and `verification`. Include a final `## Timing` section in the summary with per-phase `elapsed_ms` values when available. This instrumentation is informational only; do not add sleeps, polling loops, or extra verification that the manifest did not request.\n\n## Creating Epics with Tasks",
-            )
-    (ARC_ROOT / "agents" / f.name).write_text(text)
 
 # Final Pi-native overlays for Claude-source changes that need adaptation or
 # preservation of Pi-only behavior. Keep these near the end so they override
@@ -1288,6 +1372,824 @@ patch_file("agents/issue-manager.md", [
         "- Summarize any errors encountered\n- Include a `## Timing` section with phase-level elapsed times for bulk operations when available\n- Provide next steps if applicable",
     ),
 ])
+
+
+# Native pi-subagents workflow refresh. Keep these overlays after the older
+# compatibility transforms so the pinned source deterministically produces the
+# current public execution contract.
+NATIVE_PROVIDER_REQUIREMENT = """Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
+"""
+
+NATIVE_COMPLETION_REQUIREMENT = """On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+"""
+
+NATIVE_FAILURE_REQUIREMENT = """Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+"""
+
+replace_section("skills/arc-build/SKILL.md", "## Model Selection\n\n", "\n## Dispatch Modes", """## Model Selection
+
+`modelProfiles` from `${XDG_CONFIG_HOME:-~/.config}/pi-arc/models.json` are the preferred role-specific policy. Resolution is: explicit dispatch `model:` override, configured role profile, legacy `arc.modelTiers` / frontmatter, then package defaults. Existing configured profiles and explicit overrides remain authoritative; recommendations never rewrite them. Users should run `/arc-models`, and should omit `model:` when the configured role profile should remain authoritative.
+
+| Role / tier | Recommended model and effort | Use for |
+|---|---|---|
+| issueManager / `nano` | Luna, `off` | Low-reasoning Arc CLI work |
+| docWriter / `small` | Luna, `low` | Documentation and mechanical edits |
+| builder / `standard` | Terra, `medium` | Contained implementation |
+| brainstorm, plan | Astra, `high` | Design exploration and task sequencing |
+| devopsBuilder, codeReviewer, specReviewer, evaluator / `large` | Astra, `high` | Operations, review, and adversarial validation |
+
+Package defaults are Luna for `nano`/`small`, Terra for `standard`, and Astra for `large`. Legacy aliases remain compatible: `haiku` → `small`, `sonnet` → `standard`, `opus` → `large`. The legacy tier map remains model-only and is a compatibility fallback, not an execution-provider fallback.
+
+Astra supports `low`, `medium`, `high`, `xhigh`, and `max`; it does not support `off`/`none`, so `low` is its minimum effective effort. The picker offers only levels advertised by the active model. Terra at `high` is the cost-sensitive option for harder bounded implementation. Astra at `low` or `medium` is an explicit capability-first choice; no direct Arc benchmark exists showing it is equivalent to Terra-high. API prices are not Codex quota prices—compare accepted-task quality, retries, total tokens/cost, and elapsed time on representative work before changing cost-sensitive defaults. `xhigh` and `max` are deliberate exceptional escalations for explicitly bounded work, never automatic retries.
+
+Use Pi-native `model:effort` suffixes only for deliberate explicit overrides:
+
+```text
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-5.6-terra:high", context: "fresh", async: true })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:low", context: "fresh", async: true })
+subagent({ agent: "arc-builder", task: "...", model: "openai-codex/gpt-6-astra:high", context: "fresh", async: true })
+```
+
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` is a thin Arc-facing asynchronous wrapper over that same required provider, not an independent runner or a bundled sequential execution fallback.
+
+A single implementation handoff can use `subagent({ agent: "arc-builder", task: "<filled builder prompt>", context: "fresh", async: true });`; `arc_agent(agent="builder", task="<filled builder prompt>")` is the one-specialist Arc-facing alternative using the same provider. Both return dispatch receipts before completion. Capture the native run reference, then return control for native completion. Do not poll, sleep-loop, or call `bg_wait` merely to wait for ordinary notified runs. Use native status, fleet, or transcript only for a deliberate inspection or recovery decision.
+
+On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application, or issue closure. Preserve parent verification and review gates.
+
+Native workflow, launch, extension, or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD, and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
+
+| Task signal | Dispatch `model:` |
+|---|---|
+| Bulk issue creation or other low-reasoning Arc CLI operations | omit (issueManager profile) or `nano` |
+| Mechanical, unambiguous work | omit (docWriter profile) or `small` |
+| Standard contained implementation | omit (builder profile) or `standard` |
+| Cross-layer, high-risk, or adversarial work | omit (configured role profile) or `large` |
+| Re-dispatch after `BLOCKED` | classify the blocker; only a verified reasoning-limit blocker may move one tier up. Infrastructure or tooling failures require same-protocol recovery without model escalation; context, scope, and plan blockers follow their specific paths. re-dispatches stop at `large`. |
+| Re-dispatch after `NEEDS_CONTEXT` | same tier with richer context |
+
+**When unsure, omit `model:`** so the configured role profile remains authoritative. For a genuine reasoning limit, use one bounded tier escalation and stop at `large`; if it still blocks, escalate with the blocker summary rather than increasing effort automatically.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "### 3. Dispatch Agent\n\n", "\n### 4. Evaluate Result", """### 3. Dispatch Agent
+
+Record `PRE_TASK_SHA=$(git rev-parse HEAD)`, fetch the parent design excerpt, and inspect labels. Route with exact precedence `docs-only` → `devops` → normal builder:
+
+- `docs-only`: fill `./doc-writer-prompt.md`; use `arc-doc-writer` (profile `docWriter`).
+- `devops`: fill `./devops-builder-prompt.md`; use `arc-devops-builder` (profile `devopsBuilder`). It follows PLAN → SAFEGUARD → APPLY → VERIFY → GATE. Never put live-system work in a parallel patch batch.
+- otherwise: fill `./builder-prompt.md`; use `arc-builder` (profile `builder`).
+
+For one handoff, call `subagent({ agent: "<required-arc-agent>", task: "<filled prompt>", context: "fresh", async: true });`. The Arc-facing `arc_agent(agent="<role>", task="<filled prompt>")` alternative is also asynchronous and uses the same provider; for the DevOps route that is `arc_agent(agent="devops-builder", task="<filled prompt>")`. Omit `model:` to preserve the configured profile; use an explicit override only for deliberate model selection.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+
+""" + NATIVE_COMPLETION_REQUIREMENT + """
+
+""" + NATIVE_FAILURE_REQUIREMENT + """
+
+Do not evaluate the specialist report until native completion identifies a terminal successful run and the final result/artifacts are present.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "Dispatch `spec-reviewer`:\n\n", "\nHandle results:", """Dispatch `spec-reviewer`:
+
+Fill `./spec-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, and `{HEAD_SHA}`. Preserve review-only behavior. Use `subagent({ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="spec-reviewer", task="<filled prompt>")`. Omit `model:` so the configured `specReviewer` profile wins; `large` frontmatter/model fallback remains available.
+
+The call returns a dispatch receipt, not review success. Return control for native completion, then require successful terminal runtime state and a complete final review artifact. Failure, pause, stop, incomplete or malformed output blocks the stage regardless of compliance prose. Do not substitute generic `worker` or `reviewer` agents.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "When `pi-subagents` is available, dispatch the evaluator through a one-task worktree-isolated parallel run.", "\nTriage evaluator findings:", """Evaluations use explicitly requested native worktree isolation. Record the full SHA with `PARALLEL_BASE=$(git rev-parse HEAD)` from the clean checkpoint as immutable verification evidence, then fill `./evaluator-prompt.md`. Do not pass that commit ID as the native `baseRef`; the launch uses symbolic `HEAD`, resolved at worktree allocation.
+
+Immediately before launch, prove the checkout still matches the recorded SHA:
+
+```bash
+test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after evaluator anchor" >&2; exit 1; }
+```
+
+```typescript
+subagent({
+  workflowScript: `return await runs.run("evaluate", { agent: "arc-evaluator", task: "<filled evaluator prompt>", worktree: true, output: "evaluator.md", async: false });`,
+  context: "fresh", async: true, globalConcurrencyLimit: 1,
+  baseRef: "HEAD",
+})
+```
+
+The outer workflow remains asynchronous and returns a launch receipt. Setting `async: false` on each awaited inner foreground child is deliberate: pi-subagents can expose the exact worktree handoff manifest path in that child's returned string-array `artifactPaths` for mandatory `baseCommit` validation.
+
+Return control for native completion. Require a successful terminal child result and consume its returned `outputReference`, `outputPathMapping`, or `artifactPaths`; the receipt and evaluator prose alone cannot pass the gate.
+
+After native completion and before accepting or triaging evaluator findings, locate the actual returned path ending in `handoffs/<run-id>.json` in the completed evaluator child result's string-array `artifactPaths`. Set `HANDOFF_MANIFEST` to that exact returned path; never fabricate or infer base identity from current `HEAD`. Fail closed if the path or manifest is missing, unreadable, malformed, empty, or mismatched:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$PARALLEL_BASE" \\
+    '.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)' \\
+    "$HANDOFF_MANIFEST"
+```
+
+The command must succeed before the evaluator report is interpreted. Any failure or base mismatch blocks evaluator finding acceptance and requires explicit native inspection/recovery; it is not permission to apply, retry or switch modes.
+
+Ephemeral tests/dependency edits remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion. The configured `evaluator` profile remains authoritative and `large` is its model fallback.
+""")
+
+replace_section("skills/arc-build/SKILL.md", "### P4. Dispatch with `pi-subagents`\n\n", "\n### P5. Apply and Verify Patches One at a Time", """### P4. Dispatch with `pi-subagents`
+
+The full SHA recorded earlier with `PARALLEL_BASE=$(git rev-parse HEAD)` is immutable verification evidence for later history and HEAD checks. Do not pass that commit ID as the native `baseRef`; the launch uses symbolic `HEAD`, resolved at worktree allocation.
+
+Immediately before launch, prove the checkout still matches the recorded SHA:
+
+```bash
+test "$(git rev-parse HEAD)" = "$PARALLEL_BASE" || { echo "HEAD moved after parallel anchor" >&2; exit 1; }
+```
+
+Launch one top-level native workflow for the coordinated wave, with stable keys and declared output bindings:
+
+```typescript
+subagent({
+  workflowScript: `
+    const results = await runs.all([
+      { key: "build-a", agent: "arc-builder", task: "<filled builder prompt A>", worktree: true, output: "builder-a.md", async: false },
+      { key: "build-b", agent: "arc-builder", task: "<filled builder prompt B>", worktree: true, output: "builder-b.md", async: false },
+      { key: "docs", agent: "arc-doc-writer", task: "<filled doc prompt>", worktree: true, output: "docs.md", async: false }
+    ]);
+    return results;
+  `,
+  context: "fresh", async: true, globalConcurrencyLimit: 3,
+  baseRef: "HEAD",
+})
+```
+
+The outer workflow remains asynchronous and returns a launch receipt. Setting `async: false` on each awaited inner foreground child is deliberate: pi-subagents can expose the exact worktree handoff manifest path in that child's returned string-array `artifactPaths` for mandatory `baseCommit` validation.
+
+`runs.all` returns the complete ordered array. On native completion, preserve every child result in that order and consume each child's actual `outputReference`, `outputPathMapping`, or `artifactPaths`. A filename mentioned only in prose is not an output binding.
+
+After native completion and before inspecting or applying any parallel patch, locate the actual returned path ending in `handoffs/<run-id>.json` in every relevant child result's string-array `artifactPaths`. Every relevant result must supply that path; validate every distinct returned manifest. Set `HANDOFF_MANIFEST` only from those exact returned paths, never fabricate or infer base identity from current `HEAD`. For each path, fail closed if the path or manifest is missing, unreadable, malformed, empty, or mismatched:
+
+```bash
+HANDOFF_MANIFEST='<exact handoffs/<run-id>.json path returned in artifactPaths>'
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" &&
+  jq -e --arg base "$PARALLEL_BASE" \\
+    '.version == 1 and (.groups | type == "array") and (.groups | length > 0) and all(.groups[]; (.baseCommit | type == "string") and (.baseCommit | length > 0) and .baseCommit == $base)' \\
+    "$HANDOFF_MANIFEST"
+```
+
+Every distinct manifest check must succeed, proving `version: 1`, nonempty `groups`, and that every relevant `groups[].baseCommit` equals `$PARALLEL_BASE`. Any failure or base mismatch blocks patch acceptance and requires explicit native inspection/recovery; it is not permission to apply, retry or switch modes.
+
+There is no implicit merge or cleanup: follow the validated native handoff manifest and retention/cleanup facts. A failed, paused, stopped, incomplete, or malformed child blocks its handoff regardless of `DONE` prose, and a rejected handoff is not permission to switch mode.
+""")
+
+patch_file("skills/arc-build/SKILL.md", [
+    (
+        "- Re-dispatch that task sequentially with the failure details.",
+        "- Use the native targeted-fix protocol below; do not silently switch execution mode.",
+    ),
+    (
+        "`pi-subagents` worktree mode returns per-task patch files and cleans up temporary worktrees. It does **not** automatically merge changes into the main working tree. The orchestrator must inspect, apply, verify, commit, and close each patch/task explicitly.",
+        "Native worktree runs return handoff metadata such as `outputReference`, `outputPathMapping`, or `artifactPaths`. They do not implicitly apply or merge changes. Inspect each handoff and its native retention/cleanup facts, then explicitly apply, verify, commit, and close accepted work.",
+    ),
+    (
+        "Use this protocol only with `pi-subagents` worktree mode. Do **not** use `arc_agent(isolation=\"worktree\")`; `arc_agent` intentionally remains sequential-only.",
+        "Use this protocol only for a coordinated `pi-subagents` worktree wave. `arc_agent(isolation=\"worktree\")` supports one child through the same provider, not a coordinated multi-child wave.",
+    ),
+    (
+        "This is the baseline all temporary worktrees will branch from. Record it — you'll need it for verification after patch application.",
+        "This full SHA is immutable verification evidence for later history and HEAD checks, not the native `baseRef`. Immediately before worktree allocation, verify symbolic `HEAD` still resolves to it.",
+    ),
+    (
+        "When the subagent reports back, check its **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the subagent's report alone.",
+        "After native completion confirms successful terminal runtime state and final artifacts, interpret the completed Arc specialist report's **Status** (one of `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT`) and **Gate Results**. Follow the `## Handle Implementer Status` table below for the status-specific action. In all cases, run the project test command fresh yourself — do NOT trust the specialist report alone.",
+    ),
+    (
+        "Every `builder`, `devops-builder`, and `doc-writer` dispatch returns one of four terminal statuses. Handle each explicitly:",
+        "After native completion/runtime success is established, interpret each completed `builder`, `devops-builder`, or `doc-writer` Arc specialist report as one of four statuses. Handle each explicitly:",
+    ),
+    (
+        "- When re-dispatching after `BLOCKED`, escalate one model tier per the Model Selection table — never retry the same dispatch unchanged",
+        "- Classify every `BLOCKED` report before choosing a response. Only a verified reasoning-limit blocker may escalate one model tier. Infrastructure or tooling failures must stop for same-protocol diagnosis or recovery without model escalation; context, scope, or plan blockers follow their specific handling above.",
+    ),
+    (
+        "- For `BLOCKED`: assess the blocker per the Handle Implementer Status table. Escalate one model tier (`nano` → `small` → `standard` → `large`) per the Model Selection escalation rule, or invoke the `debug` skill if the blocker is a persistent test failure, or split the task if too large, or escalate to the human.",
+        "- For `BLOCKED`: classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths.",
+    ),
+    (
+        "| `BLOCKED` | Evaluator itself is blocked. Escalate per the Model Selection rules or involve the human. |",
+        "| `BLOCKED` | Classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths. |",
+    ),
+    (
+        "| `BLOCKED` | Assess the blocker: (1) context problem → provide missing context, re-dispatch same tier; (2) reasoning limit → re-dispatch one tier up per the Model Selection escalation rule; (3) task too large → split and re-plan; (4) plan is wrong → escalate to human. Never retry the same dispatch unchanged. |",
+        "| `BLOCKED` | Classify first; only a verified reasoning-limit blocker may cause a one-tier model escalation. Infrastructure or tooling failures stop for same-protocol diagnosis/recovery without model escalation; context, scope, and plan blockers follow their specific paths. Never retry an eligible dispatch unchanged. |",
+    ),
+    (
+        "fetch it per step 3's design-context block",
+        "retrieve it directly with `arc show <parent-epic-id>` and use \"none\" when no parent design context exists",
+    ),
+])
+insert_before_if_missing("skills/arc-build/SKILL.md", "\n## When to Invoke Debug", """## Targeted Fix and Recovery
+
+For a requested repair, consult native retained-child/resumability information. If the appropriate latest writer is resumable, use `subagent({ action: "resume", id: "<native-run-id>", message: "<specific verified fixes>" });`; for a live child use native steering. Capture the returned native identity. Do not fabricate continuity or implement Arc session validation. If native recovery is unavailable, stop for an explicit same-protocol fresh attempt with current scope and prior findings. Reviews remain fresh independent Arc specialist runs. Keep existing fix-cycle limits.
+
+A recovery result must pass the same native terminal-state, artifact, parent-test, spec-review, and code-review gates. Provider failure is not a reasoning failure and does not justify model escalation.
+
+""", "## Targeted Fix and Recovery")
+
+replace_section("skills/arc-plan/SKILL.md", "Then dispatch the manifest — titles, metadata, and file paths only, no description bodies.", "\nUse this task payload for whichever dispatcher you choose:", """Then dispatch the manifest — titles, metadata, and canonical file paths only, never description bodies.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+
+Use the `arc-issue-manager` as one direct child and omit `model:` so its configured profile remains authoritative:
+
+`subagent({ agent: "arc-issue-manager", task: "<filled manifest metadata and canonical file paths>", context: "fresh", async: true });`
+
+The Arc-facing `arc_agent(agent="issue-manager", task="<filled manifest metadata and canonical file paths>")` alternative uses the same provider. Either call returns only a dispatch receipt. Capture the native run reference and return control for native completion; do not poll merely to wait. Only after successful terminal runtime state and final artifacts may the parent verify canonical description hashes, phase ordering, IDs, dependencies, labels, and timing. Unknown or malformed completion blocks issue acceptance; never issue a duplicate launch automatically.
+
+""" + NATIVE_COMPLETION_REQUIREMENT + """
+
+""" + NATIVE_FAILURE_REQUIREMENT)
+
+replace_section("skills/arc-review/SKILL.md", "### 3. Dispatch Reviewer\n\n", "\n### 4. Triage Feedback", """### 3. Dispatch Reviewer
+
+Fill `./code-reviewer-prompt.md` with `{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, and `{EVALUATOR_STATUS}`. Preserve `Review only; return findings only. Do not edit files.`
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+
+Dispatch one fresh review with `subagent({ agent: "arc-code-reviewer", task: "<filled reviewer prompt>", context: "fresh", async: true });` or the same-provider Arc-facing `arc_agent(agent="code-reviewer", task="<filled reviewer prompt>")`. Omit `model:` so `codeReviewer` profile precedence and its model fallback remain authoritative. Either call returns only a dispatch receipt. Capture the native run reference and return control for native completion; do not poll merely to wait.
+
+""" + NATIVE_COMPLETION_REQUIREMENT + """
+
+""" + NATIVE_FAILURE_REQUIREMENT + """
+
+Require successful terminal runtime state and a complete final review artifact before triage. Never infer a clean review from a launch receipt, missing findings, or successful prose attached to a failed/paused/stopped/incomplete/malformed run. Reviews after fixes are fresh independent `arc-code-reviewer` runs.
+""")
+
+replace_section("skills/arc/SKILL.md", "## Agent Mode\n\n", "\n## Dependency Types", """## Agent Mode
+
+For bulk operations, use the `arc-issue-manager` specialist. Non-delegating Arc commands continue without `pi-subagents`; every delegated specialist requires loaded, enabled `pi-subagents`.
+
+""" + NATIVE_PROVIDER_REQUIREMENT + """
+
+Issue-manager dispatch is a direct single-child handoff: `subagent({ agent: "arc-issue-manager", task: "<filled manifest metadata and canonical file paths>", context: "fresh", async: true });`. Omit `model:` so the configured profile remains authoritative. Capture the receipt's native run reference, return control for native completion, and inspect final runtime state and artifacts before interpreting the specialist report.
+
+""" + NATIVE_COMPLETION_REQUIREMENT + """
+
+""" + NATIVE_FAILURE_REQUIREMENT + """
+
+Coordinated build waves use one `workflowScript`; Arc does not implement scheduling, session, worktree, lifecycle, cancellation, completion-notification, or cleanup machinery already owned by `pi-subagents`.
+""")
+
+replace_section("agents/evaluator.md", "## Sandbox Model\n\n", "\n## Information Asymmetry", """## Sandbox Model
+
+Evaluations use explicitly requested native worktree isolation. Ephemeral acceptance tests, dependency edits, and build-file changes remain isolated and are not commits or merge handoffs. Follow native retention and cleanup facts rather than promising automatic deletion.
+
+If explicitly authorized to evaluate in the shared cwd, first require a clean baseline with `git status --short`; if it is not clean, report `BLOCKED`. Track every evaluator-owned change, restore only those changes, and verify the final status exactly matches that baseline. Never remove or reset unrelated work. Never commit evaluation artifacts.
+""")
+patch_file("agents/evaluator.md", [
+    (
+        "Report your findings to the dispatching agent. Do not commit. In a disposable worktree, runtime cleanup handles artifacts; in the `arc_agent` fallback, complete the tracked-file restoration and temporary-file cleanup from the Sandbox Model before reporting.",
+        "Report your findings to the dispatching agent. Do not commit. Keep ephemeral artifacts isolated; for an explicitly authorized shared-cwd evaluation, complete the evaluator-owned restoration from the Sandbox Model before reporting.",
+    ),
+])
+
+
+# Mandatory acceptance reviews are a policy-owned Arc gate executed through one
+# native pi-subagents workflow. Keep this final overlay after generic delegated
+# execution guidance so generation cannot restore shared-cwd or arc_agent review
+# alternatives in the mandatory gate sections.
+REVIEWER_MUTATION_POLICY = """## Read-Only Safety Boundary
+
+Repository writes or artifacts, Git/ref changes, Arc mutation, package installation, cache/build generation, and writer delegation are prohibited. Use only the parent-supplied canonical task, design excerpt, immutable diff input, and repository reads needed to evaluate them. Do not invoke Git or Arc commands. Any mutation invalidates the review.
+
+"""
+
+for rel in ("agents/spec-reviewer.md", "agents/code-reviewer.md"):
+    path = ARC_ROOT / rel
+    text = path.read_text()
+    text = re.sub(
+        r"(?m)^tools:\n(?:  - .+\n)+",
+        "tools:\n  - read\n  - find\n  - grep\n",
+        text,
+        count=1,
+    )
+    marker = "## Iron Law" if rel.endswith("spec-reviewer.md") else "## Workflow"
+    text = text.replace(marker, REVIEWER_MUTATION_POLICY + marker, 1)
+    if rel.endswith("spec-reviewer.md"):
+        text = text.replace(
+            "3. Check for files changed that aren't in `## Files` (use `git diff --name-only` if a base SHA is provided)",
+            "3. Check the parent-supplied immutable diff for files changed outside `## Files`; do not invoke Git",
+        )
+    else:
+        text = text.replace(
+            "3. **Read the git diff** provided or retrieve via `git diff <base>..<head>`",
+            "3. **Read the parent-supplied immutable diff** inline or from its read-only external artifact; do not invoke Git",
+        )
+    path.write_text(text)
+
+
+def write_review_prompt(rel: str, title: str, opening: str, report: str) -> None:
+    (ARC_ROOT / rel).write_text(f"""# {title}
+
+Use this template only for the native isolated mandatory reviewer workflow.
+
+**Placeholders:**
+- `{{TASK_ID}}` — Arc issue ID
+- `{{CANONICAL_SPEC}}` — canonical task-description bytes above the review-ledger sentinel
+- `{{CANONICAL_SHA256}}` — SHA-256 of those canonical bytes
+- `{{DESIGN_EXCERPT}}` — relevant approved design text, or `none`
+- `{{BASE_SHA}}` / `{{HEAD_SHA}}` — exact implementation diff range
+- `{{DIFF_PATH}}` — absolute read-only external artifact path, or `inline`
+- `{{DIFF_SHA256}}` — SHA-256 of the exact diff bytes
+- `{{DIFF_CONTENT}}` — exact diff when inline, otherwise `read {{DIFF_PATH}}`
+- `{{PRIOR_FINDINGS}}` — exact prior findings for re-review, or `none`
+- `{{LATEST_FIX_DELTA}}` — exact newest fix delta for re-review, or `none`
+- `{{CYCLE}}` — shared spec/code review cycle number
+- `{{EVALUATOR_STATUS}}` — code review only: `active` or `not dispatched`; otherwise `not applicable`
+
+````text
+{opening}
+
+Review only; return findings only. Do not edit files.
+
+Repository writes or artifacts, Git/ref changes, Arc mutation, package installation, cache/build generation, and writer delegation are prohibited. Do not run Git, Arc, tests, package managers, generators, or delegated writers. Any mutation invalidates the review.
+
+## Review Input
+
+Task: {{TASK_ID}}
+Canonical description SHA-256: {{CANONICAL_SHA256}}
+Diff base: {{BASE_SHA}}
+Diff head: {{HEAD_SHA}}
+Diff path: {{DIFF_PATH}}
+Diff SHA-256: {{DIFF_SHA256}}
+Cycle: {{CYCLE}}
+
+### Canonical Task Spec
+{{CANONICAL_SPEC}}
+
+### Approved Design Excerpt
+{{DESIGN_EXCERPT}}
+
+### Changes
+{{DIFF_CONTENT}}
+
+### Prior Findings
+{{PRIOR_FINDINGS}}
+
+### Exact Newest Fix Delta
+{{LATEST_FIX_DELTA}}
+
+### Evaluator Status
+{{EVALUATOR_STATUS}}
+
+Use only the supplied canonical task, design excerpt, diff bytes, and repository reads. The parent has already captured Git and Arc state; do not retrieve or mutate either. On re-review, verify the prior findings against the exact newest fix delta, then evaluate the resulting implementation. A finding outside that delta may newly block only if all three conditions hold: it is critical, it is a latent correctness or safety defect, and it was exposed by the newest delta. Unrelated noncritical findings must not expand the blocking review scope; report them as follow-ups.
+
+{report}
+````
+""")
+
+
+write_review_prompt(
+    "skills/arc-build/spec-reviewer-prompt.md",
+    "Spec Reviewer Prompt Template",
+    "Verify that the implementation for Arc task {TASK_ID} matches its canonical task spec exactly.",
+    """## Your Job
+
+Compare the supplied diff and readable implementation files against the canonical spec. For each requirement:
+- If implemented, cite the file and line.
+- If absent or partial, flag the gap.
+- Flag anything not requested and every file outside the spec's `## Files` list.
+
+## Report Format
+
+```text
+## Result: COMPLIANT | ISSUES
+
+### Missing (only if ISSUES)
+- <what's missing, with file:line references>
+
+### Extra (only if ISSUES)
+- <what was added beyond spec, with file:line references>
+
+### Misunderstood (only if ISSUES)
+- <what was misinterpreted, with spec quote vs actual behavior>
+```""",
+)
+
+write_review_prompt(
+    "skills/arc-review/code-reviewer-prompt.md",
+    "Reviewer Prompt Template",
+    "Review the implementation for Arc task {TASK_ID} against the canonical task spec, approved design, and project conventions.",
+    """## Report Format
+
+Report findings in three severities:
+
+- **Critical** (blocking): correctness bugs, security issues, scope violations, spec deviations
+- **Important** (address before proceeding): quality issues, pattern mismatches, naming problems, test gaps
+- **Minor** (note for later): style nits, observations, future cleanup candidates
+
+If a design excerpt was provided, also report Plan Adherence:
+- **ADHERENT** — implementation matches the design
+- **DEVIATION (fix)** — implementation diverges from design; recommend fixing
+- **DEVIATION (accept)** — implementation diverges from design; recommend accepting the divergence with reasoning
+
+When Evaluator Status is `not dispatched`, flag behavioral concerns by describing the code path and suspected gap. Do not write or run tests.""",
+)
+
+
+MANDATORY_REVIEW_PROTOCOL = r'''### __HEADING__
+
+Mandatory __LABEL__ is an Arc acceptance gate, not generic dispatch. It requires the separately installed native provider and exact `__AGENT__` capability. There is no shared-cwd, `arc_agent`, generic-agent, provider-runner, or CLI fallback for this gate. If capability or evidence is unavailable, stop with setup or infrastructure guidance.
+
+#### Clean source preflight
+
+Run from the repository root before materializing input or launching a reviewer:
+
+```bash
+REVIEW_BRANCH=$(git branch --show-current)
+REVIEW_BASE=$(git rev-parse HEAD)
+REVIEW_STATE=$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')
+test -n "$REVIEW_BRANCH"
+test -z "$REVIEW_STATE" || {
+  printf '%s\n' "$REVIEW_STATE" >&2
+  echo 'review requires a clean source checkout' >&2
+  exit 1
+}
+```
+
+Dirty source state blocks review. Never stash, reset, restore, clean, or fall back to shared-cwd review. Capture these exact values as `ReviewBaseline { branch, head, porcelainV2 }`; `REVIEW_BASE` is the native worktree handoff base while `BASE_SHA..HEAD_SHA` remains the implementation range under review.
+
+#### Durable combined review budget
+
+The Arc issue description is both canonical task input and durable budget storage. Bootstrap and reload are distinct. On first review, inspect the last exact sentinel. First-time bootstrap may preserve and hash the **entire** original description bytes only when that last sentinel's terminal suffix is ordinary quoted/task prose with no review-ledger signature; byte-concatenate the actual sentinel directly after those bytes without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the actual ledger boundary identical even when Arc has trimmed a trailing newline. Earlier sentinel/header examples are canonical quoted prose because only the last exact sentinel can be the boundary. If the terminal suffix contains any review-ledger signature — the exact `## Review Ledger` header, a `Canonical description SHA-256` field, `Authorized reviewer runs: 4`, `Owner-authorized additional reviewer runs: <finite-positive-integer>`, or ledger table syntax (header, separator, or row) — it is durable ledger state and must be a structurally valid terminal review-ledger trailer (versioned header, valid canonical SHA-256, fixed authorization, table header/separator, and valid rows) whose recorded hash matches the exact prefix. Missing, invalid, or mismatched hashes and every other malformed terminal trailer fail closed; never absorb prior ledger data into canonical bytes or reset the budget. After initialization, the actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
+
+```markdown
+<!-- arc-review-ledger:v1 -->
+## Review Ledger
+Canonical description SHA-256: `<sha256>`
+Authorized reviewer runs: 4
+```
+
+Bytes above the sentinel are canonical and must never change. Compute and verify their SHA-256 before every launch. Content below the sentinel is the ledger only. Use rows with the conceptual shape `ReviewLedgerEntry { sequence, reviewer, run_id, base, head, elapsed_ms, disposition }`:
+
+```markdown
+| sequence | reviewer | run_id | base | head | elapsed_ms | disposition |
+|---:|---|---|---|---|---:|---|
+```
+
+Spec and code review share one combined four-run task budget across sessions and cycles. The persisted Arc issue description is the only budget source of truth: before each launch, re-read it and count all persisted rows carrying a native run identity; never rely on an in-memory count from the current session. Every returned native run identity consumes exactly one row, including a run that later fails; persist its row as soon as the launch returns the identity, then re-read the issue and update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. Persist owner authorization, re-read it from the issue description, and validate the finite positive count before using it. The allowed total is four plus the sum of those explicit persisted grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the last exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing. After ledger initialization, no last boundary means the ledger is malformed: fail closed instead of treating the full description as canonical.
+
+#### Immutable parent-supplied input
+
+Materialize `ReviewInput { canonical_spec, canonical_sha256, design_excerpt, diff_path, diff_sha256, prior_findings?, cycle }` in the prompt. The parent supplies the canonical Arc task description above the sentinel and the approved design excerpt; the reviewer never needs Arc CLI or Git. For re-review, include prior findings verbatim and the exact newest fix delta. Outside-delta findings may newly block only when the newest delta exposes a critical latent correctness or safety defect; unrelated noncritical observations become follow-ups.
+
+Small diffs may be inline, with their SHA-256 recorded. For a non-inline diff, create the artifact physically outside the repository and make it immutable before launch:
+
+```bash
+REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P) || {
+  echo 'unable to resolve repository root physically' >&2
+  exit 1
+}
+TMP_PARENT=${TMPDIR:-/tmp}
+case "$TMP_PARENT" in
+  /*) ;;
+  *) echo 'TMPDIR must be an absolute path' >&2; exit 1 ;;
+esac
+TMP_PARENT=$(cd "$TMP_PARENT" && pwd -P) || {
+  echo 'unable to resolve temporary parent physically' >&2
+  exit 1
+}
+case "$TMP_PARENT/" in "$REPO_ROOT/"*) echo 'review input must be physically outside the repository' >&2; exit 1 ;; esac
+REVIEW_INPUT_DIR=$(mktemp -d "$TMP_PARENT/arc-review-input.XXXXXX") || {
+  echo 'unable to create review input directory' >&2
+  exit 1
+}
+REVIEW_INPUT_DIR=$(cd "$REVIEW_INPUT_DIR" && pwd -P) || {
+  echo 'unable to resolve review input directory physically' >&2
+  exit 1
+}
+case "$REVIEW_INPUT_DIR/" in "$REPO_ROOT/"*) echo 'review input must be physically outside the repository' >&2; exit 1 ;; esac
+git diff --binary --find-renames=0 "$BASE_SHA..$HEAD_SHA" > "$REVIEW_INPUT_DIR/diff.patch" || {
+  echo 'review diff materialization failed' >&2
+  exit 1
+}
+chmod 0444 "$REVIEW_INPUT_DIR/diff.patch" || {
+  echo 'unable to make review diff artifact read-only' >&2
+  exit 1
+}
+REVIEW_INPUT_MODE=$(stat -c '%a' "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to verify review diff artifact mode' >&2
+  exit 1
+}
+test "$REVIEW_INPUT_MODE" = 444 || {
+  echo 'review diff artifact mode is not 0444' >&2
+  exit 1
+}
+DIFF_SHA256_OUTPUT=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to hash review diff artifact' >&2
+  exit 1
+}
+DIFF_SHA256=${DIFF_SHA256_OUTPUT%%[[:space:]]*}
+case "$DIFF_SHA256" in
+  ''|*[!0-9a-f]*) echo 'review diff artifact hash is malformed' >&2; exit 1 ;;
+esac
+test "${#DIFF_SHA256}" -eq 64 || {
+  echo 'review diff artifact hash is malformed' >&2
+  exit 1
+}
+```
+
+Physically resolve and contain-check the absolute temporary parent before `mktemp`; reject a relative `TMPDIR` or a symlinked `TMPDIR` that resolves inside the repository before any artifact directory exists. After creation, physically resolve and contain-check the created directory again as race defense. External physical parents remain valid. Failed diff materialization exits before chmod or hashing. Do not remove the created review-input directory or partial diff artifact on failure; retain it as failure evidence.
+
+The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool. Mode 0444 is defense in depth, but mode 0444 alone does not prove the bytes remained unchanged; the post-review SHA-256 check is authoritative, and any hash mismatch blocks acceptance.
+
+#### One native isolated reviewer
+
+Immediately before outer launch, require `test "$(git rev-parse HEAD)" = "$REVIEW_BASE"`. Then launch exactly one awaited foreground reviewer inside an asynchronous native workflow:
+
+```typescript
+subagent({
+  workflowScript: `return await runs.run("__KEY__", {
+    agent: "__AGENT__",
+    task: "<filled immutable review prompt>",
+    worktree: true,
+    async: false,
+    output: "__OUTPUT__"
+  });`,
+  context: "fresh",
+  async: true,
+  globalConcurrencyLimit: 1,
+  baseRef: "HEAD"
+})
+```
+
+The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The outer workflow stays `async: true` and returns control for native completion. Capture the current outer launch's exact returned receipt before returning control; do not use a later notification or a discovered async directory as a substitute:
+
+```bash
+OUTER_LAUNCH_RECEIPT='<exact outer launch receipt returned by subagent>'
+OUTER_RUN_ID=$(printf '%s' "$OUTER_LAUNCH_RECEIPT" | jq -er '.runId | strings | select(length > 0)')
+NATIVE_ASYNC_DIR=$(printf '%s' "$OUTER_LAUNCH_RECEIPT" | jq -er '.details.asyncDir | strings | select(length > 0)')
+NATIVE_STATUS_PATH="$NATIVE_ASYNC_DIR/status.json"
+test -r "$NATIVE_STATUS_PATH"
+```
+
+`NATIVE_ASYNC_DIR` comes only from this launch receipt's exact `details.asyncDir`; read only its `status.json`. Omit `model:` so the configured __PROFILE__ profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
+
+#### Terminal evidence before prose
+
+After every terminal outcome, success or failure, run this invariant before retry, builder dispatch, issue closure, or publication:
+
+```bash
+test "$(git branch --show-current)" = "$REVIEW_BRANCH"
+test "$(git rev-parse HEAD)" = "$REVIEW_BASE"
+test -z "$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')"
+```
+
+Any failure invalidates the review and stops for explicit inspection. Never reset, restore, clean, stash, commit, or switch execution mode automatically. This post-run invariant is required even when native launch, execution, output capture, or reviewer completion fails.
+
+Re-read the Arc issue after completion, split its description at the last exact ledger sentinel without normalizing bytes, and recompute the prefix hash. The last occurrence is the actual boundary; earlier occurrences belong to quoted canonical task prose or code. A parent may use this byte-preserving pipeline; the reviewer itself never receives Arc access. `assert found` makes a missing boundary fail closed:
+
+```bash
+CURRENT_CANONICAL_SHA256=$(arc show "$TASK_ID" --json | jq -j .description | python3 -c 'import hashlib, sys; data=sys.stdin.buffer.read(); marker=b"<!-- arc-review-ledger:v1 -->"; before, found, _=data.rpartition(marker); assert found; print(hashlib.sha256(before).hexdigest())')
+test "$CURRENT_CANONICAL_SHA256" = "$CANONICAL_SHA256"
+```
+
+For a non-inline diff, recheck its immutable bytes after completion and before acceptance:
+
+```bash
+POST_REVIEW_SHA256_OUTPUT=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to hash review diff artifact after review' >&2
+  exit 1
+}
+POST_REVIEW_SHA256=${POST_REVIEW_SHA256_OUTPUT%%[[:space:]]*}
+case "$POST_REVIEW_SHA256" in
+  ''|*[!0-9a-f]*) echo 'post-review diff artifact hash is malformed' >&2; exit 1 ;;
+esac
+test "${#POST_REVIEW_SHA256}" -eq 64 || {
+  echo 'post-review diff artifact hash is malformed' >&2
+  exit 1
+}
+test "$POST_REVIEW_SHA256" = "$DIFF_SHA256"
+```
+
+Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading __LABEL__ prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: its top-level `.runId` must equal the current `$OUTER_RUN_ID`, `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
+
+```bash
+set -o pipefail
+test -r "$NATIVE_STATUS_PATH" || {
+  echo 'native status evidence is unreadable' >&2
+  exit 1
+}
+NATIVE_STATUS_JSON=$(cat "$NATIVE_STATUS_PATH") || {
+  echo 'unable to read native status evidence' >&2
+  exit 1
+}
+test -n "$NATIVE_STATUS_JSON" || {
+  echo 'native status evidence is empty' >&2
+  exit 1
+}
+printf '%s' "$NATIVE_STATUS_JSON" | jq -e --arg outerRunId "$OUTER_RUN_ID" '
+  .runId == $outerRunId
+  and .state == "complete"
+  and (.error == null)
+' >/dev/null || {
+  echo 'native runtime acceptance predicate failed' >&2
+  exit 1
+}
+CHILD_RESULT=$(printf '%s' "$NATIVE_STATUS_JSON" | jq -ce '.workflow.value') || {
+  echo 'unable to extract native child result' >&2
+  exit 1
+}
+test -n "$CHILD_RESULT" || {
+  echo 'native child result is empty' >&2
+  exit 1
+}
+printf '%s' "$CHILD_RESULT" |
+  jq -e --arg key "__KEY__" --arg agent "__AGENT__" --arg output "/__OUTPUT__" '
+    .key == $key
+    and .agent == $agent
+    and .ok == true
+    and (.error == null)
+    and (.stopped != true)
+    and (.detached != true)
+    and (.interrupted != true)
+    and (.terminalOutcome == null)
+    and (.runId | type == "string" and length > 0)
+    and (.output | type == "string" and test("\\S"))
+    and (.outputReference | type == "string" and endswith($output))
+    and (.outputReference as $reference | .artifactPaths | type == "array" and index($reference) != null)
+  ' >/dev/null || {
+  echo 'native child acceptance predicate failed' >&2
+  exit 1
+}
+OUTPUT_REFERENCE=$(printf '%s' "$CHILD_RESULT" | jq -er '.outputReference') || {
+  echo 'unable to extract native output reference' >&2
+  exit 1
+}
+test -n "$OUTPUT_REFERENCE" && test -r "$OUTPUT_REFERENCE" && test -s "$OUTPUT_REFERENCE" || {
+  echo 'native output evidence is missing, unreadable, or empty' >&2
+  exit 1
+}
+RUNTIME_OUTPUT_SHA256_OUTPUT=$(printf '%s' "$CHILD_RESULT" | jq -j '.output' | sha256sum) || {
+  echo 'unable to hash runtime output evidence' >&2
+  exit 1
+}
+RUNTIME_OUTPUT_SHA256=${RUNTIME_OUTPUT_SHA256_OUTPUT%%[[:space:]]*}
+case "$RUNTIME_OUTPUT_SHA256" in
+  ''|*[!0-9a-f]*) echo 'runtime output hash is malformed' >&2; exit 1 ;;
+esac
+test "${#RUNTIME_OUTPUT_SHA256}" -eq 64 || {
+  echo 'runtime output hash is malformed' >&2
+  exit 1
+}
+SAVED_OUTPUT_SHA256_OUTPUT=$(sha256sum "$OUTPUT_REFERENCE") || {
+  echo 'unable to hash saved output evidence' >&2
+  exit 1
+}
+SAVED_OUTPUT_SHA256=${SAVED_OUTPUT_SHA256_OUTPUT%%[[:space:]]*}
+case "$SAVED_OUTPUT_SHA256" in
+  ''|*[!0-9a-f]*) echo 'saved output hash is malformed' >&2; exit 1 ;;
+esac
+test "${#SAVED_OUTPUT_SHA256}" -eq 64 || {
+  echo 'saved output hash is malformed' >&2
+  exit 1
+}
+test "$SAVED_OUTPUT_SHA256" = "$RUNTIME_OUTPUT_SHA256" || {
+  echo 'runtime and saved output hashes differ' >&2
+  exit 1
+}
+HANDOFF_RUN_ID=$(printf '%s' "$CHILD_RESULT" | jq -er '.runId | strings | select(length > 0)') || {
+  echo 'unable to extract native child run ID' >&2
+  exit 1
+}
+HANDOFF_COUNT=$(printf '%s' "$CHILD_RESULT" | jq -er --arg run "$HANDOFF_RUN_ID" '[.artifactPaths[] | select((type == "string") and endswith("/handoffs/" + $run + ".json"))] | length') || {
+  echo 'unable to count returned handoff manifests' >&2
+  exit 1
+}
+test "$HANDOFF_COUNT" -eq 1 || {
+  echo 'expected exactly one returned handoff manifest' >&2
+  exit 1
+}
+HANDOFF_MANIFEST=$(printf '%s' "$CHILD_RESULT" | jq -er --arg run "$HANDOFF_RUN_ID" '.artifactPaths[] | select((type == "string") and endswith("/handoffs/" + $run + ".json"))') || {
+  echo 'unable to extract returned handoff manifest path' >&2
+  exit 1
+}
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" && test -s "$HANDOFF_MANIFEST" || {
+  echo 'returned handoff manifest is missing, unreadable, or empty' >&2
+  exit 1
+}
+jq -e --arg base "$REVIEW_BASE" --arg key "__KEY__" --arg agent "__AGENT__" '
+  .version == 1
+  and (.groups | type == "array" and length > 0)
+  and all(.groups[];
+    .baseCommit == $base
+    and (.children | type == "array" and length == 1)
+    and all(.children[];
+      .workflowKey == $key
+      and .agent == $agent
+      and .status == "completed"
+      and .patch.changed == false
+      and .patch.filesChanged == 0
+      and .patch.insertions == 0
+      and .patch.deletions == 0
+      and (.patch.error == null)
+    )
+  )
+' "$HANDOFF_MANIFEST" >/dev/null || {
+  echo 'native handoff manifest acceptance predicate failed' >&2
+  exit 1
+}
+```
+
+Missing or malformed runtime or reviewer output, missing or empty handoff groups, missing output evidence, runtime failure, wrong workflow/agent identity, wrong base, more or fewer than one child, any patch/error evidence, a changed canonical/diff input hash, or a changed primary branch/HEAD/status blocks acceptance. Arc never applies reviewer patches. Only after all runtime and output evidence, native handoff evidence, immutable-input evidence, and post-run evidence passes may Arc interpret the report and apply its finding-disposition policy.
+'''
+
+
+def mandatory_review_protocol(heading: str, label: str, key: str, agent: str, output: str, profile: str) -> str:
+    return (MANDATORY_REVIEW_PROTOCOL
+        .replace("__HEADING__", heading)
+        .replace("__LABEL__", label)
+        .replace("__KEY__", key)
+        .replace("__AGENT__", agent)
+        .replace("__OUTPUT__", output)
+        .replace("__PROFILE__", profile))
+
+
+spec_review_protocol = mandatory_review_protocol(
+    "5. Spec Compliance Review",
+    "spec review",
+    "spec-review",
+    "arc-spec-reviewer",
+    "spec-review.md",
+    "specReviewer",
+)
+spec_review_protocol = spec_review_protocol.replace(
+    "#### Durable combined review budget",
+    """#### Implementation diff range
+
+After the clean-source preflight and before materializing the spec-review input, define the committed implementation range anchored at the pre-task SHA and the immutable review base:
+
+```bash
+BASE_SHA=$PRE_TASK_SHA
+HEAD_SHA=$REVIEW_BASE
+test -n \"$BASE_SHA\"
+test -n \"$HEAD_SHA\"
+```
+
+#### Durable combined review budget""",
+).replace(
+    "  context: \"fresh\",\n  async: true,",
+    "  context: \"fresh\", async: true,",
+).replace(
+    "The outer workflow stays `async: true` and returns control for native completion.",
+    "The literal outer base ref uses symbolic `HEAD`, resolved at worktree allocation by `pi-subagents`; `REVIEW_BASE` remains the immutable full-SHA verification anchor. The outer workflow remains asynchronous while its exactly one awaited inner foreground child completes.",
+)
+replace_section(
+    "skills/arc-build/SKILL.md",
+    "### 5. Spec Compliance Review\n\n",
+    "\nHandle results:",
+    spec_review_protocol,
+)
+
+code_review_protocol = mandatory_review_protocol(
+    "3. Dispatch Reviewer",
+    "code review",
+    "code-review",
+    "arc-code-reviewer",
+    "code-review.md",
+    "codeReviewer",
+)
+replace_section(
+    "skills/arc-review/SKILL.md",
+    "### 3. Dispatch Reviewer\n\n",
+    "\n### 4. Triage Feedback",
+    code_review_protocol,
+)
+
+patch_file("skills/arc-review/SKILL.md", [
+    (
+        "**Circuit breaker**: If 3 review/fix cycles on the same task haven't resolved all findings, STOP. Escalate to the user with a summary of what keeps recurring — the reviewer and implementer may disagree on the approach, or the task spec may be ambiguous.",
+        "**Combined reviewer budget**: Use the combined four-launched-run spec/code budget in the versioned Arc issue ledger. Every native reviewer run identity consumes one row even if it fails. A fifth launch requires explicit owner authorization recorded with a finite additional count; there is no separate three-cycle or per-finding reviewer allowance.",
+    ),
+])
+
+# Arc-build routes its mandatory code-quality gate through the standalone review
+# skill, which owns the exact same isolated code-review protocol and finding
+# disposition semantics.
+patch_file("skills/arc-build/SKILL.md", [
+    (
+        "Only dispatched after spec compliance passes. Use the `review` skill or dispatch `code-reviewer` directly:",
+        "Only after spec compliance passes, invoke the `review` skill and follow its mandatory isolated `code-review` workflow exactly. Do not dispatch `code-reviewer` directly and do not use `arc_agent` for this acceptance gate:",
+    ),
+    (
+        "Use the template at `../arc-review/code-reviewer-prompt.md`. Fill placeholders (`{TASK_ID}`, `{BASE_SHA}` = PRE_TASK_SHA recorded earlier, `{HEAD_SHA}` = current HEAD, `{DESIGN_EXCERPT}` from parent epic or \"none\" — retrieve it directly with `arc show <parent-epic-id>` and use \"none\" when no parent design context exists, `{EVALUATOR_STATUS}` = \"active\" if evaluator was dispatched, else \"not dispatched\"). Follow Model Selection above for the dispatch `model:` — the configured `codeReviewer` profile is authoritative and `large` frontmatter is the fallback.",
+        "Use `../arc-review/code-reviewer-prompt.md` and supply its complete immutable `ReviewInput`. The parent obtains `{DESIGN_EXCERPT}` directly with `arc show <parent-epic-id>` and uses \"none\" when no parent design exists; the reviewer never runs Arc. Include canonical task/hash, exact diff path/hash/base/head, prior findings, exact newest fix delta for re-review, cycle, and evaluator status. The configured `codeReviewer` profile remains authoritative through the review skill's native workflow.",
+    ),
+    (
+        "- Circuit breaker: 3 spec-review/fix cycles without resolution → escalate to user.",
+        "- Apply the combined four-launched-run spec/code budget from this gate's versioned issue ledger; there is no separate per-finding or per-reviewer circuit breaker.",
+    ),
+    (
+        "Circuit breaker: 3 review/fix cycles on the same finding → escalate to user.",
+        "Use the combined four-launched-run spec/code budget from the versioned issue ledger. A fifth reviewer launch requires explicit owner authorization recorded with a finite additional count.",
+    ),
+])
+
 
 
 def install_generated_resources() -> None:

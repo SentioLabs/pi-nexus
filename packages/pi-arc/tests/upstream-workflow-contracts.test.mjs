@@ -43,8 +43,8 @@ test('Astra, Terra, and Luna map onto Arc model tiers and role profiles', () => 
 test('general Arc reference uses Pi-native lifecycle and dispatch wording', () => {
   const source = read('skills/arc/SKILL.md');
   assert.match(source, /Pi extension session-start and before-compaction handlers/);
-  assert.match(source, /auto-materialized `arc-issue-manager` pi-subagent/);
-  assert.match(source, /bundled `arc_agent` fallback/);
+  assert.match(source, /`arc-issue-manager` specialist/);
+  assert.match(source, /`arc_agent` uses the same provider and is not an independent fallback/);
   assert.doesNotMatch(source, /SessionStart\/PreCompact hooks|via the Task tool/);
 });
 
@@ -100,7 +100,7 @@ test('DevOps tasks use dedicated Pi-native specialist and safety resources', () 
   assert.match(build, /arc_agent\(agent="devops-builder", task="<filled prompt>"\)/);
   assert.doesNotMatch(build, /arc_agent\(agent="devops-builder"[^\n]*model=/);
   assert.match(build, /devopsBuilder/);
-  assert.match(build, /never include live-system operations tasks in a parallel patch batch/i);
+  assert.match(build, /Never put live-system work in a parallel patch batch/i);
   assert.match(build, /No task has a `devops` label or any live-system mutation scope/);
   assert.match(plan, /Never place a `devops` task or other live-system mutation in a parallel batch/);
   assert.match(extension, /"devops-builder"/);
@@ -158,14 +158,24 @@ test('review and evaluator profiles remain authoritative with large fallbacks', 
   }
 
   const build = read('skills/arc-build/SKILL.md');
-  assert.match(build, /subagent\(\{ agent: "arc-spec-reviewer", task: "<filled prompt>", context: "fresh"/);
-  assert.doesNotMatch(build, /agent: "arc-spec-reviewer"[^\n]*model:/);
-  assert.doesNotMatch(build, /agent: "arc-evaluator"[^\n]*model:/);
-  assert.doesNotMatch(build, /arc_agent\(agent="evaluator"[^\n]*model=/);
-  assert.match(build, /git status --short.*pre-evaluation baseline/s);
+  const specGate = build.slice(build.indexOf('### 5. Spec Compliance Review'), build.indexOf('### 6. Code Quality Review'));
+  assert.match(specGate, /return await runs\.run\("spec-review", \{/);
+  assert.match(specGate, /agent: "arc-spec-reviewer"/);
+  assert.match(specGate, /worktree: true/);
+  assert.match(specGate, /async: false/);
+  assert.match(specGate, /output: "spec-review\.md"/);
+  assert.match(specGate, /workflowScript: `return await runs\.run\("spec-review"/);
+  assert.match(specGate, /baseRef: "HEAD"/);
+  assert.doesNotMatch(specGate, /\["(?:workflowScript|baseRef)"\]/);
+  const specWorkflowRequest = specGate.slice(specGate.indexOf('runs.run("spec-review"'), specGate.indexOf('});`'));
+  assert.doesNotMatch(specWorkflowRequest, /model:/);
+  assert.doesNotMatch(specGate, /arc_agent\(agent="spec-reviewer"|subagent\(\{ agent: "arc-spec-reviewer"/);
+  assert.doesNotMatch(build, /runs\.run\("evaluate", \{[^})]*model:/);
+  assert.doesNotMatch(build, /arc_agent\(agent="evaluator",[^)]*model=/);
+  assert.match(build, /runs\.run\("evaluate".*worktree: true/s);
 
   const evaluator = read('agents/evaluator.md');
-  assert.match(evaluator, /If it is not clean, report `BLOCKED`/);
-  assert.match(evaluator, /restore modified tracked files and remove only the temporary files/i);
+  assert.match(evaluator, /clean baseline with `git status --short`/);
+  assert.match(evaluator, /restore only those changes/i);
   assert.doesNotMatch(evaluator, /Do NOT worry about cleanup/);
 });

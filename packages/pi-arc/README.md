@@ -54,14 +54,17 @@ This package is a Pi-native port of the Claude Code Arc plugin at https://github
   - Arc docs should not manually author reserved sentinel labels such as `Type something.`, `Chat about this`, `Other`, or `Next` as normal options.
   - When Arc recommends an option, list it first, append `(Recommended)` to the label, and explain why in the description.
 - **`arc_agent` tool**:
-  - Runs bundled Arc specialist prompts from `agents/*.md` in fresh Pi subprocesses.
+  - Thin Arc-facing asynchronous wrapper for one bundled specialist, dispatched through the installed `pi-subagents` provider.
   - Supports `builder`, `devops-builder`, `code-reviewer`, `doc-writer`, `evaluator`, `issue-manager`, and `spec-reviewer`.
-  - Resolves Arc model tiers (`nano`, `small`, `standard`, `large`) to concrete Pi models so orchestrators can right-size subagent dispatches.
-  - Current limitation: `isolation: "worktree"` is recognized but not implemented yet.
-- **Optional `pi-subagents` companion support**:
-  - `@sentiolabs/pi-arc` auto-materializes Arc specialist definitions for any installed `pi-subagents` provider, but does not bundle or load the `subagent` tool itself.
-  - Install `pi-subagents` once if you want async/background runs, chains, or worktree-isolated parallel Arc batches: `pi install npm:pi-subagents`.
-  - If `pi-subagents` is unavailable, Arc workflows fall back to the bundled sequential `arc_agent` tool.
+  - Keeps explicit override → configured profile → legacy tier/frontmatter → package-default model fallback precedence.
+  - Supports one-child `isolation: "worktree"` through the provider. The returned value is a dispatch receipt; native completion and final artifacts arrive separately.
+- **Separately installed `pi-subagents` provider**:
+  - Optional for non-delegating Arc CLI/context/planning features; a separately installed, loaded, enabled provider is required for every delegated Arc specialist, including `arc_agent`.
+  - `@sentiolabs/pi-arc` auto-materializes Arc specialist definitions but does not bundle or load the provider.
+  - Install it once with `pi install npm:pi-subagents`.
+  - Coordinated parallel waves use one native `workflowScript`; Arc does not add another scheduler, runner, session, worktree, or completion system.
+
+pi-subagents 0.66.0+ is the tested delegated-review compatibility floor. It remains separately installed and unbundled. Runtime acceptance is based on capability and native handoff evidence, not semver alone. Mandatory reviews require a clean checkout and native isolated worktrees. Their acceptance workflows have exactly one read-only foreground reviewer inside an asynchronous native workflow; unlike generic specialist dispatch, they have no shared-cwd or `arc_agent` fallback.
 
 ## Prerequisites
 
@@ -232,14 +235,15 @@ subagent({ action: "list" })
 
 Use `/subagents-status` to monitor active/recent async Arc specialist runs after launch. It does not list idle installed agents.
 
-For Arc gates (especially spec compliance), use Arc specialists (`arc-spec-reviewer`, etc.) instead of generic `worker`/`reviewer` agents.
+For Arc gates (especially spec compliance), use Arc specialists (`arc-spec-reviewer`, etc.) instead of generic `worker`/`reviewer` agents. Check `subagent({ action: "list", capabilities: true })` before delegated work. If the required executable specialist or provider is unavailable after native doctor and deprecated repair guidance, stop with setup instructions; `arc_agent` uses that same provider and is not an independent execution fallback.
 
-- Keep `arc_agent` as the self-contained fallback when Arc `pi-subagents` definitions are unavailable.
+A dispatch receipt never advances an Arc stage. Return control for native completion, then inspect terminal runtime state plus `outputReference`, `outputPathMapping`, or `artifactPaths`. Failed, paused, stopped, incomplete, or malformed runtime results block even when specialist prose says `DONE`. Native resume/steer/status are deliberate recovery controls, not ordinary polling, and parent verification/review/acceptance remain separate.
+
 - Claude-style team deployment is intentionally not ported to Pi.
 
 ## Execution lanes
 
-- Sequential Arc build: use when tasks overlap, dependencies are linear, or `pi-subagents` is unavailable.
+- Sequential Arc build: use when tasks overlap or dependencies are linear. Delegation still requires the separately installed provider; non-delegating Arc features do not.
 - Parallel Arc batch: use when `/arc-plan` provides a T0 foundation, file ownership matrix, parallel batch manifest, and validation matrix.
 - Ant Colony: future/optional lane for large exploratory work; not a replacement for Arc gates in this iteration.
 
@@ -267,14 +271,13 @@ Implemented:
 - Workflow command aliases
 - Bundled agent prompt references under `agents/`
 - Bundled `@juicesharp/rpiv-ask-user-question` package for interactive workflow decisions
-- Pi-native `arc_agent` custom tool for sequential subagent execution
+- Pi-native `arc_agent` thin asynchronous same-provider wrapper for one specialist
 - Auto-materialized Arc specialists in pi-subagents user scope; `/arc-subagents-sync` is deprecated repair/backcompat only
 - Optional `pi-subagents` integration for worktree-isolated evaluator runs, independent parallel builder batches, phased issue-manager creation, and a dedicated sequential DevOps builder
 - External-tracker mirroring through `/arc-summarize` using connected MCP tools or authenticated CLIs
 
 Not yet implemented:
 
-- Native `arc_agent` worktree isolation for parallel Arc builders.
 - Arc issue autocomplete in the Pi editor.
 
 Intentionally not ported:

@@ -56,52 +56,65 @@ test('arc extension sync guidance distinguishes agent discovery from status moni
   assert.doesNotMatch(source, /\/subagents-status.*confirm availability/);
 });
 
-test('arc-build skill references arc-subagents-sync and async pi-subagents workers', () => {
+test('arc-build requires native completion and documents coordinated workflows', () => {
   const source = read('skills/arc-build/SKILL.md');
   assert.match(source, /\/arc-subagents-sync/);
   assert.match(source, /arc-builder/);
   assert.match(source, /arc-devops-builder/);
   assert.match(source, /devopsBuilder/);
-  assert.match(source, /async: true/);
-  assert.match(source, /clarify: false/);
-  assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
-  assert.match(source, /until terminal/);
-  assert.match(source, /read the final output/);
-  assert.match(source, /\/subagents-status/);
+  assert.match(source, /workflowScript/);
+  assert.match(source, /runs\.all/);
+  assert.match(source, /native completion/i);
+  assert.match(source, /outputReference|outputPathMapping|artifactPaths/);
+  assert.match(source, /subagent\(\{ action: "resume"/);
+  assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
 });
 
-test('arc-plan prefers arc-issue-manager via pi-subagents before arc_agent fallback', () => {
+test('arc-plan delegates issue-manager through the required provider', () => {
   const source = read('skills/arc-plan/SKILL.md');
   assert.match(source, /arc-issue-manager/);
   assert.match(source, /subagent\(\{ agent: "arc-issue-manager"/);
-  assert.match(source, /async: true/);
-  assert.match(source, /clarify: false/);
-  assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
-  assert.match(source, /do \*\*not\*\* use the slower `arc_agent\(agent="issue-manager"\)` fallback/);
+  assert.match(source, /requires loaded, enabled `pi-subagents`/i);
+  assert.match(source, /native completion/i);
   assert.match(source, /arc_agent\(agent="issue-manager"/);
+  assert.match(source, /same provider/i);
+  assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
 });
 
-test('arc-review prefers arc-code-reviewer via pi-subagents before arc_agent fallback', () => {
+test('arc-review uses the mandatory isolated native completion-gated reviewer', () => {
   const source = read('skills/arc-review/SKILL.md');
-  assert.match(source, /arc-code-reviewer/);
-  assert.match(source, /subagent\(\{ agent: "arc-code-reviewer"/);
-  assert.match(source, /async: true/);
-  assert.match(source, /clarify: false/);
-  assert.match(source, /subagent\(\{ action: "status", id: "<run-id>" \}\)/);
-  assert.match(source, /arc_agent\(agent="code-reviewer"/);
+  assert.match(source, /return await runs\.run\("code-review"/);
+  assert.match(source, /agent: "arc-code-reviewer"/);
+  assert.match(source, /worktree: true/);
+  assert.match(source, /output: "code-review\.md"/);
+  assert.match(source, /async: false/);
+  assert.match(source, /(?:baseRef|\["baseRef"\]): "HEAD"/);
+  assert.match(source, /native completion/i);
+  assert.match(source, /fresh independent `arc-code-reviewer` runs|re-review/i);
+  assert.doesNotMatch(source, /clarify\s*:\s*false|poll(?:ing)?\s+with/i);
+
+  const mandatoryGate = source.slice(source.indexOf('### 3. Dispatch Reviewer'), source.indexOf('### 4. Triage Feedback'));
+  assert.doesNotMatch(mandatoryGate, /arc_agent\(agent="code-reviewer"/);
+  assert.doesNotMatch(mandatoryGate, /subagent\(\{\s*agent:\s*"arc-code-reviewer"/);
+  assert.doesNotMatch(mandatoryGate, /obsolete direct shared-cwd form/i);
 });
 
-test('arc-code-reviewer dispatch prompt stays review-only for pi-subagents completion guard', () => {
+test('arc-code-reviewer dispatch prompt stays immutable and review-only', () => {
   const source = read('skills/arc-review/code-reviewer-prompt.md');
   assert.match(source, /Review only/i);
   assert.match(source, /return findings only/i);
   assert.match(source, /Do not edit files/i);
+  assert.match(source, /\{CANONICAL_SHA256\}/);
+  assert.match(source, /\{DIFF_SHA256\}/);
+  assert.match(source, /\{PRIOR_FINDINGS\}/);
+  assert.match(source, /\{LATEST_FIX_DELTA\}/);
+  assert.match(source, /Any mutation invalidates the review/);
   assert.doesNotMatch(source, /\bmust\s+(?:edit|modify|change|fix|patch|apply)\b/i);
   assert.doesNotMatch(source, /\bapply\s+(?:the\s+)?fix(?:es)?\s+directly\b/i);
   assert.doesNotMatch(source, /\bmake\s+(?:the\s+)?code\s+changes\b/i);
 });
 
-test('README documents auto-materialized specialists and status semantics', () => {
+test('README documents auto-materialized specialists and native completion semantics', () => {
   const source = read('README.md');
   assert.match(source, /auto-materialized/i);
   assert.match(source, /Users do not need to run `\/arc-subagents-sync`/);
@@ -110,8 +123,11 @@ test('README documents auto-materialized specialists and status semantics', () =
   assert.match(source, /generic `worker`/i);
   assert.match(source, /subagent\(\{ action: "list" \}\)/);
   assert.match(source, /\/agents/);
-  assert.match(source, /Use `\/subagents-status` to monitor active\/recent async Arc specialist runs/);
-  assert.match(source, /It does not list idle installed agents/);
+  assert.match(source, /separately installed, loaded, enabled provider is required/i);
+  assert.match(source, /dispatch receipt never advances an Arc stage/i);
+  assert.match(source, /same provider and is not an independent execution fallback/i);
+  assert.match(source, /pi-subagents 0\.66\.0\+ is the tested delegated-review compatibility floor/);
+  assert.match(source, /Mandatory reviews require a clean checkout and native isolated worktrees/);
   assert.doesNotMatch(source, /\/subagents-status.*confirm availability/);
 });
 

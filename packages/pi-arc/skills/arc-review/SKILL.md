@@ -45,16 +45,309 @@ Extract the design excerpt relevant to this task — typically the sections cove
 
 ### 3. Dispatch Reviewer
 
-Fill the template at `./code-reviewer-prompt.md` with the gathered placeholders (`{TASK_ID}`, `{BASE_SHA}`, `{HEAD_SHA}`, `{DESIGN_EXCERPT}`, `{EVALUATOR_STATUS}`). Preserve the template's review-only instruction (`Review only; return findings only. Do not edit files.`) and avoid adding wording that asks the reviewer to apply fixes directly. Prefer true `pi-subagents` so longer reviews are visible in `/subagents-status`:
+Mandatory code review is an Arc acceptance gate, not generic dispatch. It requires the separately installed native provider and exact `arc-code-reviewer` capability. There is no shared-cwd, `arc_agent`, generic-agent, provider-runner, or CLI fallback for this gate. If capability or evidence is unavailable, stop with setup or infrastructure guidance.
 
-Dispatch preference (use **async** so longer reviews appear in `/subagents-status`):
-- Primary: `subagent({ agent: "arc-code-reviewer", task: "<filled prompt>", context: "fresh", async: true, clarify: false })`
-- After launching async, **wait for terminal status** by polling `subagent({ action: "status", id: "<run-id>" })` until status is `completed` or `failed`
-- Users can monitor review progress via `/subagents-status` during the async run
-- Arc code-reviewer should be auto-materialized; if it is missing, first run `subagent({ action: "doctor" })` and inspect Arc's materialization warning. Use `/arc-subagents-sync` only as a deprecated repair command, then re-check with `subagent({ action: "list" })`
-- Fallback only if `pi-subagents` is not installed or cannot load after deprecated repair: `arc_agent(agent="code-reviewer", task="<filled prompt>")`
+#### Clean source preflight
 
-**Model tier:** Follow the Model Selection table in `../arc-build/SKILL.md`. Reviews use the `codeReviewer` profile when configured via `/arc-models`; otherwise the agent's `large` frontmatter is the fallback. Omit `model:` so the configured profile remains authoritative. Use an explicit override only for deliberate escalation beyond the configured profile.
+Run from the repository root before materializing input or launching a reviewer:
+
+```bash
+REVIEW_BRANCH=$(git branch --show-current)
+REVIEW_BASE=$(git rev-parse HEAD)
+REVIEW_STATE=$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')
+test -n "$REVIEW_BRANCH"
+test -z "$REVIEW_STATE" || {
+  printf '%s\n' "$REVIEW_STATE" >&2
+  echo 'review requires a clean source checkout' >&2
+  exit 1
+}
+```
+
+Dirty source state blocks review. Never stash, reset, restore, clean, or fall back to shared-cwd review. Capture these exact values as `ReviewBaseline { branch, head, porcelainV2 }`; `REVIEW_BASE` is the native worktree handoff base while `BASE_SHA..HEAD_SHA` remains the implementation range under review.
+
+#### Durable combined review budget
+
+The Arc issue description is both canonical task input and durable budget storage. Bootstrap and reload are distinct. On first review, inspect the last exact sentinel. First-time bootstrap may preserve and hash the **entire** original description bytes only when that last sentinel's terminal suffix is ordinary quoted/task prose with no review-ledger signature; byte-concatenate the actual sentinel directly after those bytes without inserting, removing, or normalizing a delimiter. This keeps the byte slice before the actual ledger boundary identical even when Arc has trimmed a trailing newline. Earlier sentinel/header examples are canonical quoted prose because only the last exact sentinel can be the boundary. If the terminal suffix contains any review-ledger signature — the exact `## Review Ledger` header, a `Canonical description SHA-256` field, `Authorized reviewer runs: 4`, `Owner-authorized additional reviewer runs: <finite-positive-integer>`, or ledger table syntax (header, separator, or row) — it is durable ledger state and must be a structurally valid terminal review-ledger trailer (versioned header, valid canonical SHA-256, fixed authorization, table header/separator, and valid rows) whose recorded hash matches the exact prefix. Missing, invalid, or mismatched hashes and every other malformed terminal trailer fail closed; never absorb prior ledger data into canonical bytes or reset the budget. After initialization, the actual ledger boundary is the last exact sentinel because canonical task prose or code may quote earlier sentinel examples. Append exactly this versioned boundary and header:
+
+```markdown
+<!-- arc-review-ledger:v1 -->
+## Review Ledger
+Canonical description SHA-256: `<sha256>`
+Authorized reviewer runs: 4
+```
+
+Bytes above the sentinel are canonical and must never change. Compute and verify their SHA-256 before every launch. Content below the sentinel is the ledger only. Use rows with the conceptual shape `ReviewLedgerEntry { sequence, reviewer, run_id, base, head, elapsed_ms, disposition }`:
+
+```markdown
+| sequence | reviewer | run_id | base | head | elapsed_ms | disposition |
+|---:|---|---|---|---|---:|---|
+```
+
+Spec and code review share one combined four-run task budget across sessions and cycles. The persisted Arc issue description is the only budget source of truth: before each launch, re-read it and count all persisted rows carrying a native run identity; never rely on an in-memory count from the current session. Every returned native run identity consumes exactly one row, including a run that later fails; persist its row as soon as the launch returns the identity, then re-read the issue and update only that row's elapsed time and disposition after completion. A pre-submission failure that returns no native run identity does not consume a row. Reject the fifth launch unless the owner explicitly authorizes a bounded extension recorded as `Owner-authorized additional reviewer runs: <finite-positive-integer>` below the ledger. Persist owner authorization, re-read it from the issue description, and validate the finite positive count before using it. The allowed total is four plus the sum of those explicit persisted grants; open-ended, inferred, or model-authored authorization is invalid. After every ledger append/update, re-read the issue, split at the last exact sentinel, and verify the SHA-256 of the unchanged prefix before continuing. After ledger initialization, no last boundary means the ledger is malformed: fail closed instead of treating the full description as canonical.
+
+#### Immutable parent-supplied input
+
+Materialize `ReviewInput { canonical_spec, canonical_sha256, design_excerpt, diff_path, diff_sha256, prior_findings?, cycle }` in the prompt. The parent supplies the canonical Arc task description above the sentinel and the approved design excerpt; the reviewer never needs Arc CLI or Git. For re-review, include prior findings verbatim and the exact newest fix delta. Outside-delta findings may newly block only when the newest delta exposes a critical latent correctness or safety defect; unrelated noncritical observations become follow-ups.
+
+Small diffs may be inline, with their SHA-256 recorded. For a non-inline diff, create the artifact physically outside the repository and make it immutable before launch:
+
+```bash
+REPO_ROOT=$(cd "$(git rev-parse --show-toplevel)" && pwd -P) || {
+  echo 'unable to resolve repository root physically' >&2
+  exit 1
+}
+TMP_PARENT=${TMPDIR:-/tmp}
+case "$TMP_PARENT" in
+  /*) ;;
+  *) echo 'TMPDIR must be an absolute path' >&2; exit 1 ;;
+esac
+TMP_PARENT=$(cd "$TMP_PARENT" && pwd -P) || {
+  echo 'unable to resolve temporary parent physically' >&2
+  exit 1
+}
+case "$TMP_PARENT/" in "$REPO_ROOT/"*) echo 'review input must be physically outside the repository' >&2; exit 1 ;; esac
+REVIEW_INPUT_DIR=$(mktemp -d "$TMP_PARENT/arc-review-input.XXXXXX") || {
+  echo 'unable to create review input directory' >&2
+  exit 1
+}
+REVIEW_INPUT_DIR=$(cd "$REVIEW_INPUT_DIR" && pwd -P) || {
+  echo 'unable to resolve review input directory physically' >&2
+  exit 1
+}
+case "$REVIEW_INPUT_DIR/" in "$REPO_ROOT/"*) echo 'review input must be physically outside the repository' >&2; exit 1 ;; esac
+git diff --binary --find-renames=0 "$BASE_SHA..$HEAD_SHA" > "$REVIEW_INPUT_DIR/diff.patch" || {
+  echo 'review diff materialization failed' >&2
+  exit 1
+}
+chmod 0444 "$REVIEW_INPUT_DIR/diff.patch" || {
+  echo 'unable to make review diff artifact read-only' >&2
+  exit 1
+}
+REVIEW_INPUT_MODE=$(stat -c '%a' "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to verify review diff artifact mode' >&2
+  exit 1
+}
+test "$REVIEW_INPUT_MODE" = 444 || {
+  echo 'review diff artifact mode is not 0444' >&2
+  exit 1
+}
+DIFF_SHA256_OUTPUT=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to hash review diff artifact' >&2
+  exit 1
+}
+DIFF_SHA256=${DIFF_SHA256_OUTPUT%%[[:space:]]*}
+case "$DIFF_SHA256" in
+  ''|*[!0-9a-f]*) echo 'review diff artifact hash is malformed' >&2; exit 1 ;;
+esac
+test "${#DIFF_SHA256}" -eq 64 || {
+  echo 'review diff artifact hash is malformed' >&2
+  exit 1
+}
+```
+
+Physically resolve and contain-check the absolute temporary parent before `mktemp`; reject a relative `TMPDIR` or a symlinked `TMPDIR` that resolves inside the repository before any artifact directory exists. After creation, physically resolve and contain-check the created directory again as race defense. External physical parents remain valid. Failed diff materialization exits before chmod or hashing. Do not remove the created review-input directory or partial diff artifact on failure; retain it as failure evidence.
+
+The filled prompt records the external diff path, SHA-256, base, and head. It also records the canonical task hash and design excerpt. The reviewer receives no shell or write-capable tool. Mode 0444 is defense in depth, but mode 0444 alone does not prove the bytes remained unchanged; the post-review SHA-256 check is authoritative, and any hash mismatch blocks acceptance.
+
+#### One native isolated reviewer
+
+Immediately before outer launch, require `test "$(git rev-parse HEAD)" = "$REVIEW_BASE"`. Then launch exactly one awaited foreground reviewer inside an asynchronous native workflow:
+
+```typescript
+subagent({
+  workflowScript: `return await runs.run("code-review", {
+    agent: "arc-code-reviewer",
+    task: "<filled immutable review prompt>",
+    worktree: true,
+    async: false,
+    output: "code-review.md"
+  });`,
+  context: "fresh",
+  async: true,
+  globalConcurrencyLimit: 1,
+  baseRef: "HEAD"
+})
+```
+
+The stable inner key, exact agent, foreground `async: false`, `worktree: true`, and string output binding are mandatory. The outer workflow stays `async: true` and returns control for native completion. Capture the current outer launch's exact returned receipt before returning control; do not use a later notification or a discovered async directory as a substitute:
+
+```bash
+OUTER_LAUNCH_RECEIPT='<exact outer launch receipt returned by subagent>'
+OUTER_RUN_ID=$(printf '%s' "$OUTER_LAUNCH_RECEIPT" | jq -er '.runId | strings | select(length > 0)')
+NATIVE_ASYNC_DIR=$(printf '%s' "$OUTER_LAUNCH_RECEIPT" | jq -er '.details.asyncDir | strings | select(length > 0)')
+NATIVE_STATUS_PATH="$NATIVE_ASYNC_DIR/status.json"
+test -r "$NATIVE_STATUS_PATH"
+```
+
+`NATIVE_ASYNC_DIR` comes only from this launch receipt's exact `details.asyncDir`; read only its `status.json`. Omit `model:` so the configured codeReviewer profile and existing model fallback precedence remain authoritative. Do not poll merely to wait.
+
+#### Terminal evidence before prose
+
+After every terminal outcome, success or failure, run this invariant before retry, builder dispatch, issue closure, or publication:
+
+```bash
+test "$(git branch --show-current)" = "$REVIEW_BRANCH"
+test "$(git rev-parse HEAD)" = "$REVIEW_BASE"
+test -z "$(git status --porcelain=v2 --untracked-files=all -- ':!.pi/subagents')"
+```
+
+Any failure invalidates the review and stops for explicit inspection. Never reset, restore, clean, stash, commit, or switch execution mode automatically. This post-run invariant is required even when native launch, execution, output capture, or reviewer completion fails.
+
+Re-read the Arc issue after completion, split its description at the last exact ledger sentinel without normalizing bytes, and recompute the prefix hash. The last occurrence is the actual boundary; earlier occurrences belong to quoted canonical task prose or code. A parent may use this byte-preserving pipeline; the reviewer itself never receives Arc access. `assert found` makes a missing boundary fail closed:
+
+```bash
+CURRENT_CANONICAL_SHA256=$(arc show "$TASK_ID" --json | jq -j .description | python3 -c 'import hashlib, sys; data=sys.stdin.buffer.read(); marker=b"<!-- arc-review-ledger:v1 -->"; before, found, _=data.rpartition(marker); assert found; print(hashlib.sha256(before).hexdigest())')
+test "$CURRENT_CANONICAL_SHA256" = "$CANONICAL_SHA256"
+```
+
+For a non-inline diff, recheck its immutable bytes after completion and before acceptance:
+
+```bash
+POST_REVIEW_SHA256_OUTPUT=$(sha256sum "$REVIEW_INPUT_DIR/diff.patch") || {
+  echo 'unable to hash review diff artifact after review' >&2
+  exit 1
+}
+POST_REVIEW_SHA256=${POST_REVIEW_SHA256_OUTPUT%%[[:space:]]*}
+case "$POST_REVIEW_SHA256" in
+  ''|*[!0-9a-f]*) echo 'post-review diff artifact hash is malformed' >&2; exit 1 ;;
+esac
+test "${#POST_REVIEW_SHA256}" -eq 64 || {
+  echo 'post-review diff artifact hash is malformed' >&2
+  exit 1
+}
+test "$POST_REVIEW_SHA256" = "$DIFF_SHA256"
+```
+
+Acceptance combines runtime and output evidence with handoff evidence; none substitutes for another. Require the exact persisted native async `status.json` after the completion notification or status observation, before reading code review prose. The persisted status JSON is the durable exact native evidence for both terminal state and the complete foreground child result: its top-level `.runId` must equal the current `$OUTER_RUN_ID`, `.state == "complete"` is workflow success, `.error == null` is required, and `.workflow.value` is `CHILD_RESULT`. The public completion notification is projected prose, not JSON; it does not carry `.workflow.value` and must not be parsed, merged with, or reconstructed into status evidence. Preserve the exact persisted status JSON as `NATIVE_STATUS_JSON`; never merge or reconstruct evidence fields. In the child result's string-array `artifactPaths`, require exactly one returned path ending in `handoffs/<run-id>.json`; never construct or infer it:
+
+```bash
+set -o pipefail
+test -r "$NATIVE_STATUS_PATH" || {
+  echo 'native status evidence is unreadable' >&2
+  exit 1
+}
+NATIVE_STATUS_JSON=$(cat "$NATIVE_STATUS_PATH") || {
+  echo 'unable to read native status evidence' >&2
+  exit 1
+}
+test -n "$NATIVE_STATUS_JSON" || {
+  echo 'native status evidence is empty' >&2
+  exit 1
+}
+printf '%s' "$NATIVE_STATUS_JSON" | jq -e --arg outerRunId "$OUTER_RUN_ID" '
+  .runId == $outerRunId
+  and .state == "complete"
+  and (.error == null)
+' >/dev/null || {
+  echo 'native runtime acceptance predicate failed' >&2
+  exit 1
+}
+CHILD_RESULT=$(printf '%s' "$NATIVE_STATUS_JSON" | jq -ce '.workflow.value') || {
+  echo 'unable to extract native child result' >&2
+  exit 1
+}
+test -n "$CHILD_RESULT" || {
+  echo 'native child result is empty' >&2
+  exit 1
+}
+printf '%s' "$CHILD_RESULT" |
+  jq -e --arg key "code-review" --arg agent "arc-code-reviewer" --arg output "/code-review.md" '
+    .key == $key
+    and .agent == $agent
+    and .ok == true
+    and (.error == null)
+    and (.stopped != true)
+    and (.detached != true)
+    and (.interrupted != true)
+    and (.terminalOutcome == null)
+    and (.runId | type == "string" and length > 0)
+    and (.output | type == "string" and test("\\S"))
+    and (.outputReference | type == "string" and endswith($output))
+    and (.outputReference as $reference | .artifactPaths | type == "array" and index($reference) != null)
+  ' >/dev/null || {
+  echo 'native child acceptance predicate failed' >&2
+  exit 1
+}
+OUTPUT_REFERENCE=$(printf '%s' "$CHILD_RESULT" | jq -er '.outputReference') || {
+  echo 'unable to extract native output reference' >&2
+  exit 1
+}
+test -n "$OUTPUT_REFERENCE" && test -r "$OUTPUT_REFERENCE" && test -s "$OUTPUT_REFERENCE" || {
+  echo 'native output evidence is missing, unreadable, or empty' >&2
+  exit 1
+}
+RUNTIME_OUTPUT_SHA256_OUTPUT=$(printf '%s' "$CHILD_RESULT" | jq -j '.output' | sha256sum) || {
+  echo 'unable to hash runtime output evidence' >&2
+  exit 1
+}
+RUNTIME_OUTPUT_SHA256=${RUNTIME_OUTPUT_SHA256_OUTPUT%%[[:space:]]*}
+case "$RUNTIME_OUTPUT_SHA256" in
+  ''|*[!0-9a-f]*) echo 'runtime output hash is malformed' >&2; exit 1 ;;
+esac
+test "${#RUNTIME_OUTPUT_SHA256}" -eq 64 || {
+  echo 'runtime output hash is malformed' >&2
+  exit 1
+}
+SAVED_OUTPUT_SHA256_OUTPUT=$(sha256sum "$OUTPUT_REFERENCE") || {
+  echo 'unable to hash saved output evidence' >&2
+  exit 1
+}
+SAVED_OUTPUT_SHA256=${SAVED_OUTPUT_SHA256_OUTPUT%%[[:space:]]*}
+case "$SAVED_OUTPUT_SHA256" in
+  ''|*[!0-9a-f]*) echo 'saved output hash is malformed' >&2; exit 1 ;;
+esac
+test "${#SAVED_OUTPUT_SHA256}" -eq 64 || {
+  echo 'saved output hash is malformed' >&2
+  exit 1
+}
+test "$SAVED_OUTPUT_SHA256" = "$RUNTIME_OUTPUT_SHA256" || {
+  echo 'runtime and saved output hashes differ' >&2
+  exit 1
+}
+HANDOFF_RUN_ID=$(printf '%s' "$CHILD_RESULT" | jq -er '.runId | strings | select(length > 0)') || {
+  echo 'unable to extract native child run ID' >&2
+  exit 1
+}
+HANDOFF_COUNT=$(printf '%s' "$CHILD_RESULT" | jq -er --arg run "$HANDOFF_RUN_ID" '[.artifactPaths[] | select((type == "string") and endswith("/handoffs/" + $run + ".json"))] | length') || {
+  echo 'unable to count returned handoff manifests' >&2
+  exit 1
+}
+test "$HANDOFF_COUNT" -eq 1 || {
+  echo 'expected exactly one returned handoff manifest' >&2
+  exit 1
+}
+HANDOFF_MANIFEST=$(printf '%s' "$CHILD_RESULT" | jq -er --arg run "$HANDOFF_RUN_ID" '.artifactPaths[] | select((type == "string") and endswith("/handoffs/" + $run + ".json"))') || {
+  echo 'unable to extract returned handoff manifest path' >&2
+  exit 1
+}
+test -n "$HANDOFF_MANIFEST" && test -r "$HANDOFF_MANIFEST" && test -s "$HANDOFF_MANIFEST" || {
+  echo 'returned handoff manifest is missing, unreadable, or empty' >&2
+  exit 1
+}
+jq -e --arg base "$REVIEW_BASE" --arg key "code-review" --arg agent "arc-code-reviewer" '
+  .version == 1
+  and (.groups | type == "array" and length > 0)
+  and all(.groups[];
+    .baseCommit == $base
+    and (.children | type == "array" and length == 1)
+    and all(.children[];
+      .workflowKey == $key
+      and .agent == $agent
+      and .status == "completed"
+      and .patch.changed == false
+      and .patch.filesChanged == 0
+      and .patch.insertions == 0
+      and .patch.deletions == 0
+      and (.patch.error == null)
+    )
+  )
+' "$HANDOFF_MANIFEST" >/dev/null || {
+  echo 'native handoff manifest acceptance predicate failed' >&2
+  exit 1
+}
+```
+
+Missing or malformed runtime or reviewer output, missing or empty handoff groups, missing output evidence, runtime failure, wrong workflow/agent identity, wrong base, more or fewer than one child, any patch/error evidence, a changed canonical/diff input hash, or a changed primary branch/HEAD/status blocks acceptance. Arc never applies reviewer patches. Only after all runtime and output evidence, native handoff evidence, immutable-input evidence, and post-run evidence passes may Arc interpret the report and apply its finding-disposition policy.
 
 ### 4. Triage Feedback
 
@@ -75,7 +368,7 @@ If fixes are needed:
 2. After the implementer reports back, re-review (go to step 1 with updated SHAs)
 3. Continue until the review is clean (no Critical or Important findings)
 
-**Circuit breaker**: If 3 review/fix cycles on the same task haven't resolved all findings, STOP. Escalate to the user with a summary of what keeps recurring — the reviewer and implementer may disagree on the approach, or the task spec may be ambiguous.
+**Combined reviewer budget**: Use the combined four-launched-run spec/code budget in the versioned Arc issue ledger. Every native reviewer run identity consumes one row even if it fails. A fifth launch requires explicit owner authorization recorded with a finite additional count; there is no separate three-cycle or per-finding reviewer allowance.
 
 ### 6. Proceed
 

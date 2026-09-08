@@ -205,15 +205,21 @@ Issue creation must be phased:
 5. Apply labels after dependencies with `arc update <id> --label-add=<label>`.
 6. Verify descriptions and return the final ID table, dependency summary, and a `## Timing` section with phase-level `elapsed_ms` values.
 
-Then dispatch the manifest — titles, metadata, and file paths only, no description bodies. Prefer true `pi-subagents` so long issue-creation runs are visible in `/subagents-status`:
+Then dispatch the manifest — titles, metadata, and canonical file paths only, never description bodies.
 
-Dispatch preference:
-- Primary: `subagent({ agent: "arc-issue-manager", task: "<manifest below>", context: "fresh", async: true, clarify: false })`
-- Wait for terminal status by polling `subagent({ action: "status", id: "<run-id>" })` until `completed` or `failed`
-- Users can monitor progress via `/subagents-status`
-- If `subagent({ action: "list" })` shows `arc-issue-manager`, do **not** use the slower `arc_agent(agent="issue-manager")` fallback
-- If it is missing, run `subagent({ action: "doctor" })` and inspect Arc's materialization warning; use `/arc-subagents-sync` only as a deprecated repair command
-- Fallback only when `pi-subagents` is unavailable after repair: `arc_agent(agent="issue-manager", task="<manifest below>")`
+Delegated Arc work requires loaded, enabled `pi-subagents` and the required Arc specialist. Check `subagent({ action: "list", capabilities: true })` first. Dispatch only executable, non-disabled native Arc agents; never substitute a generic agent for Arc review gates. Diagnose missing materialization with native doctor and existing Arc warnings. `/arc-subagents-sync` remains deprecated explicit repair, not automatic activation. If the requirement is still unmet, stop with setup guidance. `arc_agent` uses the same provider and is not an independent fallback.
+
+
+Use the `arc-issue-manager` as one direct child and omit `model:` so its configured profile remains authoritative:
+
+`subagent({ agent: "arc-issue-manager", task: "<filled manifest metadata and canonical file paths>", context: "fresh", async: true });`
+
+The Arc-facing `arc_agent(agent="issue-manager", task="<filled manifest metadata and canonical file paths>")` alternative uses the same provider. Either call returns only a dispatch receipt. Capture the native run reference and return control for native completion; do not poll merely to wait. Only after successful terminal runtime state and final artifacts may the parent verify canonical description hashes, phase ordering, IDs, dependencies, labels, and timing. Unknown or malformed completion blocks issue acceptance; never issue a duplicate launch automatically.
+
+On notification, inspect native terminal state and final artifacts before interpreting the completed Arc specialist report. Runtime failure, pause, stop, incomplete or malformed result blocks the Arc stage regardless of successful prose. A receipt cannot advance tests, review, patch application or issue closure. Preserve parent verification and review gates.
+
+
+Native workflow, launch, extension or child-tooling failure is an infrastructure blocker. Record exact run/status, cwd/worktree/branch/HEAD and partial diff; stop and use only explicit same-protocol recovery. Never switch runner/provider/CLI mode or automatically retry an uncertain dispatch. Do not escalate models merely because the harness failed.
 
 Use this task payload for whichever dispatcher you choose:
 
