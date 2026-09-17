@@ -1,6 +1,6 @@
 {
   "name": "@sentiolabs/pi-git-spice",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi skills, prompt templates, and optional subagents for git-spice stacked-branch workflows.",
   "type": "module",
   "keywords": [
@@ -62,11 +62,19 @@
     "typescript": "^5.9.3"
   },
   "pi": {
-    "extensions": ["./extensions/git-spice-workflow.ts"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts/*.md"],
+    "extensions": [
+      "./extensions/git-spice-workflow.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
+    ],
     "subagents": {
-      "agents": ["./agents"]
+      "agents": [
+        "./agents"
+      ]
     }
   }
 }
