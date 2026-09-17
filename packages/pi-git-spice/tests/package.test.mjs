@@ -115,7 +115,8 @@ test("migration implementation and focused tests stay within their complete-area
 test("package exposes the exact Pi git-spice runtime and publishable metadata", () => {
   const pkg = readJson("package.json");
   assert.equal(pkg.name, "@sentiolabs/pi-git-spice");
-  assert.equal(pkg.version, "0.1.0");
+  assert.match(pkg.version,
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/);
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.repository.directory, "packages/pi-git-spice");
   assert.deepEqual(pkg.pi, {

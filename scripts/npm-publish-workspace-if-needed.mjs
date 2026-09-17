@@ -12,6 +12,29 @@ if (!packageName) {
 
 const rootDir = process.cwd();
 const npmCommand = process.env.NPM_PUBLISH_IF_NEEDED_NPM ?? "npm";
+const verifyAttempts = positiveIntegerEnv("NPM_PUBLISH_VERIFY_ATTEMPTS", 24);
+const verifyDelayMs = positiveIntegerEnv("NPM_PUBLISH_VERIFY_DELAY_MS", 5000);
+
+function positiveIntegerEnv(name, defaultValue) {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value <= 0) {
+    console.error(`${name} must be a positive base-10 integer within the safe integer range.`);
+    process.exit(1);
+  }
+  return value;
+}
+
+async function sleep(delayMs) {
+  // Node clamps oversized timers to 1 ms; split long configured delays instead.
+  for (let remaining = delayMs; remaining > 0;) {
+    const interval = Math.min(remaining, 2_147_483_647);
+    await new Promise((resolve) => setTimeout(resolve, interval));
+    remaining -= interval;
+  }
+}
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -212,4 +235,27 @@ const publishResult = spawnSync(
   },
 );
 
-process.exit(publishResult.status ?? 1);
+if (publishResult.status !== 0 || publishExtraArgs.includes("--dry-run")) {
+  process.exit(publishResult.status ?? 1);
+}
+
+for (let attempt = 1; attempt <= verifyAttempts; attempt += 1) {
+  const visibilityResult = runNpm(["view", versionSpecifier, "version", "--json"]);
+  if (visibilityResult.status === 0) {
+    console.log(`${versionSpecifier} is visible on npm (attempt ${attempt}/${verifyAttempts}).`);
+    process.exit(0);
+  }
+
+  if (!isNpmNotFound(visibilityResult)) {
+    process.stdout.write(visibilityResult.stdout ?? "");
+    process.stderr.write(visibilityResult.stderr ?? "");
+    process.exit(visibilityResult.status ?? 1);
+  }
+
+  if (attempt === verifyAttempts) {
+    console.error(`${versionSpecifier} is still not visible on npm after ${verifyAttempts} attempts; registry visibility verification timed out.`);
+    process.exit(1);
+  }
+
+  await sleep(verifyDelayMs);
+}

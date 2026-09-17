@@ -25,6 +25,23 @@ test("root package declares private npm workspaces", () => {
   assert.equal(pkg.engines.node, ">=24.0.0");
 });
 
+test("release-please aggregates independent package releases into one PR", () => {
+  const config = readJson("release-please-config.json");
+
+  assert.equal(config["separate-pull-requests"], false);
+  assert.equal(config["always-update"], true);
+  assert.equal(config["group-pull-request-title-pattern"], "chore: release ${branch}");
+  assert.equal(config["include-component-in-tag"], true);
+  assert.ok(!(config.plugins ?? []).some((plugin) => (typeof plugin === "string" ? plugin : plugin.type) === "linked-versions"));
+});
+
+test("release workflow serializes runs without cancelling in-progress publishing", () => {
+  const workflow = readText(".github/workflows/release-please.yml");
+
+  assert.match(workflow, /^concurrency:\n  group: release-please-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false\n\npermissions:/m);
+  assert.ok(workflow.indexOf("\non:") < workflow.indexOf("\nconcurrency:"));
+});
+
 test("release-please tracks pi-arc as an independent package", () => {
   const config = readJson("release-please-config.json");
   const piArc = config.packages["packages/pi-arc"];
@@ -235,14 +252,18 @@ test("release workflow uses idempotent npm publishing helper", () => {
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
   assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-code-quality/);
 
-  const codeQualityPublish = workflow.indexOf("@sentiolabs/pi-code-quality");
-  const gitSpicePublish = workflow.indexOf("@sentiolabs/pi-git-spice");
-  const frontendDesignPublish = workflow.indexOf("@sentiolabs/pi-frontend-design");
-  assert.ok(codeQualityPublish < gitSpicePublish);
-  assert.ok(gitSpicePublish < frontendDesignPublish);
+  const publishPackages = [...workflow.matchAll(/run: node scripts\/npm-publish-workspace-if-needed\.mjs (@sentiolabs\/[\w-]+)/g)]
+    .map((match) => match[1]);
+  assert.deepEqual(publishPackages, [
+    "@sentiolabs/pi-arc",
+    "@sentiolabs/pi-code-quality",
+    "@sentiolabs/pi-git-spice",
+    "@sentiolabs/pi-frontend-design",
+    "@sentiolabs/pi-scriptable-statusline",
+  ]);
 
   assert.doesNotMatch(workflow, /npm publish --workspace/);
-  assert.doesNotMatch(workflow, /release_created/);
+  assert.doesNotMatch(workflow, /release_created|paths_released/);
 });
 
 test("pi-frontend-design package metadata points at the workspace package", () => {
