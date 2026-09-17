@@ -10,7 +10,7 @@ Each package under `packages/*` has its own Release Please entry. Packages in th
 
 ### Imported package baselines
 
-When a package is imported from a standalone repository, keep the workspace package version and `.release-please-manifest.json` entry aligned to the latest already-published npm version before making new changes in this monorepo. For `@sentiolabs/pi-arc`, the imported baseline is `0.10.0`; the existing publish helper skips that already-published version and future Release Please releases publish the next semver version from `pi-nexus`.
+When a package is imported from a standalone repository, keep the workspace package version and `.release-please-manifest.json` entry aligned to the latest already-published npm version before making new changes in this monorepo. For `@sentiolabs/pi-arc`, the imported baseline is `0.10.0`; future Release Please releases publish the next semver version from `pi-nexus` only when that package path is newly released.
 
 Current package entries include:
 
@@ -87,29 +87,48 @@ Current package entries include:
 }
 ```
 
-## npm provenance
+## Package-specific publishing
 
-Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-workspace-if-needed.mjs`. The release workflow serializes `main` runs using a ref-scoped concurrency group without cancelling in-progress publishing. It runs the helper for every workspace package on every `main` push, not only packages reported by Release Please as newly released. The helper checks whether the exact workspace package version already exists on npm and skips duplicate publishes. This all-package scan is a recovery mechanism when a GitHub release succeeds but npm publication fails.
+The `.github/workflows/release-please.yml` workflow serializes `main` runs using a ref-scoped concurrency group without cancelling in-progress publishing. Its `release-please` job maintains the aggregate release PR and exposes `releases_created` and `paths_released`. After a release PR merge, only paths in `paths_released` receive publisher jobs, and only when `releases_created` is `true`. An ordinary `main` push does not scan or republish workspace versions.
 
-After a successful real publish, the helper waits for exact-version registry visibility by polling `npm view <package-name>@<package-version> version --json`. It defaults to 24 attempts with a 5000 ms delay between not-found responses. `NPM_PUBLISH_VERIFY_ATTEMPTS` and `NPM_PUBLISH_VERIFY_DELAY_MS` override those defaults; each must be a positive base-10 integer within JavaScript's safe integer range, or the helper fails before publishing. Exhausted attempts fail with the package version and attempt count, while non-not-found errors fail immediately and forward npm's output. Publishes using `--dry-run` skip post-publish visibility checks because they create no registry version.
+| Publisher job | Released path | Workspace package |
+|---|---|---|
+| `publish-pi-arc` | `packages/pi-arc` | `@sentiolabs/pi-arc` |
+| `publish-pi-code-quality` | `packages/pi-code-quality` | `@sentiolabs/pi-code-quality` |
+| `publish-pi-git-spice` | `packages/pi-git-spice` | `@sentiolabs/pi-git-spice` |
+| `publish-pi-frontend-design` | `packages/pi-frontend-design` | `@sentiolabs/pi-frontend-design` |
+| `publish-pi-scriptable-statusline` | `packages/pi-scriptable-statusline` | `@sentiolabs/pi-scriptable-statusline` |
+
+Each package job independently checks out the repository, sets up Node 24 with npm caching, installs dependencies, tests its workspace, dry-runs its package contents, and publishes. For example, the Git Spice job runs these commands in order:
 
 ```bash
-node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
-node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-code-quality
-node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
-node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-git-spice
-node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-scriptable-statusline
+npm ci
+npm test --workspace @sentiolabs/pi-git-spice
+npm run pack:dry-run --workspace @sentiolabs/pi-git-spice
+npm publish --workspace @sentiolabs/pi-git-spice --access public --provenance
 ```
+
+`npm publish` acceptance (exit status zero) is the completion boundary. The workflow does not poll registry visibility or retry publication. A nonzero exit status fails that package job.
+
+Publisher jobs depend only on `release-please`, never on each other, so a failed package does not block unrelated publisher jobs. Rerun only the failed package job (or use **Re-run failed jobs**), not **Re-run all jobs**, to avoid republishing unrelated packages. Direct publication does not skip existing versions: if npm already accepted a version, investigate before rerunning that package's publish step.
+
+### Merge ordering
+
+Merge the workflow-alignment changes before aggregate release PR #20 so its newly released paths use the independent publisher jobs. Do not merge the release PR first and rely on a later ordinary `main` push to recover publication.
+
+## npm provenance
+
+Publishing uses GitHub Actions and npm provenance. Only publisher jobs receive `contents: read` and `id-token: write`; the Release Please job receives `contents: write` and `pull-requests: write`. All jobs stay in `.github/workflows/release-please.yml`, preserving the workflow filename used by npm Trusted Publisher settings.
 
 npm provenance requires the package `repository.url` to match the GitHub repository URL and case exactly. Before enabling a real publish, verify:
 
 ```bash
 git remote get-url origin
 node --test tests/workspace-contract.test.mjs
-node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc --dry-run
+npm run pack:dry-run --workspace @sentiolabs/pi-arc
 ```
 
-If the GitHub organization or repository casing changes, update `packages/pi-arc/package.json` before publishing.
+If the GitHub organization or repository casing changes, update the affected workspace package manifests before publishing.
 
 ## Adding another package
 
@@ -120,4 +139,4 @@ To add another independently released package:
 3. Add a manifest entry in `.release-please-manifest.json`.
 4. Add package docs and root README table entry.
 5. Add the package-lock workspace version path to the package's Release Please `extra-files` entry.
-6. Extend the release workflow with `node scripts/npm-publish-workspace-if-needed.mjs <package-name>` for the new package.
+6. Add an independent publisher job to `.github/workflows/release-please.yml`, gated by `releases_created` and the exact `packages/<name>` path in `paths_released`. Include workspace tests, a package dry-run, and `npm publish --workspace <package-name> --access public --provenance`. Extend the workspace contract tests for the new job.
