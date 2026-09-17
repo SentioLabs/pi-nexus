@@ -38,7 +38,7 @@ test("release-please aggregates independent package releases into one PR", () =>
 test("release workflow serializes runs without cancelling in-progress publishing", () => {
   const workflow = readText(".github/workflows/release-please.yml");
 
-  assert.match(workflow, /^concurrency:\n  group: release-please-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false\n\npermissions:/m);
+  assert.match(workflow, /^concurrency:\n  group: release-please-\$\{\{ github\.ref \}\}\n  cancel-in-progress: false\n\njobs:/m);
   assert.ok(workflow.indexOf("\non:") < workflow.indexOf("\nconcurrency:"));
 });
 
@@ -169,7 +169,7 @@ test("root documentation integrates pi-git-spice", () => {
     ]
   }`),
   );
-  assert.match(releasing, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-git-spice/);
+  assert.match(releasing, /npm publish --workspace @sentiolabs\/pi-git-spice --access public --provenance/);
 
   assert.match(packageDocs, /^# `@sentiolabs\/pi-git-spice`$/m);
   for (const heading of ["Included resources", "Prerequisites", "Non-interactive safety", "Local development"]) {
@@ -243,27 +243,76 @@ test("release-please tracks pi-scriptable-statusline as an independent package",
   assertReleaseManifestTracksPackage("packages/pi-scriptable-statusline");
 });
 
-test("release workflow uses idempotent npm publishing helper", () => {
+const releasePackages = [
+  "pi-arc",
+  "pi-code-quality",
+  "pi-git-spice",
+  "pi-frontend-design",
+  "pi-scriptable-statusline",
+];
+
+function releaseWorkflowJobs(workflow) {
+  const jobsStart = workflow.indexOf("\njobs:\n");
+  assert.notEqual(jobsStart, -1, "workflow must declare jobs");
+  return [...workflow.slice(jobsStart).matchAll(/^  ([\w-]+):\n([\s\S]*?)(?=^  [\w-]+:\n|(?![\s\S]))/gm)]
+    .map(([, id, body]) => [id, body]);
+}
+
+test("release workflow exposes released paths with job-scoped permissions", () => {
+  const workflow = readText(".github/workflows/release-please.yml");
+  const jobs = releaseWorkflowJobs(workflow);
+
+  assert.deepEqual(jobs.map(([id]) => id), ["release-please", ...releasePackages.map((name) => `publish-${name}`)]);
+  assert.doesNotMatch(workflow.split(/^jobs:\n/m)[0], /^permissions:/m);
+
+  const release = new Map(jobs).get("release-please");
+  assert.match(release, /^    outputs:\n      releases_created: \$\{\{ steps\.release\.outputs\.releases_created \}\}\n      paths_released: \$\{\{ steps\.release\.outputs\.paths_released \}\}\n/m);
+  assert.match(release, /^    permissions:\n      contents: write\n      pull-requests: write\n/m);
+  assert.match(release, /^      - name: Release Please\n        id: release\n        uses: googleapis\/release-please-action@v4\n        with:\n          config-file: release-please-config\.json\n          manifest-file: \.release-please-manifest\.json\n/m);
+  assert.doesNotMatch(release, /id-token:|npm publish/);
+});
+
+for (const name of releasePackages) {
+  test(`release workflow independently gates and publishes ${name}`, () => {
+    const workflow = readText(".github/workflows/release-please.yml");
+    const job = new Map(releaseWorkflowJobs(workflow)).get(`publish-${name}`);
+    const workspace = `@sentiolabs/${name}`;
+    assert.ok(job, `missing publish-${name} job`);
+
+    assert.deepEqual([...job.matchAll(/^    needs: (.+)$/gm)].map(([, value]) => value), ["release-please"]);
+    assert.deepEqual([...job.matchAll(/^    if: (.+)$/gm)].map(([, value]) => value), [
+      "${{ needs.release-please.outputs.releases_created == 'true' && contains(needs.release-please.outputs.paths_released, 'packages/" + name + "') }}",
+    ]);
+    assert.match(job, /^    runs-on: ubuntu-latest$/m);
+    assert.match(job, /^    permissions:\n      contents: read\n      id-token: write\n/m);
+    assert.match(job, /^    env:\n      NPM_CONFIG_LEGACY_PEER_DEPS: "true"\n/m);
+    assert.deepEqual([...job.matchAll(/^        uses: (.+)$/gm)].map(([, value]) => value), [
+      "actions/checkout@v4",
+      "actions/setup-node@v4",
+    ]);
+    assert.match(job, /^        uses: actions\/setup-node@v4\n        with:\n          node-version: 24\n          registry-url: https:\/\/registry\.npmjs\.org\n          cache: npm\n          cache-dependency-path: package-lock\.json\n/m);
+    assert.deepEqual([...job.matchAll(/^      - name: (.+)$/gm)].map(([, value]) => value), [
+      "Checkout",
+      "Setup Node",
+      "Install dependencies",
+      "Run tests",
+      "Verify package contents",
+      "Publish to npm",
+    ]);
+    assert.deepEqual([...job.matchAll(/^        run: (.+)$/gm)].map(([, value]) => value), [
+      "npm ci",
+      `npm test --workspace ${workspace}`,
+      `npm run pack:dry-run --workspace ${workspace}`,
+      `npm publish --workspace ${workspace} --access public --provenance`,
+    ]);
+  });
+}
+
+test("release workflow ends at npm acceptance without scanning or polling", () => {
   const workflow = readText(".github/workflows/release-please.yml");
 
-  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-arc/);
-  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-frontend-design/);
-  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-git-spice/);
-  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-scriptable-statusline/);
-  assert.match(workflow, /node scripts\/npm-publish-workspace-if-needed\.mjs @sentiolabs\/pi-code-quality/);
-
-  const publishPackages = [...workflow.matchAll(/run: node scripts\/npm-publish-workspace-if-needed\.mjs (@sentiolabs\/[\w-]+)/g)]
-    .map((match) => match[1]);
-  assert.deepEqual(publishPackages, [
-    "@sentiolabs/pi-arc",
-    "@sentiolabs/pi-code-quality",
-    "@sentiolabs/pi-git-spice",
-    "@sentiolabs/pi-frontend-design",
-    "@sentiolabs/pi-scriptable-statusline",
-  ]);
-
-  assert.doesNotMatch(workflow, /npm publish --workspace/);
-  assert.doesNotMatch(workflow, /release_created|paths_released/);
+  assert.doesNotMatch(workflow, /npm-publish-workspace-|npm\s+view|NPM_PUBLISH_|\bsleep\b|\bretry\b/);
+  assert.doesNotMatch(workflow, /always\(\)|continue-on-error:/);
 });
 
 test("pi-frontend-design package metadata points at the workspace package", () => {

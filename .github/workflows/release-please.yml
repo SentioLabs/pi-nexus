@@ -9,18 +9,16 @@ concurrency:
   group: release-please-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
-
 jobs:
-  release:
-    name: Release and publish
+  release-please:
+    name: Release Please
     runs-on: ubuntu-latest
-    env:
-      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
-
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
     steps:
       - name: Release Please
         id: release
@@ -29,6 +27,16 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  publish-pi-arc:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' && contains(needs.release-please.outputs.paths_released, 'packages/pi-arc') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -38,21 +46,148 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Publish pi-arc to npm
-        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
+      - name: Run tests
+        run: npm test --workspace @sentiolabs/pi-arc
 
-      - name: Publish pi-code-quality to npm
-        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-code-quality
+      - name: Verify package contents
+        run: npm run pack:dry-run --workspace @sentiolabs/pi-arc
 
-      - name: Publish pi-git-spice to npm
-        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-git-spice
+      - name: Publish to npm
+        run: npm publish --workspace @sentiolabs/pi-arc --access public --provenance
 
-      - name: Publish pi-frontend-design to npm
-        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-frontend-design
+  publish-pi-code-quality:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' && contains(needs.release-please.outputs.paths_released, 'packages/pi-code-quality') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Publish pi-scriptable-statusline to npm
-        run: node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-scriptable-statusline
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --workspace @sentiolabs/pi-code-quality
+
+      - name: Verify package contents
+        run: npm run pack:dry-run --workspace @sentiolabs/pi-code-quality
+
+      - name: Publish to npm
+        run: npm publish --workspace @sentiolabs/pi-code-quality --access public --provenance
+
+  publish-pi-git-spice:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' && contains(needs.release-please.outputs.paths_released, 'packages/pi-git-spice') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --workspace @sentiolabs/pi-git-spice
+
+      - name: Verify package contents
+        run: npm run pack:dry-run --workspace @sentiolabs/pi-git-spice
+
+      - name: Publish to npm
+        run: npm publish --workspace @sentiolabs/pi-git-spice --access public --provenance
+
+  publish-pi-frontend-design:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' && contains(needs.release-please.outputs.paths_released, 'packages/pi-frontend-design') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --workspace @sentiolabs/pi-frontend-design
+
+      - name: Verify package contents
+        run: npm run pack:dry-run --workspace @sentiolabs/pi-frontend-design
+
+      - name: Publish to npm
+        run: npm publish --workspace @sentiolabs/pi-frontend-design --access public --provenance
+
+  publish-pi-scriptable-statusline:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' && contains(needs.release-please.outputs.paths_released, 'packages/pi-scriptable-statusline') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_CONFIG_LEGACY_PEER_DEPS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test --workspace @sentiolabs/pi-scriptable-statusline
+
+      - name: Verify package contents
+        run: npm run pack:dry-run --workspace @sentiolabs/pi-scriptable-statusline
+
+      - name: Publish to npm
+        run: npm publish --workspace @sentiolabs/pi-scriptable-statusline --access public --provenance
