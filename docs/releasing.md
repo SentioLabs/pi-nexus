@@ -4,7 +4,9 @@ This monorepo uses Release Please for independent package releases.
 
 ## Release model
 
-Each package under `packages/*` has its own Release Please entry. A change to one package should only release that package.
+Release Please maintains one aggregate `chore: release main` PR for all changed packages. More package changes update that open aggregate PR before merge.
+
+Each package under `packages/*` has its own Release Please entry. Packages in the aggregate PR still receive independent versions, changelogs, GitHub releases, and component-prefixed tags (for example, `pi-arc-v0.12.0`). A change to one package should only release that package; aggregation does not link package versions.
 
 ### Imported package baselines
 
@@ -87,7 +89,9 @@ Current package entries include:
 
 ## npm provenance
 
-Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-workspace-if-needed.mjs`. The release workflow runs the helper for each workspace package on every `main` push. The helper checks whether the exact workspace package version already exists on npm and skips duplicate publishes, which keeps reruns/idempotent release attempts from failing after a GitHub release has already been cut and also repairs cases where a GitHub release exists but npm publish failed.
+Publishing uses GitHub Actions and npm provenance through `scripts/npm-publish-workspace-if-needed.mjs`. The release workflow serializes `main` runs using a ref-scoped concurrency group without cancelling in-progress publishing. It runs the helper for every workspace package on every `main` push, not only packages reported by Release Please as newly released. The helper checks whether the exact workspace package version already exists on npm and skips duplicate publishes. This all-package scan is a recovery mechanism when a GitHub release succeeds but npm publication fails.
+
+After a successful real publish, the helper waits for exact-version registry visibility by polling `npm view <package-name>@<package-version> version --json`. It defaults to 24 attempts with a 5000 ms delay between not-found responses. `NPM_PUBLISH_VERIFY_ATTEMPTS` and `NPM_PUBLISH_VERIFY_DELAY_MS` override those defaults; each must be a positive base-10 integer within JavaScript's safe integer range, or the helper fails before publishing. Exhausted attempts fail with the package version and attempt count, while non-not-found errors fail immediately and forward npm's output. Publishes using `--dry-run` skip post-publish visibility checks because they create no registry version.
 
 ```bash
 node scripts/npm-publish-workspace-if-needed.mjs @sentiolabs/pi-arc
